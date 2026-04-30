@@ -44,21 +44,49 @@ fn to_long_path(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// Remove 0-byte placeholder files created by librqbit, except those being downloaded.
-fn cleanup_placeholder_files(root: &Path, keep: &HashSet<PathBuf>) -> std::io::Result<()> {
+/// Remove 0-byte placeholder zip files created by librqbit, **except** those
+/// belonging to the current selection (which librqbit may not have started
+/// writing yet).
+///
+/// `selected_paths` are torrent-relative paths with **forward slashes**
+/// (matches the format produced by `TorrentIndex::from_file`). To make the
+/// match work on Windows — where `WalkDir` yields backslash-separated paths —
+/// we normalize each on-disk entry's string form to forward slashes before
+/// comparing. This is the bug that previously deleted active downloads on
+/// Windows: `PathBuf::join("eXoDOS", "Content/foo.zip")` produced a mixed-slash
+/// string that no longer matched what `WalkDir` returned, so files we wanted
+/// to keep ended up in the delete branch.
+fn cleanup_placeholder_files(root: &Path, selected_paths: &[String]) -> std::io::Result<()> {
     let mut removed = 0;
+    let mut kept = 0;
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.is_file() {
-            if let Ok(meta) = path.metadata() {
-                if meta.len() == 0 && !keep.contains(path)
-                    && path.extension().map(|e| e == "zip").unwrap_or(false)
-                {
-                    let _ = std::fs::remove_file(path);
-                    removed += 1;
-                }
-            }
+        if !path.is_file() {
+            continue;
         }
+        let meta = match path.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.len() != 0 {
+            continue;
+        }
+        if path.extension().map(|e| e != "zip").unwrap_or(true) {
+            continue;
+        }
+        // Forward-slash form of the absolute path on disk. `selected_paths`
+        // entries are torrent-relative ("eXoDOS/Content/.../Foo.zip"), so a
+        // suffix match is enough — and it is slash-direction-agnostic now.
+        let path_fwd = path.to_string_lossy().replace('\\', "/");
+        let is_selected = selected_paths.iter().any(|sp| path_fwd.ends_with(sp));
+        if is_selected {
+            kept += 1;
+            log::debug!("Cleanup: keeping in-flight placeholder {}", path.display());
+            continue;
+        }
+        log::info!("Cleanup: deleting 0-byte placeholder {}", path.display());
+        let _ = std::fs::remove_file(path);
+        removed += 1;
     }
     // Remove empty directories left behind
     for entry in WalkDir::new(root).contents_first(true).into_iter().filter_map(|e| e.ok()) {
@@ -67,9 +95,10 @@ fn cleanup_placeholder_files(root: &Path, keep: &HashSet<PathBuf>) -> std::io::R
             let _ = std::fs::remove_dir(path);
         }
     }
-    if removed > 0 {
-        log::info!("Cleaned up {} placeholder files", removed);
-    }
+    log::info!(
+        "Cleanup: deleted {} placeholder file(s), kept {} in-flight (selection size {})",
+        removed, kept, selected_paths.len()
+    );
     Ok(())
 }
 
@@ -226,7 +255,24 @@ impl DownloadManager {
             // path API (32 768-char limit) instead of the legacy MAX_PATH (260).
             // Without this, deeply nested torrent entries silently fail to open and
             // the download appears stuck at 0%.
-            let output_folder = to_long_path(&self.torrent_root());
+            let raw_root = self.torrent_root();
+            let output_folder = to_long_path(&raw_root);
+
+            // Diagnostic: surface exactly what we are handing to librqbit. On
+            // Windows the `\\?\` prefix should appear here. If it doesn't, the
+            // long-path fix isn't being applied for this run.
+            log::info!(
+                "Torrent add: output_folder={:?} (torrent_root={}, exists={}, is_dir={})",
+                output_folder,
+                raw_root.display(),
+                raw_root.exists(),
+                raw_root.is_dir()
+            );
+            log::info!(
+                "Torrent add: selected file_indices={:?} (total={} of {})",
+                file_indices, selected.len(), self.torrent_index.files.len()
+            );
+
             let response = self
                 .session
                 .add_torrent(
@@ -238,17 +284,28 @@ impl DownloadManager {
                         ..Default::default()
                     }),
                 )
-                .await?;
+                .await
+                .map_err(|e| {
+                    log::error!("session.add_torrent failed: {}", e);
+                    e
+                })?;
 
             let (handle, already_managed) = match response {
-                AddTorrentResponse::Added(_id, h) => (h, false),
-                AddTorrentResponse::AlreadyManaged(_id, h) => (h, true),
+                AddTorrentResponse::Added(_id, h) => {
+                    log::info!("Torrent add: response=Added");
+                    (h, false)
+                }
+                AddTorrentResponse::AlreadyManaged(_id, h) => {
+                    log::info!("Torrent add: response=AlreadyManaged");
+                    (h, true)
+                }
                 AddTorrentResponse::ListOnly(_) => {
+                    log::error!("Torrent add: response=ListOnly (unexpected — file selection ignored)");
                     return Err(anyhow::anyhow!("Torrent added in list-only mode"));
                 }
             };
 
-            *handle_guard = Some(handle);
+            *handle_guard = Some(Arc::clone(&handle));
             log::info!("Torrent added (already_managed={already_managed}), downloading files: {:?}", file_indices);
 
             // If the session already had this torrent, apply our file selection.
@@ -259,17 +316,59 @@ impl DownloadManager {
                 self.update_files_retrying(handle_guard.as_ref().unwrap(), &selected).await?;
             }
 
+            // Periodic diagnostic stats: log peer count, live state, and
+            // download speed every 2 s for 60 s after a fresh add. This is
+            // the window during which Windows-stuck-at-0% manifests; without
+            // these snapshots we have no signal to tell network/peer issues
+            // (peers=0) apart from disk/librqbit issues (peers>0, speed=0).
+            // Capture file paths up front so the spawned task does not need
+            // a reference to self.
+            let stats_handle = Arc::clone(&handle);
+            let watched_files: Vec<(usize, String, u64)> = file_indices.iter()
+                .filter_map(|&idx| {
+                    self.torrent_index.files.get(idx).map(|f| (idx, f.path.clone(), f.size))
+                })
+                .collect();
+            tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_secs(60) {
+                    let s = stats_handle.stats();
+                    // The Display impl gives us state + progress + (when live)
+                    // download/upload speeds — the most diagnostic-dense
+                    // single line we can emit. Augment with the per-file
+                    // breakdown so we can tell partial progress apart.
+                    let per_file: Vec<String> = watched_files.iter().map(|(idx, name, size)| {
+                        let dl = s.file_progress.get(*idx).copied().unwrap_or(0);
+                        let pct = if *size > 0 { (dl as f64 / *size as f64) * 100.0 } else { 0.0 };
+                        format!("[{}]={}/{} ({:.1}%) {}", idx, dl, size, pct, name)
+                    }).collect();
+                    if let Some(ref err) = s.error {
+                        log::error!("[stats] state={} error={:?}", s.state, err);
+                    }
+                    log::info!(
+                        "[stats] {} | live={} | files: {}",
+                        s, s.live.is_some(), per_file.join(" ")
+                    );
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                log::debug!("[stats] periodic logger finished after 60 s");
+            });
+
             // librqbit creates 0-byte placeholder files for all torrent entries on first add.
             // Clean them up after a short delay so librqbit has time to write real content.
             // 10 s is conservative but safe: the alternative (2 s) raced against assembly.
             let root = self.torrent_root();
-            let keep: HashSet<PathBuf> = self.selected_files.read().await.iter()
+            // Forward-slashed relative paths of files we are actively downloading.
+            // Any 0-byte zip on disk that ends with one of these is in-flight and
+            // must NOT be deleted. See cleanup_placeholder_files for why string
+            // matching beats PathBuf equality on Windows.
+            let selected_paths: Vec<String> = self.selected_files.read().await.iter()
                 .filter_map(|&idx| self.torrent_index.files.get(idx))
-                .map(|f| root.join(&f.path))
+                .map(|f| f.path.clone())
                 .collect();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                if let Err(e) = cleanup_placeholder_files(&root, &keep) {
+                if let Err(e) = cleanup_placeholder_files(&root, &selected_paths) {
                     log::warn!("Failed to clean up placeholder files: {}", e);
                 }
             });

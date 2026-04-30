@@ -61,7 +61,7 @@ export function startGameDownload(gameId: number, title?: string) {
           setDownloads((prev) => ({
             ...prev,
             [gameId]: {
-              status: "Download didn't start. Check exodium.log for details.",
+              status: "Download didn't start — open Settings → Diagnostics to view exodium.log.",
               progress: 0,
               downloading: false,
               title: titles[gameId],

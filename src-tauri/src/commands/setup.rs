@@ -85,6 +85,21 @@ pub fn get_available_collections() -> Vec<CollectionInfo> {
         .collect()
 }
 
+/// Return the directory where Exodium writes its log file. Used by the UI
+/// "Open log folder" button so users on Windows (where there is no terminal
+/// stderr in a packaged build) can find the diagnostic log without knowing
+/// the platform-specific path conventions.
+///
+/// Mirrors the path used in `lib.rs::run` when initializing the logger:
+///   Windows:  %APPDATA%\com.redfox.exodium\logs
+///   macOS:    ~/Library/Logs/com.redfox.exodium
+///   Linux:    ~/.local/share/com.redfox.exodium/logs
+#[tauri::command]
+pub fn get_log_dir(app: AppHandle) -> Result<String, String> {
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 /// Managed state for the download system — supports multiple torrents.
 pub struct TorrentState(pub RwLock<std::collections::HashMap<String, Arc<DownloadManager>>>);
 
@@ -622,30 +637,31 @@ fn scan_game_metadata(
         images.extend(paths);
     }
 
-    // Resolve manual: check if already extracted on disk, otherwise try lazy
-    // extraction from the GameData ZIP.
+    // Resolve manual. Lookup order:
+    //   1. Torrent root (downloaded game extracted manual)
+    //   2. Content metadata pack for this collection (ships manuals without download)
+    //   3. eXoDOS metadata pack as LP fallback (LP packs share EN manuals)
+    //   4. Lazy-extract from GameData ZIP (legacy path before metadata packs)
     let torrent_root = PathBuf::from(data_dir).join("eXoDOS");
     let (resolved_manual, manual_kind) = if let Some(mp) = manual_path {
         let normalized = mp.replace('\\', "/");
-        let on_disk = torrent_root.join(&normalized);
-        if on_disk.is_file() {
-            let ext = on_disk.extension().and_then(|e| e.to_str())
-                .unwrap_or("").to_ascii_lowercase();
-            let kind = match ext.as_str() {
-                "pdf" => "pdf", "txt" | "text" => "txt",
-                "html" | "htm" => "html", "doc" => "pdf", _ => "pdf",
-            };
-            (Some(path_to_fwd_slash(&on_disk)), Some(kind.to_string()))
+        let pack_base = PathBuf::from(data_dir).join("content").join("metadata");
+        let mut candidates: Vec<PathBuf> = vec![
+            torrent_root.join(&normalized),
+            pack_base.join(collection).join(&normalized),
+        ];
+        if collection != "eXoDOS" {
+            candidates.push(pack_base.join("eXoDOS").join(&normalized));
+        }
+
+        let found = candidates.into_iter().find(|p| p.is_file());
+        if let Some(path) = found {
+            let kind = manual_kind_from_path(&path);
+            (Some(path_to_fwd_slash(&path)), Some(kind.to_string()))
         } else {
-            // Lazy extract from GameData ZIP
             match extract_manual_from_gamedata(&torrent_root, collection, &normalized) {
                 Ok(Some(extracted)) => {
-                    let ext = extracted.extension().and_then(|e| e.to_str())
-                        .unwrap_or("").to_ascii_lowercase();
-                    let kind = match ext.as_str() {
-                        "pdf" => "pdf", "txt" | "text" => "txt",
-                        "html" | "htm" => "html", "doc" => "pdf", _ => "pdf",
-                    };
+                    let kind = manual_kind_from_path(&extracted);
                     (Some(path_to_fwd_slash(&extracted)), Some(kind.to_string()))
                 }
                 _ => (None, None),
@@ -660,6 +676,17 @@ fn scan_game_metadata(
         manual_kind,
         images,
     })
+}
+
+/// Map a manual file extension to the kind tag the frontend renders against.
+fn manual_kind_from_path(path: &Path) -> &'static str {
+    let ext = path.extension().and_then(|e| e.to_str())
+        .unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "txt" | "text" => "txt",
+        "html" | "htm" => "html",
+        _ => "pdf",
+    }
 }
 
 /// Extract a single manual file from a GameData ZIP on first access.

@@ -1,6 +1,7 @@
 import { createSignal, onMount, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { Tooltip } from "@ark-ui/solid/tooltip";
 import { Library } from "./pages/Library";
@@ -16,6 +17,7 @@ import {
   getConfig,
   setConfig,
   scanInstalledGames,
+  getLogDir,
 } from "./api/tauri";
 import { fetchGames } from "./stores/games";
 import { loadThumbnailDir } from "./stores/thumbnails";
@@ -31,6 +33,8 @@ function App() {
   const [showWelcomeModal, setShowWelcomeModal] = createSignal(false);
   const [dataDir, setDataDir] = createSignal("");
   const [resetError, setResetError] = createSignal("");
+  const [logDir, setLogDir] = createSignal("");
+  const [logOpenError, setLogOpenError] = createSignal("");
 
   // Derived: the actual game storage folder shown to the user.
   const gameFolderPath = () => {
@@ -143,6 +147,30 @@ function App() {
     }
   };
 
+  const loadLogDir = async () => {
+    try {
+      const dir = await getLogDir();
+      setLogDir(dir);
+    } catch (e) {
+      console.warn("[settings] failed to resolve log dir:", e);
+      setLogDir("");
+    }
+  };
+
+  const handleOpenLogFolder = async () => {
+    setLogOpenError("");
+    const dir = logDir();
+    if (!dir) {
+      setLogOpenError("Log folder is not available yet — try reopening Settings.");
+      return;
+    }
+    try {
+      await openPath(dir);
+    } catch (e) {
+      setLogOpenError(`Could not open folder: ${e}`);
+    }
+  };
+
   const confirmReset = async () => {
     const doDelete = deleteGameData();
     setShowResetDialog(false);
@@ -193,7 +221,7 @@ function App() {
         <Show when={showSettings()}>
         <Dialog.Root open={showSettings()} onOpenChange={(e) => {
           setShowSettings(e.open);
-          if (e.open) { loadGameDefaults(); setSettingsTab("general"); }
+          if (e.open) { loadGameDefaults(); loadLogDir(); setSettingsTab("general"); }
         }}>
           <Portal>
             <Dialog.Backdrop class="ark-dialog-backdrop" />
@@ -258,6 +286,19 @@ function App() {
                             <span class="setting-toggle-hint">Start every game fullscreen instead of windowed. Alt+Enter still toggles at runtime.</span>
                           </span>
                         </label>
+                      </section>
+
+                      <section class="settings-section">
+                        <h3 class="settings-section-title">Diagnostics</h3>
+                        <p class="settings-section-hint">If a download stalls or the app misbehaves, share <code>exodium.log</code> from the folder below.</p>
+                        <div class="setting-row">
+                          <span class="setting-label">Log folder</span>
+                          <span class="setting-value">{logDir() || "Resolving…"}</span>
+                          <button class="btn-small" onClick={handleOpenLogFolder} disabled={!logDir()}>Open</button>
+                        </div>
+                        <Show when={logOpenError()}>
+                          <div class="error" style="margin-top:6px">{logOpenError()}</div>
+                        </Show>
                       </section>
 
                       <section class="settings-section danger">

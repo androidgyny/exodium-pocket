@@ -242,6 +242,10 @@ export async function scanInstalledGames(): Promise<number> {
   return invoke("scan_installed_games");
 }
 
+export async function getLogDir(): Promise<string> {
+  return invoke("get_log_dir");
+}
+
 // ── Content Packs ────────────────────────────────────────────────────────────
 
 export interface ContentPackStatus {

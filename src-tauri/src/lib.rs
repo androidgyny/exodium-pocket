@@ -18,7 +18,7 @@ use commands::{
     bundled_metadata_dir, cancel_content_pack_install, cancel_download, check_for_updates,
     download_game, factory_reset, get_available_collections, get_config,
     get_content_pack_progress, get_default_data_dir, get_download_progress, get_game,
-    get_game_metadata, get_game_settings, get_poster_dir, get_preview_dir,
+    get_game_metadata, get_game_settings, get_log_dir, get_poster_dir, get_preview_dir,
     get_game_variants, get_games, get_genres, get_installed_games, get_recently_played,
     get_section_keys, set_game_settings,
     get_setup_status, get_thumbnail_dir, get_torrent_info, init_download_manager,
@@ -62,65 +62,115 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Tee writer: duplicates every write to stderr and a file handle.
-/// Used so env_logger output appears in the terminal (dev) AND a persistent
-/// log file (prod/Windows-GUI where stderr is detached).
-struct TeeWriter {
-    file: std::sync::Mutex<std::fs::File>,
-}
+/// Make-writer that locks a shared file handle on every write. Cloning the
+/// `Arc` is cheap; locking is per-event and brief, so contention is not a
+/// concern for our log volume.
+#[derive(Clone)]
+struct SharedFileMakeWriter(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
 
-impl std::io::Write for TeeWriter {
+impl std::io::Write for SharedFileMakeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::stderr().write_all(buf);
-        if let Ok(mut f) = self.file.lock() {
-            let _ = f.write_all(buf);
+        match self.0.lock() {
+            Ok(mut f) => f.write(buf),
+            // If the mutex is poisoned, drop the bytes rather than panic in
+            // the logger. We still return Ok so the subscriber doesn't loop.
+            Err(_) => Ok(buf.len()),
         }
-        Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        let _ = std::io::stderr().flush();
-        if let Ok(mut f) = self.file.lock() {
-            let _ = f.flush();
+        match self.0.lock() {
+            Ok(mut f) => f.flush(),
+            Err(_) => Ok(()),
         }
-        Ok(())
     }
 }
 
-/// Initialize env_logger with a tee target. Returns the log file path for
-/// diagnostic logging. Falls back to stderr-only if the file can't be opened.
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedFileMakeWriter {
+    type Writer = SharedFileMakeWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Initialize the global tracing subscriber. Output is fanned out to both
+/// stderr (visible in `pnpm tauri dev`) and a persistent log file at
+/// `<log_dir>/exodium.log` (the only sink visible in a packaged Windows GUI
+/// build, where stderr is detached). `tracing-log` bridges `log!` calls from
+/// any crate into the same subscriber, so logs from `log` and `tracing` users
+/// (e.g. librqbit) end up in one stream.
+///
+/// Returns the log file path so the UI can show it to users for diagnosis.
 fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     use std::io::Write;
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
     let _ = std::fs::create_dir_all(log_dir);
     let log_path = log_dir.join("exodium.log");
+
     let file_result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path);
 
-    let env = env_logger::Env::default().default_filter_or("info");
-    let mut builder = env_logger::Builder::from_env(env);
+    // Diagnostic default. Captures the events we need to triage Windows
+    // stuck-at-0% (file open errors, peer / tracker activity, sparse-file
+    // allocation, our own info) without drowning the file in DHT bootstrap
+    // chatter. Set `RUST_LOG` to override — e.g. `RUST_LOG=librqbit_dht=debug`
+    // if DHT diagnosis is needed too. ~30s of normal startup ≈ tens of KB.
+    let default_filter = "info,librqbit=debug,librqbit_dht=info,exodium_lib=debug,rqbit=info";
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-    match file_result {
-        Ok(file) => {
-            // Write a session separator so the log file is readable across runs.
-            let mut file = file;
-            // Simple epoch timestamp so we don't pull in the chrono crate just
-            // for a session header (pattern matches content_packs::chrono_now).
+    // Write a session separator before the subscriber takes over so multi-run
+    // log files remain readable.
+    let file_writer: Option<SharedFileMakeWriter> = match file_result {
+        Ok(mut file) => {
             let epoch_secs = std::time::SystemTime::now()
                 .duration_since(std::time::SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let _ = writeln!(file, "\n=== exodium session start (epoch {}) ===", epoch_secs);
-            let tee = TeeWriter { file: std::sync::Mutex::new(file) };
-            builder.target(env_logger::Target::Pipe(Box::new(tee))).init();
-            Some(log_path)
+            let _ = writeln!(
+                file,
+                "\n=== exodium session start (epoch {}, log_dir {}) ===",
+                epoch_secs,
+                log_dir.display()
+            );
+            Some(SharedFileMakeWriter(std::sync::Arc::new(std::sync::Mutex::new(
+                file,
+            ))))
         }
-        Err(_) => {
-            // Fall back to stderr-only if we can't open the log file.
-            builder.init();
-            None
-        }
+        Err(_) => None,
+    };
+
+    // Build the subscriber: stderr layer + (optional) file layer + filter.
+    // `with_target(true)` keeps "librqbit::session" prefixes so we can tell
+    // librqbit events apart from our own.
+    let stderr_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .with_ansi(false);
+    let registry = tracing_subscriber::registry().with(env_filter).with(stderr_layer);
+
+    let result = if let Some(writer) = file_writer.clone() {
+        let file_layer = fmt::layer()
+            .with_writer(writer)
+            .with_target(true)
+            .with_ansi(false);
+        registry.with(file_layer).try_init()
+    } else {
+        registry.try_init()
+    };
+
+    if result.is_err() {
+        // A subscriber was already installed (e.g. tests) — not fatal.
+        return None;
     }
+
+    // Bridge `log!` → tracing so log-only crates land in the same sink.
+    // Ignore failure: it just means log was already initialized elsewhere.
+    let _ = tracing_log::LogTracer::init();
+
+    file_writer.map(|_| log_path)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -250,6 +300,7 @@ pub fn run() {
             get_game_settings,
             set_game_settings,
             get_recently_played,
+            get_log_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
