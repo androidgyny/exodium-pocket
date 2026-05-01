@@ -45,19 +45,26 @@ fn to_long_path(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// Remove 0-byte placeholder zip files created by librqbit, **except** those
-/// belonging to the current selection (which librqbit may not have started
-/// writing yet).
+/// Remove 0-byte zip files in `root` that are NOT part of the current torrent
+/// — i.e. true orphans from a previous run or unrelated user files.
 ///
-/// `selected_paths` are torrent-relative paths with **forward slashes**
-/// (matches the format produced by `TorrentIndex::from_file`). To make the
-/// match work on Windows — where `WalkDir` yields backslash-separated paths —
-/// we normalize each on-disk entry's string form to forward slashes before
-/// comparing. This is the bug that previously deleted active downloads on
-/// Windows: `PathBuf::join("eXoDOS", "Content/foo.zip")` produced a mixed-slash
-/// string that no longer matched what `WalkDir` returned, so files we wanted
-/// to keep ended up in the delete branch.
-fn cleanup_placeholder_files(root: &Path, selected_paths: &[String]) -> std::io::Result<()> {
+/// `keep_paths` must contain the **full set** of the torrent's file paths
+/// (forward-slashed, as produced by `TorrentIndex::from_file`), not just the
+/// user's current selection. librqbit's `init()` creates a 0-byte placeholder
+/// for **every** file declared by the torrent, regardless of `only_files`.
+/// With fastresume's piece-cache (v0.6.4+), pieces shared between files get
+/// marked "had" once any selected file's pieces arrive — and librqbit will
+/// then refuse to re-download those pieces even if some of their target files
+/// were deleted. Deleting a tracked placeholder therefore puts librqbit's
+/// in-memory state at odds with disk: `file_progress` reports 100% complete
+/// while `<file>.zip` is gone, and the user is stuck in an extraction loop
+/// that never resolves (observed v0.6.6 with Dominium 762/762 bytes "100%"
+/// but the zip never on disk).
+///
+/// To make the match work on Windows — where `WalkDir` yields backslash-
+/// separated paths — we normalize each on-disk entry's string form to forward
+/// slashes before comparing.
+fn cleanup_placeholder_files(root: &Path, keep_paths: &[String]) -> std::io::Result<()> {
     let mut removed = 0;
     let mut kept = 0;
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
@@ -75,17 +82,17 @@ fn cleanup_placeholder_files(root: &Path, selected_paths: &[String]) -> std::io:
         if path.extension().map(|e| e != "zip").unwrap_or(true) {
             continue;
         }
-        // Forward-slash form of the absolute path on disk. `selected_paths`
+        // Forward-slash form of the absolute path on disk. `keep_paths`
         // entries are torrent-relative ("eXoDOS/Content/.../Foo.zip"), so a
         // suffix match is enough — and it is slash-direction-agnostic now.
         let path_fwd = path.to_string_lossy().replace('\\', "/");
-        let is_selected = selected_paths.iter().any(|sp| path_fwd.ends_with(sp));
-        if is_selected {
+        let in_torrent = keep_paths.iter().any(|sp| path_fwd.ends_with(sp));
+        if in_torrent {
             kept += 1;
-            log::debug!("Cleanup: keeping in-flight placeholder {}", path.display());
+            log::debug!("Cleanup: keeping librqbit-tracked placeholder {}", path.display());
             continue;
         }
-        log::info!("Cleanup: deleting 0-byte placeholder {}", path.display());
+        log::info!("Cleanup: deleting orphan 0-byte placeholder {}", path.display());
         let _ = std::fs::remove_file(path);
         removed += 1;
     }
@@ -97,8 +104,8 @@ fn cleanup_placeholder_files(root: &Path, selected_paths: &[String]) -> std::io:
         }
     }
     log::info!(
-        "Cleanup: deleted {} placeholder file(s), kept {} in-flight (selection size {})",
-        removed, kept, selected_paths.len()
+        "Cleanup: deleted {} orphan placeholder(s), kept {} torrent-tracked (torrent size {})",
+        removed, kept, keep_paths.len()
     );
     Ok(())
 }
@@ -393,21 +400,27 @@ impl DownloadManager {
                 log::debug!("[stats] periodic logger finished after 60 s");
             });
 
-            // librqbit creates 0-byte placeholder files for all torrent entries on first add.
-            // Clean them up after a short delay so librqbit has time to write real content.
-            // 10 s is conservative but safe: the alternative (2 s) raced against assembly.
+            // Cleanup: removes 0-byte zip files that are NOT in the torrent's
+            // file list (true orphans from a previous run / unrelated files).
+            //
+            // Critical: pass the FULL torrent file list, not just the user's
+            // current selection. librqbit's `init()` opens (creates) every
+            // file declared by the torrent, so all 14k+ slots exist as 0-byte
+            // sparse files immediately after add. With fastresume enabled
+            // (v0.6.4+), pieces shared between files get marked "have" once
+            // any selected file's pieces arrive — and librqbit then refuses
+            // to re-download those pieces, even if some target files were
+            // deleted. Deleting a tracked placeholder therefore makes
+            // librqbit's in-memory state lie about disk state, leaving the
+            // user stuck in a "100% but zip missing" loop on subsequent
+            // downloads (observed v0.6.4-v0.6.6).
             let root = self.torrent_root();
-            // Forward-slashed relative paths of files we are actively downloading.
-            // Any 0-byte zip on disk that ends with one of these is in-flight and
-            // must NOT be deleted. See cleanup_placeholder_files for why string
-            // matching beats PathBuf equality on Windows.
-            let selected_paths: Vec<String> = self.selected_files.read().await.iter()
-                .filter_map(|&idx| self.torrent_index.files.get(idx))
+            let all_torrent_paths: Vec<String> = self.torrent_index.files.iter()
                 .map(|f| f.path.clone())
                 .collect();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                if let Err(e) = cleanup_placeholder_files(&root, &selected_paths) {
+                if let Err(e) = cleanup_placeholder_files(&root, &all_torrent_paths) {
                     log::warn!("Failed to clean up placeholder files: {}", e);
                 }
             });
