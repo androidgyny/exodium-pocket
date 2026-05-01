@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions,
+    SessionPersistenceConfig,
 };
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -152,17 +153,42 @@ pub struct DownloadManager {
     data_dir: PathBuf,
 }
 
+/// Default location for librqbit's fastresume persistence (`<info_hash>.bitv`,
+/// `<info_hash>.torrent`, `session.json`). Co-located with the session dir so
+/// it shares the same lifecycle (cleared by factory_reset).
+pub fn fastresume_dir(session_dir: &Path) -> PathBuf {
+    session_dir.join("librqbit-fastresume")
+}
+
 impl DownloadManager {
     /// Create a shared librqbit session. Call once, then pass to `new_with_session`.
     /// `session_dir` is where librqbit stores its internal state (.librqbit/).
     /// This should be the app config directory, NOT the game data directory.
-    pub async fn create_session(session_dir: &Path) -> anyhow::Result<Arc<Session>> {
+    ///
+    /// `persistence_dir` is where fastresume bitfields, per-torrent .torrent
+    /// copies and session.json live. Pre-seeding `<info_hash>.bitv` files in
+    /// here before this call lets librqbit skip its initial checksum pass on
+    /// fresh installs — see `setup::seed_fastresume_bitvs`.
+    pub async fn create_session(
+        session_dir: &Path,
+        persistence_dir: &Path,
+    ) -> anyhow::Result<Arc<Session>> {
         std::fs::create_dir_all(session_dir)?;
+        std::fs::create_dir_all(persistence_dir)?;
         let session = Session::new_with_opts(
             session_dir.to_path_buf(),
             SessionOptions {
                 disable_dht: false,
                 disable_dht_persistence: true,
+                // fastresume + JSON persistence: librqbit caches the per-torrent
+                // have-pieces bitfield to `<persistence_dir>/<info_hash>.bitv`.
+                // On subsequent adds (or after we plant an empty bitfield for a
+                // fresh install) librqbit skips the initial_check pass entirely
+                // — turning a 5-10 minute Windows wait into seconds.
+                fastresume: true,
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(persistence_dir.to_path_buf()),
+                }),
                 ..Default::default()
             },
         )
@@ -198,7 +224,7 @@ impl DownloadManager {
 
     /// Convenience: create session + manager in one call (for single-torrent use).
     pub async fn new(torrent_path: &Path, data_dir: &Path) -> anyhow::Result<Self> {
-        let session = Self::create_session(data_dir).await?;
+        let session = Self::create_session(data_dir, &fastresume_dir(data_dir)).await?;
         Self::new_with_session(session, torrent_path, data_dir)
     }
 

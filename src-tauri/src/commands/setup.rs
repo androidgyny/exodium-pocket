@@ -32,7 +32,7 @@ pub fn init_log_dir(dir: PathBuf) {
 use crate::db;
 use crate::db::queries;
 use crate::import;
-use crate::torrent::manager::{DownloadManager, DownloadProgress};
+use crate::torrent::manager::{fastresume_dir, DownloadManager, DownloadProgress};
 use crate::torrent::TorrentIndex;
 
 use super::DbState;
@@ -135,6 +135,98 @@ pub struct TorrentInfo {
     pub metadata_size: u64,
 }
 
+/// Decide if a torrent_root looks like a fresh install — i.e. either missing
+/// or contains nothing that librqbit needs to validate against. We use this
+/// to gate the empty-bitfield pre-seed: if the user pointed Exodium at a
+/// directory full of existing game data, we must let librqbit do its real
+/// validation pass rather than tell it "everything is missing" (which would
+/// trigger a re-download of complete files).
+///
+/// "Empty enough" means: the directory does not exist, OR it contains only
+/// our own marker files (e.g. `.eXoDOS_configs_extracted` from a previous
+/// init, or empty `Content/`/`eXo/` skeletons). To stay conservative we
+/// require the directory either be missing or be completely empty — anything
+/// else and we fall back to real validation.
+fn torrent_root_looks_empty(torrent_root: &Path) -> bool {
+    match std::fs::read_dir(torrent_root) {
+        Err(_) => true, // doesn't exist or unreadable → safe to seed
+        Ok(mut iter) => iter.next().is_none(),
+    }
+}
+
+/// Pre-seed `<persistence_dir>/<info_hash>.bitv` files with `ceil(piece_count/8)`
+/// zero bytes for each enabled collection where (a) the .bitv doesn't already
+/// exist and (b) the data directory looks fresh.
+///
+/// librqbit's `JsonSessionPersistenceStore::BitVFactory::load(info_hash)` reads
+/// this file directly by info_hash — it does not require an entry in
+/// `session.json`. With a present, all-zero bitfield, `validate_fastresume`
+/// accepts "I have 0 pieces" without iterating any pieces, and the slow
+/// `initial_check` pass is skipped entirely. Net effect: first download on a
+/// fresh install starts in seconds instead of 5–10 minutes on Windows.
+fn seed_fastresume_bitvs(
+    persistence_dir: &Path,
+    collections: &[&str],
+    data_path: &Path,
+) {
+    if let Err(e) = std::fs::create_dir_all(persistence_dir) {
+        log::warn!("fastresume: could not create {}: {}", persistence_dir.display(), e);
+        return;
+    }
+    for col in COLLECTION_MAP {
+        if !collections.contains(&col.id) {
+            continue;
+        }
+        let torrent_path = match bundled_torrent_path(col.torrent_file) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        // Parse torrent for info_hash + piece_count. We use lava_torrent
+        // directly here rather than TorrentIndex because TorrentIndex doesn't
+        // expose piece_count.
+        let torrent = match lava_torrent::torrent::v1::Torrent::read_from_file(&torrent_path) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("fastresume: failed to parse {}: {}", col.torrent_file, e);
+                continue;
+            }
+        };
+        let info_hash = torrent.info_hash();
+        let bitv_path = persistence_dir.join(format!("{}.bitv", info_hash));
+
+        if bitv_path.exists() {
+            log::debug!("fastresume: existing bitv for {} ({})", col.id, info_hash);
+            continue;
+        }
+
+        // Overlay model: all collections share the same eXoDOS folder. Only
+        // seed if it looks empty — otherwise librqbit must verify what's
+        // actually on disk.
+        let torrent_root = data_path.join(col.inner_folder);
+        if !torrent_root_looks_empty(&torrent_root) {
+            log::info!(
+                "fastresume: skipping seed for {} — torrent_root {} non-empty, real validation needed",
+                col.id,
+                torrent_root.display()
+            );
+            continue;
+        }
+
+        let piece_count = torrent.pieces.len();
+        let byte_count = (piece_count + 7) / 8;
+        match std::fs::write(&bitv_path, vec![0u8; byte_count]) {
+            Ok(_) => log::info!(
+                "fastresume: seeded empty bitv for {} ({} pieces, {} bytes)",
+                col.id, piece_count, byte_count
+            ),
+            Err(e) => log::warn!(
+                "fastresume: failed to write {}: {}",
+                bitv_path.display(), e
+            ),
+        }
+    }
+}
+
 /// Initialize download managers for all available torrents.
 /// Returns true if initialized, false if no config found.
 #[tauri::command]
@@ -172,7 +264,14 @@ pub async fn init_download_manager(
     // All collections share one librqbit session and the same data directory.
     // Session state (.librqbit/) is stored in the app config dir, not the game data dir.
     let config_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let session = DownloadManager::create_session(&config_dir)
+    let persistence_dir = fastresume_dir(&config_dir);
+
+    // Plant empty bitfields for fresh-install torrents BEFORE creating the
+    // session so librqbit's `BitVFactory::load(info_hash)` finds them and
+    // skips the initial_check pass. Existing data triggers real validation.
+    seed_fastresume_bitvs(&persistence_dir, &collections, &data_path);
+
+    let session = DownloadManager::create_session(&config_dir, &persistence_dir)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -247,6 +346,7 @@ pub async fn init_download_manager(
 /// Reset all data: clear DB, remove config. Returns to setup state.
 #[tauri::command]
 pub async fn factory_reset(
+    app: AppHandle,
     db_state: State<'_, DbState>,
     torrent_state: State<'_, TorrentState>,
     delete_game_data: bool,
@@ -311,6 +411,20 @@ pub async fn factory_reset(
             let downloads_path = base.join(".content-downloads");
             if downloads_path.exists() {
                 let _ = std::fs::remove_dir_all(&downloads_path);
+            }
+        }
+    }
+
+    // Clear librqbit's fastresume cache so the next session re-seeds empty
+    // bitfields (or runs real validation if the user pointed at existing data).
+    // Stale .bitv files would otherwise mislead librqbit about disk state and
+    // either skip validation when it shouldn't, or trigger re-downloads.
+    if let Ok(config_dir) = app.path().app_data_dir() {
+        let persistence = fastresume_dir(&config_dir);
+        if persistence.exists() {
+            log::info!("Clearing fastresume cache: {}", persistence.display());
+            if let Err(e) = std::fs::remove_dir_all(&persistence) {
+                log::warn!("Failed to clear fastresume cache: {}", e);
             }
         }
     }
@@ -1239,8 +1353,16 @@ pub async fn setup_from_local(
     // Build managers WITHOUT holding the write lock — create_session is async and can be slow.
     let config_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let data_path = PathBuf::from(&data_dir);
+    let persistence_dir = fastresume_dir(&config_dir);
 
-    let session = DownloadManager::create_session(&config_dir)
+    // Same fastresume seed as init_download_manager — see notes there. This
+    // path is hit by `setup_from_local`, where the data_dir often already
+    // contains pre-extracted games, so the seed is a no-op except for
+    // truly empty cases. That's the correct behavior.
+    let collection_ids: Vec<&str> = COLLECTION_MAP.iter().map(|c| c.id).collect();
+    seed_fastresume_bitvs(&persistence_dir, &collection_ids, &data_path);
+
+    let session = DownloadManager::create_session(&config_dir, &persistence_dir)
         .await
         .map_err(|e| format!("Failed to init session: {}", e))?;
 
