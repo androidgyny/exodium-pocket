@@ -156,7 +156,7 @@ pub struct DownloadManager {
 /// Default location for librqbit's fastresume persistence (`<info_hash>.bitv`,
 /// `<info_hash>.torrent`, `session.json`). Co-located with the session dir so
 /// it shares the same lifecycle (cleared by factory_reset).
-pub fn fastresume_dir(session_dir: &Path) -> PathBuf {
+pub(crate) fn fastresume_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("librqbit-fastresume")
 }
 

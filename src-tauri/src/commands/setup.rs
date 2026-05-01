@@ -142,16 +142,24 @@ pub struct TorrentInfo {
 /// validation pass rather than tell it "everything is missing" (which would
 /// trigger a re-download of complete files).
 ///
-/// "Empty enough" means: the directory does not exist, OR it contains only
-/// our own marker files (e.g. `.eXoDOS_configs_extracted` from a previous
-/// init, or empty `Content/`/`eXo/` skeletons). To stay conservative we
-/// require the directory either be missing or be completely empty — anything
-/// else and we fall back to real validation.
+/// Dotfiles (e.g. `.eXoDOS_configs_extracted` markers we drop into the
+/// torrent_root after extracting bundled DOSBox configs) are NOT torrent
+/// content and must be ignored — otherwise the second app launch would see
+/// our own markers and refuse to seed, defeating the optimisation for users
+/// who haven't actually downloaded any games yet.
 fn torrent_root_looks_empty(torrent_root: &Path) -> bool {
-    match std::fs::read_dir(torrent_root) {
-        Err(_) => true, // doesn't exist or unreadable → safe to seed
-        Ok(mut iter) => iter.next().is_none(),
+    let iter = match std::fs::read_dir(torrent_root) {
+        Err(_) => return true, // doesn't exist or unreadable → safe to seed
+        Ok(it) => it,
+    };
+    for entry in iter.flatten() {
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        if !s.starts_with('.') {
+            return false;
+        }
     }
+    true
 }
 
 /// Pre-seed `<persistence_dir>/<info_hash>.bitv` files with `ceil(piece_count/8)`
@@ -419,14 +427,19 @@ pub async fn factory_reset(
     // bitfields (or runs real validation if the user pointed at existing data).
     // Stale .bitv files would otherwise mislead librqbit about disk state and
     // either skip validation when it shouldn't, or trigger re-downloads.
-    if let Ok(config_dir) = app.path().app_data_dir() {
-        let persistence = fastresume_dir(&config_dir);
-        if persistence.exists() {
-            log::info!("Clearing fastresume cache: {}", persistence.display());
-            if let Err(e) = std::fs::remove_dir_all(&persistence) {
-                log::warn!("Failed to clear fastresume cache: {}", e);
+    match app.path().app_data_dir() {
+        Ok(config_dir) => {
+            let persistence = fastresume_dir(&config_dir);
+            if persistence.exists() {
+                log::info!("Clearing fastresume cache: {}", persistence.display());
+                if let Err(e) = std::fs::remove_dir_all(&persistence) {
+                    log::warn!("Failed to clear fastresume cache: {}", e);
+                }
             }
         }
+        Err(e) => log::warn!(
+            "factory_reset: could not resolve app_data_dir to clear fastresume cache: {}", e
+        ),
     }
 
     log::info!("Factory reset completed (delete_game_data={})", delete_game_data);

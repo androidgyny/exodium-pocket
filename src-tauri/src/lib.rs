@@ -71,7 +71,10 @@ struct SharedFileMakeWriter(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
 impl std::io::Write for SharedFileMakeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self.0.lock() {
-            Ok(mut f) => f.write(buf),
+            // `write_all` rather than `write`: short writes on a regular file
+            // are vanishingly rare but possible, and a partial log line that
+            // tracing-subscriber doesn't retry would corrupt the log file.
+            Ok(mut f) => f.write_all(buf).map(|_| buf.len()),
             // If the mutex is poisoned, drop the bytes rather than panic in
             // the logger. We still return Ok so the subscriber doesn't loop.
             Err(_) => Ok(buf.len()),
