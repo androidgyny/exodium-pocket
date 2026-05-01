@@ -150,6 +150,13 @@ export interface DownloadProgress {
   finished: boolean;
   installed: boolean;
   error: string | null;
+  /** "initializing" while librqbit hashes existing on-disk files; on Windows
+   *  with thousands of placeholders this can take 5–10 minutes for a 250GB+
+   *  torrent before any pieces transfer. */
+  torrent_state?: string | null;
+  /** 0..1 of whole-torrent progress. During init = validation pass; once live
+   *  = cumulative download. Used for the "Validating…" UI status. */
+  torrent_progress?: number | null;
 }
 
 export interface SetupStatus {

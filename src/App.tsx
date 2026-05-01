@@ -148,12 +148,14 @@ function App() {
   };
 
   const loadLogDir = async () => {
+    setLogOpenError("");
     try {
       const dir = await getLogDir();
       setLogDir(dir);
     } catch (e) {
       console.warn("[settings] failed to resolve log dir:", e);
       setLogDir("");
+      setLogOpenError(`Could not resolve log folder: ${e}`);
     }
   };
 

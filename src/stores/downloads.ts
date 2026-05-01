@@ -121,6 +121,24 @@ export function startGameDownload(gameId: number, title?: string) {
           ...prev,
           [gameId]: { status, progress: safeProgress, downloading: true, title: titles[gameId] },
         }));
+      } else if (p.torrent_state === "initializing") {
+        // librqbit is hash-checking the entire torrent's existing on-disk
+        // content before any peer pieces are requested. On Windows with
+        // thousands of placeholder files this can take 5–10 minutes the
+        // first time. Per-file progress stays at 0 the whole time, so we
+        // surface the torrent-level validation progress to the user.
+        delete stuckSince[gameId];
+        const tp = typeof p.torrent_progress === "number" ? p.torrent_progress : 0;
+        const pct = (tp * 100).toFixed(0);
+        setDownloads((prev) => ({
+          ...prev,
+          [gameId]: {
+            status: `Validating torrent ${pct}% (first run can take several minutes)`,
+            progress: tp,
+            downloading: true,
+            title: titles[gameId],
+          },
+        }));
       } else {
         delete stuckSince[gameId];
         setDownloads((prev) => ({

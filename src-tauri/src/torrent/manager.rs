@@ -116,6 +116,19 @@ pub struct DownloadProgress {
     /// Optional error/status message from the command layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Torrent lifecycle state from librqbit. During the `initializing` phase
+    /// librqbit hashes the entire torrent's existing on-disk content before
+    /// any peer pieces are requested — on Windows with thousands of placeholder
+    /// files this can take several minutes, and per-file `progress` will stay
+    /// at 0 the whole time. The frontend uses this to show a meaningful
+    /// "Validating…" status instead of a frozen 0%.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_state: Option<String>,
+    /// Whole-torrent validation/download progress (0.0..1.0). During init this
+    /// reflects librqbit's hash-check progress; once live, it tracks downloaded
+    /// bytes across all selected files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_progress: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,6 +408,15 @@ impl DownloadManager {
 
         let file_name = self.torrent_index.files.get(file_index)?.path.clone();
 
+        // Whole-torrent progress mirrors librqbit's view: during `initializing`
+        // it is the validation-pass progress; once live, the cumulative download.
+        let torrent_progress = if stats.total_bytes > 0 {
+            Some((stats.progress_bytes as f64 / stats.total_bytes as f64).min(1.0))
+        } else {
+            None
+        };
+        let torrent_state = Some(stats.state.to_string());
+
         Some(DownloadProgress {
             file_index,
             file_name,
@@ -404,6 +426,8 @@ impl DownloadManager {
             finished,
             installed: false,
             error: None,
+            torrent_state,
+            torrent_progress,
         })
     }
 
@@ -435,6 +459,12 @@ impl DownloadManager {
                         finished,
                         installed: false,
                         error: None,
+                        torrent_state: Some(stats.state.to_string()),
+                        torrent_progress: if stats.total_bytes > 0 {
+                            Some((stats.progress_bytes as f64 / stats.total_bytes as f64).min(1.0))
+                        } else {
+                            None
+                        },
                     });
                 }
             }

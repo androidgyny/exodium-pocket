@@ -13,9 +13,20 @@ use crate::db::normalize_alnum;
 /// have to be plumbed everywhere.
 pub(crate) static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+/// Cached log directory. Set once during app setup from `app_log_dir()`.
+/// Cache rather than re-resolving in the command because we observed
+/// `app.path().app_log_dir()` returning errors when called from a command
+/// invocation in shipped Windows builds (where setup-time resolution worked).
+pub(crate) static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
+
 /// Called once from lib.rs' setup closure with the app's resource directory.
 pub fn init_resource_dir(dir: PathBuf) {
     let _ = RESOURCE_DIR.set(dir);
+}
+
+/// Called once from lib.rs' setup closure with the resolved app log directory.
+pub fn init_log_dir(dir: PathBuf) {
+    let _ = LOG_DIR.set(dir);
 }
 
 use crate::db;
@@ -85,18 +96,22 @@ pub fn get_available_collections() -> Vec<CollectionInfo> {
         .collect()
 }
 
-/// Return the directory where Exodium writes its log file. Used by the UI
-/// "Open log folder" button so users on Windows (where there is no terminal
-/// stderr in a packaged build) can find the diagnostic log without knowing
-/// the platform-specific path conventions.
-///
-/// Mirrors the path used in `lib.rs::run` when initializing the logger:
-///   Windows:  %APPDATA%\com.redfox.exodium\logs
-///   macOS:    ~/Library/Logs/com.redfox.exodium
-///   Linux:    ~/.local/share/com.redfox.exodium/logs
+/// Return the directory where Exodium writes its log file. Served from the
+/// `LOG_DIR` cache populated in `lib.rs::run` to avoid re-resolving via
+/// `app.path().app_log_dir()` at command time — that round-trip was observed
+/// failing silently on shipped Windows builds while the setup-time call
+/// succeeded.
 #[tauri::command]
 pub fn get_log_dir(app: AppHandle) -> Result<String, String> {
-    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    if let Some(dir) = LOG_DIR.get() {
+        return Ok(dir.to_string_lossy().into_owned());
+    }
+    // Fallback: try the live resolver. If the cache isn't populated (init
+    // bug or test harness), this still works in dev mode.
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("app_log_dir failed: {e}"))?;
     Ok(dir.to_string_lossy().into_owned())
 }
 

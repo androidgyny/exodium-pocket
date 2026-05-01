@@ -22,7 +22,7 @@ use commands::{
     get_game_variants, get_games, get_genres, get_installed_games, get_recently_played,
     get_section_keys, set_game_settings,
     get_setup_status, get_thumbnail_dir, get_torrent_info, init_download_manager,
-    init_resource_dir, install_content_pack, launch_game, list_content_packs,
+    init_log_dir, init_resource_dir, install_content_pack, launch_game, list_content_packs,
     scan_installed_games, set_config, setup_from_local, setup_import, setup_start,
     toggle_favorite, uninstall_content_pack, uninstall_game, validate_exodos_dir,
     ContentPackState, DbState, TorrentState,
@@ -185,6 +185,12 @@ pub fn run() {
             //   macOS:    ~/Library/Logs/com.redfox.exodium
             //   Linux:    ~/.local/share/com.redfox.exodium/logs
             let log_dir = app.path().app_log_dir().ok();
+            // Cache the log directory so the `get_log_dir` Tauri command can
+            // serve it without going through `app.path()` again — the
+            // round-trip was observed failing in shipped Windows builds.
+            if let Some(ref dir) = log_dir {
+                init_log_dir(dir.clone());
+            }
             let log_path = log_dir.as_deref().and_then(init_logger);
             if let Some(ref p) = log_path {
                 log::info!("Log file: {}", p.display());
