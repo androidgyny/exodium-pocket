@@ -253,6 +253,10 @@ export async function getLogDir(): Promise<string> {
   return invoke("get_log_dir");
 }
 
+export async function openLogFolder(): Promise<void> {
+  return invoke("open_log_folder");
+}
+
 // ── Content Packs ────────────────────────────────────────────────────────────
 
 export interface ContentPackStatus {

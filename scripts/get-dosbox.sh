@@ -59,7 +59,25 @@ OUT_BIN="$BINARIES_DIR/dosbox-staging-$TRIPLE"
 # can require both binary AND staged shaders before bailing out.
 STAGED_SHADERS="$REPO_ROOT/src-tauri/resources/dosbox-glshaders"
 
-if [[ -f "$OUT_BIN" && -d "$STAGED_SHADERS" && "$FORCE" -eq 0 ]]; then
+# Same trick for the dosbox-bin folder. On Windows we populate it below
+# with the entire DOSBox Staging folder (dosbox-staging.exe + 9 DLLs +
+# codepage resources). On macOS/Linux we leave a placeholder so Tauri's
+# resource path validation passes and nothing extra ends up in the bundle.
+STAGED_DBS_BIN="$REPO_ROOT/src-tauri/resources/dosbox-bin"
+if [[ ! -d "$STAGED_DBS_BIN" ]]; then
+  mkdir -p "$STAGED_DBS_BIN"
+  touch "$STAGED_DBS_BIN/.placeholder"
+fi
+
+# Skip-check also requires the dosbox-bin folder on Windows, otherwise an
+# upgrade from a pre-0.6.6 checkout would leave the DLL bundle un-staged
+# even though `dosbox-staging-x86_64-pc-windows-msvc.exe` is already present.
+NEEDS_DBS_BIN_STAGE=0
+if [[ "$OS" == MINGW* || "$OS" == MSYS* || "$OS" == CYGWIN* ]]; then
+  [[ ! -f "$STAGED_DBS_BIN/dosbox-staging.exe" ]] && NEEDS_DBS_BIN_STAGE=1
+fi
+
+if [[ -f "$OUT_BIN" && -d "$STAGED_SHADERS" && "$NEEDS_DBS_BIN_STAGE" -eq 0 && "$FORCE" -eq 0 ]]; then
   echo "dosbox-staging-$TRIPLE already present, skipping download."
 else
   [[ -f "$OUT_BIN" ]] && echo "dosbox-staging-$TRIPLE already present, re-downloading (--force)."
@@ -176,6 +194,29 @@ elif [[ "$ARCHIVE" == *.zip ]]; then
     rm -rf "$CONFIG_DIR/glshaders"
     cp -r "$SHADER_SRC" "$CONFIG_DIR/glshaders"
     echo "Installed dev shaders to $CONFIG_DIR/glshaders"
+  fi
+  # Stage the full DOSBox folder so we can ship its DLLs + resources/ next
+  # to the .exe in our bundle. Without SDL2.dll, vcruntime140.dll, the
+  # codepage tables under resources/mapping/, etc., dosbox-staging.exe
+  # fails to launch with "missing dependency" errors on Windows.
+  DBS_FOLDER="$(find "$TMP_DIR/extracted" -maxdepth 2 -type d -name 'dosbox-staging-v*' | head -1)"
+  if [[ -n "$DBS_FOLDER" && -d "$DBS_FOLDER" ]]; then
+    STAGED_DBS="$REPO_ROOT/src-tauri/resources/dosbox-bin"
+    rm -rf "$STAGED_DBS"
+    mkdir -p "$STAGED_DBS"
+    cp -r "$DBS_FOLDER"/. "$STAGED_DBS/"
+    # Normalize the binary name: at runtime resolve_dosbox looks for
+    # `dosbox-staging.exe` (matches the externalBin convention), but the
+    # upstream zip names it `dosbox.exe`. Rename so the bundled folder
+    # matches the lookup.
+    if [[ -f "$STAGED_DBS/dosbox.exe" && ! -f "$STAGED_DBS/dosbox-staging.exe" ]]; then
+      mv "$STAGED_DBS/dosbox.exe" "$STAGED_DBS/dosbox-staging.exe"
+    fi
+    # Drop the debugger build — confuses launch logic and bloats bundle.
+    rm -f "$STAGED_DBS"/dosbox*debugger*.exe
+    echo "Staged DOSBox folder for bundling: $STAGED_DBS"
+  else
+    echo "Warning: could not locate dosbox-staging-v* folder in upstream zip"
   fi
 fi
 

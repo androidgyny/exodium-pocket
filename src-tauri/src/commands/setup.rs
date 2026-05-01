@@ -115,6 +115,35 @@ pub fn get_log_dir(app: AppHandle) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// Open the log folder in the user's file explorer. Bypasses the frontend's
+/// `getLogDir() + openPath()` two-step which was observed leaving the UI
+/// "Resolving…" forever in shipped Windows builds — by doing both lookup
+/// and open server-side, the UI just calls one command and either succeeds
+/// or sees the error.
+#[tauri::command]
+pub fn open_log_folder(app: AppHandle) -> Result<(), String> {
+    let dir = match LOG_DIR.get() {
+        Some(d) => d.clone(),
+        None => app
+            .path()
+            .app_log_dir()
+            .map_err(|e| format!("app_log_dir failed: {e}"))?,
+    };
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create log folder: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer").arg(&dir).spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&dir).spawn();
+    #[cfg(target_os = "linux")]
+    let result = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    result
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open log folder {}: {e}", dir.display()))
+}
+
 /// Managed state for the download system — supports multiple torrents.
 pub struct TorrentState(pub RwLock<std::collections::HashMap<String, Arc<DownloadManager>>>);
 

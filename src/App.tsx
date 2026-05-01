@@ -1,7 +1,6 @@
 import { createSignal, onMount, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { Tooltip } from "@ark-ui/solid/tooltip";
 import { Library } from "./pages/Library";
@@ -17,7 +16,7 @@ import {
   getConfig,
   setConfig,
   scanInstalledGames,
-  getLogDir,
+  openLogFolder,
 } from "./api/tauri";
 import { fetchGames } from "./stores/games";
 import { loadThumbnailDir } from "./stores/thumbnails";
@@ -33,8 +32,8 @@ function App() {
   const [showWelcomeModal, setShowWelcomeModal] = createSignal(false);
   const [dataDir, setDataDir] = createSignal("");
   const [resetError, setResetError] = createSignal("");
-  const [logDir, setLogDir] = createSignal("");
   const [logOpenError, setLogOpenError] = createSignal("");
+  const [resetting, setResetting] = createSignal(false);
 
   // Derived: the actual game storage folder shown to the user.
   const gameFolderPath = () => {
@@ -147,29 +146,12 @@ function App() {
     }
   };
 
-  const loadLogDir = async () => {
-    setLogOpenError("");
-    try {
-      const dir = await getLogDir();
-      setLogDir(dir);
-    } catch (e) {
-      console.warn("[settings] failed to resolve log dir:", e);
-      setLogDir("");
-      setLogOpenError(`Could not resolve log folder: ${e}`);
-    }
-  };
-
   const handleOpenLogFolder = async () => {
     setLogOpenError("");
-    const dir = logDir();
-    if (!dir) {
-      setLogOpenError("Log folder is not available yet — try reopening Settings.");
-      return;
-    }
     try {
-      await openPath(dir);
+      await openLogFolder();
     } catch (e) {
-      setLogOpenError(`Could not open folder: ${e}`);
+      setLogOpenError(`Could not open log folder: ${e}`);
     }
   };
 
@@ -178,17 +160,25 @@ function App() {
     setShowResetDialog(false);
     setDeleteGameData(false);
     setResetError("");
+    // Block the UI immediately so the user doesn't see a stale Library frame
+    // while the reset (which may take seconds — DB clear + recursive deletes
+    // for game folders + content packs) runs to completion. Closing the
+    // settings dialog FIRST then setting `resetting()` puts the overlay over
+    // whatever was behind the dialog (Library or Setup).
+    setShowSettings(false);
+    setResetting(true);
     console.log("[reset] calling factoryReset, deleteGameData=", doDelete);
     try {
       await factoryReset(doDelete);
       console.log("[reset] factoryReset succeeded, switching to setup");
       setPhase("setup");
-      setShowSettings(false);
       setDataDir("");
     } catch (e) {
       console.error("[reset] factoryReset failed:", e);
       setResetError(`Reset failed: ${e}`);
       setShowSettings(true);
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -223,7 +213,7 @@ function App() {
         <Show when={showSettings()}>
         <Dialog.Root open={showSettings()} onOpenChange={(e) => {
           setShowSettings(e.open);
-          if (e.open) { loadGameDefaults(); loadLogDir(); setSettingsTab("general"); }
+          if (e.open) { loadGameDefaults(); setLogOpenError(""); setSettingsTab("general"); }
         }}>
           <Portal>
             <Dialog.Backdrop class="ark-dialog-backdrop" />
@@ -292,11 +282,11 @@ function App() {
 
                       <section class="settings-section">
                         <h3 class="settings-section-title">Diagnostics</h3>
-                        <p class="settings-section-hint">If a download stalls or the app misbehaves, share <code>exodium.log</code> from the folder below.</p>
+                        <p class="settings-section-hint">If a download stalls or the app misbehaves, share <code>exodium.log</code> from the folder.</p>
                         <div class="setting-row">
                           <span class="setting-label">Log folder</span>
-                          <span class="setting-value">{logDir() || "Resolving…"}</span>
-                          <button class="btn-small" onClick={handleOpenLogFolder} disabled={!logDir()}>Open</button>
+                          <span class="setting-hint">Open in your file explorer</span>
+                          <button class="btn-small" onClick={handleOpenLogFolder}>Open</button>
                         </div>
                         <Show when={logOpenError()}>
                           <div class="error" style="margin-top:6px">{logOpenError()}</div>
@@ -370,6 +360,16 @@ function App() {
           open={showWelcomeModal()}
           onClose={() => setShowWelcomeModal(false)}
         />
+      </Show>
+
+      <Show when={resetting()}>
+        <div class="reset-overlay">
+          <div class="reset-overlay-card">
+            <div class="reset-overlay-spinner" />
+            <div class="reset-overlay-title">Resetting Exodium…</div>
+            <div class="reset-overlay-hint">Clearing library, downloads and settings. This may take a few seconds.</div>
+          </div>
+        </div>
       </Show>
     </>
   );

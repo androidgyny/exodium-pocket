@@ -946,7 +946,21 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
     use tauri::Manager;
     let bin = if cfg!(windows) { "dosbox-staging.exe" } else { "dosbox-staging" };
 
-    // 1. Next to the main executable (macOS Contents/MacOS/, Windows install dir).
+    // 1. resource_dir/dosbox-bin/ — the canonical location since v0.6.6 on
+    //    Windows, where the .exe MUST live alongside its bundled DLLs
+    //    (SDL2.dll, vcruntime140.dll, …) plus DOSBox's `resources/` codepage
+    //    folder for Windows DLL search to find them. On macOS/Linux this
+    //    directory only contains a `.placeholder`, so the lookup falls
+    //    through to the externalBin location below.
+    if let Ok(res_dir) = app.path().resource_dir() {
+        let dbs_in_res = res_dir.join("dosbox-bin").join(bin);
+        if dbs_in_res.exists() {
+            log::info!("Using bundled DOSBox (resource bin dir): {}", dbs_in_res.display());
+            return dbs_in_res;
+        }
+    }
+
+    // 2. Next to the main executable (macOS Contents/MacOS/, Linux install dir).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(bin);
@@ -957,7 +971,7 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
         }
     }
 
-    // 2. Inside resource_dir (Linux packaging, some Windows installers).
+    // 3. Inside resource_dir directly (legacy packaging layouts).
     if let Ok(res_dir) = app.path().resource_dir() {
         let prod = res_dir.join(bin);
         if prod.exists() {
@@ -965,7 +979,7 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
             return prod;
         }
 
-        // 3. Dev mode (pnpm tauri dev): resource_dir is src-tauri/; binary is in binaries/
+        // 4. Dev mode (pnpm tauri dev): resource_dir is src-tauri/; binary is in binaries/
         //    named with the Rust target triple, e.g. dosbox-staging-aarch64-apple-darwin.
         let binaries_dir = res_dir.join("binaries");
         if let Ok(entries) = std::fs::read_dir(&binaries_dir) {

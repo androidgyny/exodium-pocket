@@ -2716,3 +2716,51 @@ body {
   font-size: 13px;
   background: var(--bg-primary);
 }
+
+/* Full-screen blocking overlay shown while factory_reset runs. Sits above
+   every other dialog/page so the user can't interact with stale Library or
+   Settings state while we tear down the DB and game folders. */
+.reset-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 10, 15, 0.85);
+  backdrop-filter: blur(4px);
+}
+
+.reset-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 32px 48px;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent);
+  border-radius: var(--border-radius-lg);
+  box-shadow: 0 0 40px var(--accent-glow);
+}
+
+.reset-overlay-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(124, 92, 252, 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: circular-spin 0.9s linear infinite;
+}
+
+.reset-overlay-title {
+  font-size: 18px;
+  color: #fff;
+  font-weight: 500;
+}
+
+.reset-overlay-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 320px;
+}
