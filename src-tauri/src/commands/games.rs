@@ -1,8 +1,20 @@
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use tauri::AppHandle;
+
+/// Per-game (last_retry_at, attempts) for stuck-download recovery in
+/// `get_download_progress`. Module-scoped so the success branch can clear
+/// the entry once the ZIP appears, preventing a stale counter from
+/// surfacing a premature error if the same game gets stuck again.
+static RETRY_STATE: OnceLock<
+    Mutex<std::collections::HashMap<i64, (std::time::Instant, u32)>>,
+> = OnceLock::new();
+
+fn retry_state() -> &'static Mutex<std::collections::HashMap<i64, (std::time::Instant, u32)>> {
+    RETRY_STATE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -337,6 +349,11 @@ pub async fn get_download_progress(
             );
             if let Some(zip_path) = zip_out {
                 if zip_path.exists() {
+                    // ZIP materialised — clear any stuck-download retry counter so a
+                    // future stuck cycle on the same game id starts fresh from 0.
+                    if let Ok(mut map) = retry_state().lock() {
+                        map.remove(&id);
+                    }
                     let lock_path = zip_path.with_extension("extracting");
 
                     // Clean up stale lock files (e.g., from crashed/interrupted extraction)
@@ -400,12 +417,6 @@ pub async fn get_download_progress(
                     );
                     let retry_key = id;
                     let now = std::time::Instant::now();
-                    use std::sync::OnceLock;
-                    // (last_retry_at, attempts) per game id.
-                    static RETRY_STATE: OnceLock<
-                        std::sync::Mutex<std::collections::HashMap<i64, (std::time::Instant, u32)>>,
-                    > = OnceLock::new();
-                    let retry_state = RETRY_STATE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
                     // After this many failed retries (~5 min at 5 s intervals), give up
                     // and surface an error so the UI stops polling forever and the user
                     // can take action (cancel + re-download).
@@ -414,7 +425,7 @@ pub async fn get_download_progress(
                     // ticks every 5 s; in-between polls observe the same value with
                     // did_increment=false, so error/recovery decisions stay stable across
                     // every poll instead of flickering with the throttle window.
-                    let (attempts, ticked) = retry_state.lock()
+                    let (attempts, ticked) = retry_state().lock()
                         .map(|mut map| {
                             // Prune stale entries (>2 minutes idle) to bound memory.
                             map.retain(|_, (t, _)| now.duration_since(*t).as_secs() < 120);
@@ -992,8 +1003,13 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
     //    Windows finds the DLL-adjacent .exe instead of falling through to
     //    the bare externalBin in binaries/, which would fail with missing-DLL
     //    errors when DOSBox tries to start.
+    // Subdirs to search under resource_dir, in priority order. Bundled layout
+    // (production) flattens to `dosbox-bin/`; dev layout keeps the staged
+    // `resources/dosbox-bin/` source path. Update both if the bundle config
+    // moves the binary directory.
+    const DOSBOX_RES_DIRS: &[&str] = &["dosbox-bin", "resources/dosbox-bin"];
     if let Ok(res_dir) = app.path().resource_dir() {
-        for sub in ["dosbox-bin", "resources/dosbox-bin"] {
+        for sub in DOSBOX_RES_DIRS {
             let dbs_in_res = res_dir.join(sub).join(bin);
             if dbs_in_res.exists() {
                 log::info!("Using bundled DOSBox (resource bin dir): {}", dbs_in_res.display());

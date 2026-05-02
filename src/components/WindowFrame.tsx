@@ -22,7 +22,6 @@ export function WindowFrame() {
           class="window-frame-btn"
           onClick={() => win.minimize()}
           aria-label="Minimize"
-          tabIndex={-1}
         >
           <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1" /></svg>
         </button>
@@ -30,15 +29,15 @@ export function WindowFrame() {
           class="window-frame-btn"
           onClick={() => win.toggleMaximize()}
           aria-label={maximized() ? "Restore" : "Maximize"}
-          tabIndex={-1}
         >
           {maximized() ? (
             <svg width="10" height="10" viewBox="0 0 10 10">
-              <path d="M2 0h8v8h-2M0 2h8v8h-8z" fill="none" stroke="currentColor" stroke-width="1" />
+              <rect x="2" y="0" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" />
+              <rect x="0" y="2" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" />
             </svg>
           ) : (
             <svg width="10" height="10" viewBox="0 0 10 10">
-              <path d="M0 0h10v10h-10z" fill="none" stroke="currentColor" stroke-width="1" />
+              <rect x="0" y="0" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1" />
             </svg>
           )}
         </button>
@@ -46,7 +45,6 @@ export function WindowFrame() {
           class="window-frame-btn close"
           onClick={() => win.close()}
           aria-label="Close"
-          tabIndex={-1}
         >
           <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 0l10 10M10 0l-10 10" stroke="currentColor" stroke-width="1" /></svg>
         </button>

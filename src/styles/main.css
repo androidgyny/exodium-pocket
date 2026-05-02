@@ -1020,27 +1020,23 @@ body {
   transition: none;
   /* Composited transform animation — no per-frame layout/paint, no flicker. */
   will-change: transform;
-  animation: indeterminate-1 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
+  animation: indeterminate-slide 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
 }
 
 /* Second offset bar so there is never a frame with no bar visible.
-   Half-cycle phase shift hides the seam at loop boundaries. */
+   Negative animation-delay = half-cycle phase shift, hiding the seam at
+   loop boundaries. Same keyframes as the primary bar. */
 .ark-progress-range.indeterminate::after {
   content: "";
   position: absolute;
   inset: 0;
   background: inherit;
   border-radius: inherit;
-  animation: indeterminate-2 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
+  animation: indeterminate-slide 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
   animation-delay: -0.8s;
 }
 
-@keyframes indeterminate-1 {
-  0%   { transform: translateX(-120%); }
-  100% { transform: translateX(286%); }
-}
-
-@keyframes indeterminate-2 {
+@keyframes indeterminate-slide {
   0%   { transform: translateX(-120%); }
   100% { transform: translateX(286%); }
 }
