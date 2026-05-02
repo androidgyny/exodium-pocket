@@ -390,8 +390,10 @@ pub async fn get_download_progress(
                     // ZIP not on disk despite torrent reporting 100%.
                     // Common cause: pieces covering this file were received as a side effect of
                     // downloading a neighboring file, but librqbit never assembled the pieces
-                    // into the output file. Re-selecting forces assembly. Throttle to once
-                    // every 5 seconds to avoid spamming the session.
+                    // into the output file. A plain re-select is a no-op when librqbit's view
+                    // of the file is "already complete", so we toggle the selection — deselect,
+                    // briefly yield, then re-add — to nudge librqbit into re-evaluating the file.
+                    // Throttled to one attempt every 5 seconds to avoid spamming the session.
                     log::warn!(
                         "Download reports 100% but ZIP missing: {}. Re-requesting file assembly.",
                         zip_path.display()
@@ -399,31 +401,62 @@ pub async fn get_download_progress(
                     let retry_key = id;
                     let now = std::time::Instant::now();
                     use std::sync::OnceLock;
-                    static LAST_RETRY: OnceLock<std::sync::Mutex<std::collections::HashMap<i64, std::time::Instant>>> = OnceLock::new();
-                    let last_retry = LAST_RETRY.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-                    let should_retry = last_retry.lock()
+                    // (last_retry_at, attempts) per game id.
+                    static RETRY_STATE: OnceLock<
+                        std::sync::Mutex<std::collections::HashMap<i64, (std::time::Instant, u32)>>,
+                    > = OnceLock::new();
+                    let retry_state = RETRY_STATE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+                    // After this many failed retries (~5 min at 5 s intervals), give up
+                    // and surface an error so the UI stops polling forever and the user
+                    // can take action (cancel + re-download).
+                    const MAX_ATTEMPTS: u32 = 60;
+                    // Returns (attempts_so_far, did_increment_this_poll). The counter only
+                    // ticks every 5 s; in-between polls observe the same value with
+                    // did_increment=false, so error/recovery decisions stay stable across
+                    // every poll instead of flickering with the throttle window.
+                    let (attempts, ticked) = retry_state.lock()
                         .map(|mut map| {
-                            // Prune entries older than 60s to prevent unbounded growth.
-                            map.retain(|_, t| now.duration_since(*t).as_secs() < 60);
-                            let last = map.get(&retry_key).copied();
-                            if last.is_none() || last.is_some_and(|t| now.duration_since(t).as_secs() >= 5) {
-                                map.insert(retry_key, now);
-                                true
+                            // Prune stale entries (>2 minutes idle) to bound memory.
+                            map.retain(|_, (t, _)| now.duration_since(*t).as_secs() < 120);
+                            let entry = map.entry(retry_key).or_insert((now - std::time::Duration::from_secs(60), 0));
+                            if now.duration_since(entry.0).as_secs() >= 5 {
+                                entry.0 = now;
+                                entry.1 = entry.1.saturating_add(1);
+                                (entry.1, true)
                             } else {
-                                false
+                                (entry.1, false)
                             }
                         })
-                        .unwrap_or(false);
-                    if should_retry {
-                        let mgr = manager.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = mgr.download_files(vec![game_idx]).await;
-                        });
+                        .unwrap_or((0, false));
+                    if ticked {
+                        if attempts <= MAX_ATTEMPTS {
+                            let mgr = manager.clone();
+                            tauri::async_runtime::spawn(async move {
+                                // Toggle: deselect → tiny pause → re-add. The pause lets librqbit
+                                // settle the deselect bookkeeping before the next selection update.
+                                mgr.deselect_file(game_idx).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                let _ = mgr.download_files(vec![game_idx]).await;
+                            });
+                        } else if attempts == MAX_ATTEMPTS + 1 {
+                            log::error!(
+                                "Giving up on stuck download for game {} ({}) after {} retries; \
+                                 surfacing error to UI",
+                                id, title, MAX_ATTEMPTS
+                            );
+                        }
                     }
                     // Show as still in-progress so the frontend keeps polling until the ZIP
-                    // appears and extraction can proceed normally.
+                    // appears and extraction can proceed normally — unless we've exhausted retries,
+                    // in which case surface an error so the UI can prompt the user to cancel.
                     if let Some(ref mut p) = progress {
                         p.finished = false;
+                        if attempts > MAX_ATTEMPTS {
+                            p.error = Some(
+                                "Download stuck — librqbit reports 100% but the file isn't on disk. \
+                                 Cancel and re-download to recover.".to_string()
+                            );
+                        }
                     }
                 }
             }
@@ -952,11 +985,20 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
     //    folder for Windows DLL search to find them. On macOS/Linux this
     //    directory only contains a `.placeholder`, so the lookup falls
     //    through to the externalBin location below.
+    //
+    //    In dev mode resource_dir is src-tauri/, and the staged bundle lives
+    //    one level deeper at src-tauri/resources/dosbox-bin/ (only flattened
+    //    to <resource_dir>/dosbox-bin/ at bundle time). Check both so dev on
+    //    Windows finds the DLL-adjacent .exe instead of falling through to
+    //    the bare externalBin in binaries/, which would fail with missing-DLL
+    //    errors when DOSBox tries to start.
     if let Ok(res_dir) = app.path().resource_dir() {
-        let dbs_in_res = res_dir.join("dosbox-bin").join(bin);
-        if dbs_in_res.exists() {
-            log::info!("Using bundled DOSBox (resource bin dir): {}", dbs_in_res.display());
-            return dbs_in_res;
+        for sub in ["dosbox-bin", "resources/dosbox-bin"] {
+            let dbs_in_res = res_dir.join(sub).join(bin);
+            if dbs_in_res.exists() {
+                log::info!("Using bundled DOSBox (resource bin dir): {}", dbs_in_res.display());
+                return dbs_in_res;
+            }
         }
     }
 
@@ -1432,6 +1474,30 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
                 .args(["--force", "--sign", "-"])
                 .arg(&dosbox_bin)
                 .output();
+        }
+    }
+
+    // Capture DOSBox's stdout+stderr to a per-game log file. Without this,
+    // a Tauri GUI build's child process inherits null stdio on Windows and
+    // any DOSBox diagnostic / panic output disappears — making "started then
+    // closed" crashes (Issue #4) impossible to diagnose. The log is truncated
+    // on each launch so it always reflects the most recent attempt.
+    if let Some(log_dir) = crate::commands::setup::LOG_DIR.get() {
+        let _ = std::fs::create_dir_all(log_dir);
+        let dosbox_log_path = log_dir.join(format!("dosbox-{}.log", id));
+        match std::fs::File::create(&dosbox_log_path) {
+            Ok(stdout_file) => match stdout_file.try_clone() {
+                Ok(stderr_file) => {
+                    cmd.stdout(std::process::Stdio::from(stdout_file));
+                    cmd.stderr(std::process::Stdio::from(stderr_file));
+                    log::info!("DOSBox output → {}", dosbox_log_path.display());
+                }
+                Err(e) => log::warn!("DOSBox log handle clone failed: {e}"),
+            },
+            Err(e) => log::warn!(
+                "Failed to open DOSBox log file {}: {e}",
+                dosbox_log_path.display()
+            ),
         }
     }
 

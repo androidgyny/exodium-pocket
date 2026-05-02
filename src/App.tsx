@@ -9,6 +9,7 @@ import { SearchBar } from "./components/SearchBar";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { ContentPackSettings } from "./components/ContentPackSettings";
 import { DownloadIndicator } from "./components/DownloadIndicator";
+import { WindowFrame } from "./components/WindowFrame";
 import {
   getSetupStatus,
   initDownloadManager,
@@ -184,6 +185,8 @@ function App() {
 
   return (
     <>
+      <WindowFrame />
+
       <Show when={phase() === "loading"}>
         <div class="loading">Loading...</div>
       </Show>

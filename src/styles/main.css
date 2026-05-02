@@ -36,6 +36,61 @@ body {
 }
 
 /* ============================================
+   Window Frame (custom titlebar — decorations: false)
+   ============================================ */
+.window-frame {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-app-region: drag; /* fallback for some webview builds */
+}
+
+.window-frame-title {
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.3px;
+  pointer-events: none;
+}
+
+.window-frame-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.window-frame-btn {
+  width: 44px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.window-frame-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.window-frame-btn.close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.window-frame-btn:focus { outline: none; }
+
+/* ============================================
    Top Bar
    ============================================ */
 .top-bar {
@@ -192,16 +247,24 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0; /* let children shrink so the status can ellipsize */
 }
 
 .download-sheet-progress-row .ark-progress {
   flex: 1;
+  min-width: 0;
 }
 
 .download-sheet-status {
   font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  /* Cap status width so a long phase string ("Waiting for last pieces…") can't
+     starve the progress bar; ellipsis truncates instead. */
+  max-width: 50%;
 }
 
 .download-sheet-speed {
@@ -952,17 +1015,34 @@ body {
   /* Overrides both determinate styles AND Ark's inline width */
   position: absolute;
   top: 0;
+  left: 0;
   width: 35% !important;
   transition: none;
-  animation: indeterminate 1.5s ease-in-out infinite;
+  /* Composited transform animation — no per-frame layout/paint, no flicker. */
+  will-change: transform;
+  animation: indeterminate-1 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
 }
 
-@keyframes indeterminate {
-  /* Bar travels from fully off-screen left to fully off-screen right.
-     left: -42% puts the right edge (at -42% + 35% = -7%) safely off-screen,
-     so ease-in easing can't make a sliver visible at loop start. */
-  0%   { left: -42%; }
-  100% { left: 100%; }
+/* Second offset bar so there is never a frame with no bar visible.
+   Half-cycle phase shift hides the seam at loop boundaries. */
+.ark-progress-range.indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: inherit;
+  border-radius: inherit;
+  animation: indeterminate-2 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
+  animation-delay: -0.8s;
+}
+
+@keyframes indeterminate-1 {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(286%); }
+}
+
+@keyframes indeterminate-2 {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(286%); }
 }
 
 /* ── Circular progress ring ──────────────────────────────────────────────── */
