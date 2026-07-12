@@ -22,6 +22,18 @@
   via toasts.
 - Tab switches animate with a directional slide.
 
+### Security / hardening
+
+- **Single-instance guard**: launching Exodium twice now focuses the existing
+  window instead of corrupting the torrent session and contending on the DB.
+- **Disk-space preflight**: downloads are refused upfront with a clear message
+  when the data dir lacks space for the download plus extraction.
+- **Narrowed asset-protocol scope**: was a blanket `**`/`$HOME/**`; now
+  `$RESOURCE`/`$APPDATA` statically plus a runtime grant for the user-chosen
+  data dir. A production Content-Security-Policy replaces `csp: null`.
+- **DOSBox Staging's GPL license text** ships with the bundled binary
+  (staged by get-dosbox.sh).
+
 ### Fixed
 
 - **Download stall feedback**: a download with no peers no longer sits at

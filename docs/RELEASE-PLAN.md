@@ -8,12 +8,19 @@
 > Phase 5 core is DONE (ci.yml test job on push/PR, clippy clean, import
 > smoke tests, RPM upload).
 >
+> Phase 3 pre-release UX items are DONE (stall feedback, Browse scroll
+> retention, jumpbar sync, empty state, content-pack toasts, Escape guard,
+> Linux PDF fallback). Phase 4 code hardening is DONE (single-instance,
+> disk-space preflight, asset scope + CSP, GPL license staging).
+>
 > Still open: (a) manual live-torrent test of download → uninstall →
-> re-download; (b) the MIDI parity spot-test matrix (launch 1× MT-32, 1× GM,
-> tandy, pcjr, CGA, GUS, voodoo game and listen); (c) Phase 2 deferred items -
-> glshader/fullscreen override behavior (deliberate design, revisit only on
-> user reports) and the blanket backslash→slash rewrite (works today, narrow
-> it only with test coverage); (d) Phases 3 (UX) and 4 (hardening/legal).
+> re-download; (b) MIDI parity listening matrix (MT-32/GM/tandy/pcjr/CGA/
+> GUS/voodoo); (c) **smoke-test the CSP + asset-scope change** - launch the
+> app and confirm thumbnails, screenshots, and manuals still render;
+> (d) seeding disclosure + toggle (needs a product decision on default);
+> (e) eXo approval + signing/notarization decisions; (f) Phase 2 deferred:
+> glshader override (deliberate) and backslash rewrite narrowing (needs
+> test coverage); (g) post-release: keyboard nav, restart-resume UX.
 
 ## Verdict
 
