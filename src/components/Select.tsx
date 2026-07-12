@@ -5,6 +5,13 @@ import { Portal } from "solid-js/web";
 interface SelectOption {
   value: string;
   label: string;
+  /** Indent level for tree rendering (0 = root). */
+  depth?: number;
+  /** Optional override for the trigger's displayed text. Use this when
+      the dropdown label is contextual (e.g. just "Baseball" under a
+      "Sports" parent) but the trigger should show full context
+      ("Sports / Baseball") once selected. */
+  triggerLabel?: string;
 }
 
 interface SelectProps {
@@ -20,7 +27,7 @@ export function Select(props: SelectProps) {
     createListCollection({
       items: props.options,
       itemToValue: (item) => item.value,
-      itemToString: (item) => item.label,
+      itemToString: (item) => item.triggerLabel ?? item.label,
     });
 
   return (
@@ -45,7 +52,10 @@ export function Select(props: SelectProps) {
           <ArkSelect.Content class="ark-select-content">
             <For each={props.options}>
               {(option) => (
-                <ArkSelect.Item item={option} class="ark-select-item">
+                <ArkSelect.Item
+                  item={option}
+                  class={`ark-select-item${option.depth ? ` depth-${option.depth}` : ""}`}
+                >
                   <ArkSelect.ItemText>{option.label}</ArkSelect.ItemText>
                   <ArkSelect.ItemIndicator class="ark-select-indicator">
                     &#10003;

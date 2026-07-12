@@ -36,7 +36,7 @@ body {
 }
 
 /* ============================================
-   Window Frame (custom titlebar — decorations: false)
+   Window Frame (custom titlebar - decorations: false)
    ============================================ */
 .window-frame {
   display: flex;
@@ -359,7 +359,7 @@ body {
 }
 
 /* Theme-matched thin scrollbar for WebKit/Chromium (all Tauri platforms
-   currently use WebView2/WKWebView/WebKitGTK — all webkit-derived). Falls
+   currently use WebView2/WKWebView/WebKitGTK - all webkit-derived). Falls
    back to the OS default on engines that don't implement these pseudos. */
 .library::-webkit-scrollbar {
   width: 8px;
@@ -426,6 +426,37 @@ body {
 .lib-tab-count.active {
   background: var(--accent-glow);
   color: var(--accent-hover);
+}
+
+/* Tab pane push transition - when activeTab changes, the new pane mounts
+   with a directional slide-in. The old pane unmounts instantly (no exit
+   animation) which keeps the implementation simple while still giving the
+   "swipe in" feel. Direction class is set per-click in switchTab(). */
+.tab-pane {
+  animation-duration: 0.28s;
+  animation-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+  animation-fill-mode: both;
+}
+
+/* will-change scoped to the directional classes only - they're applied
+   while the slide is in motion so the GPU layer is allocated for the
+   animation but not retained for the rest of the pane's lifetime. */
+.tab-pane-right,
+.tab-pane-left {
+  will-change: transform, opacity;
+}
+
+.tab-pane-right { animation-name: tab-push-from-right; }
+.tab-pane-left  { animation-name: tab-push-from-left; }
+
+@keyframes tab-push-from-right {
+  from { transform: translateX(36px); opacity: 0; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+
+@keyframes tab-push-from-left {
+  from { transform: translateX(-36px); opacity: 0; }
+  to   { transform: translateX(0);      opacity: 1; }
 }
 
 /* ── Result counter in toolbar ── */
@@ -615,6 +646,25 @@ body {
   color: var(--accent-hover);
 }
 
+/* Tree-style indent for hierarchical options (e.g. Sports → Baseball).
+   Children get a left tick marker so they read as part of the parent
+   group without adding an explicit divider. */
+.ark-select-item.depth-1 {
+  padding-left: 26px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  position: relative;
+}
+.ark-select-item.depth-1::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 6px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .ark-select-indicator {
   font-size: 10px;
   color: var(--accent);
@@ -660,9 +710,13 @@ body {
   align-items: stretch;
   gap: 1px;
   z-index: 20;
-  max-height: 80vh;
+  /* Cap to viewport with margin top/bottom so the bar never touches edges. */
+  max-height: calc(100vh - 32px);
   overflow-y: auto;
-  scrollbar-width: none;
+  overscroll-behavior: contain;
+  /* Thin Firefox scrollbar; webkit version below. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
   padding: 6px 4px;
   background: var(--bg-secondary);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -670,7 +724,14 @@ body {
 }
 
 .jump-bar::-webkit-scrollbar {
-  display: none;
+  width: 4px;
+}
+.jump-bar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 2px;
+}
+.jump-bar::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .jump-bar-item {
@@ -682,11 +743,19 @@ body {
   cursor: pointer;
   padding: 3px 8px;
   border-radius: 4px;
-  line-height: 1.4;
+  /* line-height 1 + flex-shrink 0 stops items from being squeezed below the
+     glyph height when the bar overflows - that was producing the visible
+     overlap when 40+ years had to fit. */
+  line-height: 1;
+  min-height: 18px;
+  flex-shrink: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 60px;
+  /* Wider so genre names like "Flight Simulation" or "Interactive Story"
+     stay distinguishable. Bar collapses to its content width via
+     max-content sizing on the parent. */
+  max-width: 120px;
   text-align: center;
   transition: color 0.1s, background 0.1s;
 }
@@ -697,7 +766,7 @@ body {
 }
 
 /* ============================================
-   Game Card — cover-dominant
+   Game Card - cover-dominant
    ============================================ */
 .game-card {
   position: relative;
@@ -743,7 +812,7 @@ body {
   gap: 2px;
 }
 
-/* Card without thumbnail — show body at bottom of fixed-height card */
+/* Card without thumbnail - show body at bottom of fixed-height card */
 .game-card:not(:has(.game-card-thumb)) {
   aspect-ratio: 3 / 4;
 }
@@ -786,7 +855,7 @@ body {
   margin-top: 2px;
 }
 
-/* Badges — overlaid on cover */
+/* Badges - overlaid on cover */
 .badge {
   display: inline-block;
   padding: 1px 6px;
@@ -1018,26 +1087,12 @@ body {
   left: 0;
   width: 35% !important;
   transition: none;
-  /* Composited transform animation — no per-frame layout/paint, no flicker. */
   will-change: transform;
-  animation: indeterminate-slide 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
-}
-
-/* Second offset bar so there is never a frame with no bar visible.
-   Negative animation-delay = half-cycle phase shift, hiding the seam at
-   loop boundaries. Same keyframes as the primary bar. */
-.ark-progress-range.indeterminate::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: inherit;
-  border-radius: inherit;
-  animation: indeterminate-slide 1.6s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
-  animation-delay: -0.8s;
+  animation: indeterminate-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 @keyframes indeterminate-slide {
-  0%   { transform: translateX(-120%); }
+  0%   { transform: translateX(-100%); }
   100% { transform: translateX(286%); }
 }
 
@@ -1150,7 +1205,7 @@ body {
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(4px);
   z-index: 200;
-  animation: fadeIn 0.15s ease;
+  animation: modalBackdropIn 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .ark-dialog-positioner {
@@ -1169,7 +1224,7 @@ body {
   padding: 24px;
   max-width: 400px;
   width: 90%;
-  animation: dialogIn 0.15s ease;
+  animation: modalContentIn 0.24s cubic-bezier(0.2, 0.7, 0.3, 1);
   box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
 }
 
@@ -1178,9 +1233,17 @@ body {
   to { opacity: 1; }
 }
 
-@keyframes dialogIn {
-  from { opacity: 0; transform: scale(0.95); }
-  to { opacity: 1; transform: scale(1); }
+/* Shared modal entry animations - backdrop fades + ramps blur, content
+   fades and lifts a touch (less jarring than instantaneous appearance).
+   Used by ark dialog, manual viewer, lightbox, game settings. */
+@keyframes modalBackdropIn {
+  from { opacity: 0; backdrop-filter: blur(0); }
+  to   { opacity: 1; }
+}
+
+@keyframes modalContentIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); filter: blur(2px); }
+  to   { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
 }
 
 .ark-dialog-title {
@@ -1451,7 +1514,7 @@ body {
   white-space: nowrap;
 }
 
-/* Section heading inside the settings body — smaller, quieter than the
+/* Section heading inside the settings body - smaller, quieter than the
    dialog title but visually distinct from individual row labels so that
    groups of rows read as a group. */
 .settings-section-title {
@@ -1486,7 +1549,7 @@ body {
   letter-spacing: 0.5px;
 }
 
-/* Content pack "chip" — gives each pack a subtle container so the action
+/* Content pack "chip" - gives each pack a subtle container so the action
    buttons breathe and the progress bar below has a natural place to sit. */
 .pack-row {
   display: flex;
@@ -1663,6 +1726,22 @@ body {
   border-radius: 6px;
   cursor: pointer;
   font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.btn-small:disabled,
+.btn-danger:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.btn-small .btn-spinner,
+.btn-danger .btn-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
 }
 
 .btn-small:hover {
@@ -1682,6 +1761,9 @@ body {
   border-radius: var(--border-radius);
   cursor: pointer;
   font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .btn-danger:hover {
@@ -1935,7 +2017,7 @@ body {
 /* ── Favorite burst (Lottie-style) ────────────────────────────────────────
    On favoriting: the star pops with elastic easing, a gold ring expands
    outward, and six sparkle dots radiate on 60° spokes. On unfavoriting:
-   just a quick shrink-recover — no halo, no sparkles. */
+   just a quick shrink-recover - no halo, no sparkles. */
 
 .favorite-btn.animating.is-favorited .fav-star {
   animation: fav-star-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -1957,7 +2039,7 @@ body {
   100% { transform: scale(1);    }
 }
 
-/* Expanding ring — born inside the button, scales out past its bounds. */
+/* Expanding ring - born inside the button, scales out past its bounds. */
 .fav-ring {
   position: absolute;
   top: 50%;
@@ -2007,7 +2089,7 @@ body {
   100% { transform: translate(-50%, -50%) rotate(var(--angle, 0deg)) translateY(-15px) scale(0.2); opacity: 0; }
 }
 
-/* Honor reduced-motion — plain color swap, no bursts. */
+/* Honor reduced-motion - plain color swap, no bursts. */
 @media (prefers-reduced-motion: reduce) {
   .favorite-btn.animating.is-favorited .fav-star,
   .favorite-btn.animating:not(.is-favorited) .fav-star,
@@ -2030,8 +2112,8 @@ body {
   inset: 0;
   z-index: 149;
   background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(2px);
-  animation: fadeIn 0.15s ease;
+  backdrop-filter: blur(3px);
+  animation: modalBackdropIn 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .game-detail-panel {
@@ -2043,8 +2125,13 @@ body {
   z-index: 150;
   background: var(--bg-secondary);
   border-left: 1px solid rgba(255, 255, 255, 0.08);
-  overflow-y: auto;
-  animation: slideInRight 0.18s ease;
+  /* Panel itself does NOT scroll - it's a flex column with hero/actions/fields
+     fixed and the description region scrolling internally. Keeps the
+     screenshots strip pinned at the bottom regardless of description length. */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: slideInRight 0.26s cubic-bezier(0.2, 0.7, 0.3, 1);
   box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
 }
 
@@ -2079,6 +2166,7 @@ body {
 
 .game-detail-hero {
   position: relative;
+  flex-shrink: 0;
 }
 
 .game-detail-thumb {
@@ -2118,7 +2206,28 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
+  min-height: 0; /* required for nested .game-detail-scroll to size + scroll */
 }
+
+/* Scroll region for description + notes - squeezed between fixed fields
+   above and the (sometimes-pinned) media strip below. min-height: 0 so it
+   actually shrinks; default flex auto-min keeps content from being squeezed. */
+.game-detail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Subtle scrollbar so users can see there's more content. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+.game-detail-scroll::-webkit-scrollbar { width: 4px; }
+.game-detail-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 2px; }
+.game-detail-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .game-detail-status {
   font-size: 11px;
@@ -2129,6 +2238,10 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  flex-shrink: 0;
+  /* Reserve enough room for the tallest action set so the row doesn't grow
+     when Manual / Settings buttons appear post-metadata-load. */
+  min-height: 36px;
 }
 
 .game-detail-btn {
@@ -2139,6 +2252,33 @@ body {
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.game-detail-btn:disabled,
+.lang-picker-btn:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+/* Inline button spinner - used for "Starting…" and similar in-flight states.
+   Small enough to sit beside text without bumping button height. */
+.btn-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: btn-spinner-rotate 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes btn-spinner-rotate {
+  to { transform: rotate(360deg); }
 }
 
 .btn-play {
@@ -2210,6 +2350,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .game-detail-section-label {
@@ -2252,32 +2393,38 @@ body {
   flex: 1;
 }
 
-.game-detail-meta {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
 .game-detail-fields {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
 }
 
 .game-detail-field {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-primary);
 }
 
 .game-detail-field-label {
   color: var(--text-muted);
-  min-width: 52px;
+  min-width: 70px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.game-detail-field > span:last-child {
+  word-break: break-word;
+  flex: 1;
+  min-width: 0;
 }
 
 .game-detail-stars {
@@ -2313,6 +2460,9 @@ body {
   flex-direction: column;
   gap: 8px;
   margin-top: 4px;
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .btn-manual {
@@ -2340,7 +2490,9 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
   z-index: 300;
+  animation: modalBackdropIn 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .game-settings-positioner {
@@ -2364,6 +2516,7 @@ body {
   overflow: hidden;
   outline: none;
   box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
+  animation: modalContentIn 0.24s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .game-settings-title {
@@ -2509,7 +2662,9 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(6px);
   z-index: 300;
+  animation: modalBackdropIn 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .lightbox-positioner {
@@ -2529,6 +2684,7 @@ body {
   align-items: center;
   justify-content: center;
   outline: none;
+  animation: modalContentIn 0.26s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .lightbox-stage {
@@ -2650,7 +2806,9 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(5px);
   z-index: 300;
+  animation: modalBackdropIn 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .manual-viewer-positioner {
@@ -2673,6 +2831,7 @@ body {
   flex-direction: column;
   overflow: hidden;
   outline: none;
+  animation: modalContentIn 0.26s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 .manual-viewer-toolbar {
@@ -2839,4 +2998,100 @@ body {
   color: var(--text-muted);
   text-align: center;
   max-width: 320px;
+}
+
+/* ============================================
+   Toast notifications
+   ============================================ */
+.toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+  max-width: min(420px, calc(100vw - 40px));
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left-width: 3px;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-size: 12.5px;
+  color: var(--text-primary);
+  animation: toast-slide-in 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.toast-info { border-left-color: var(--accent); }
+.toast-success { border-left-color: #4ade80; }
+.toast-warning { border-left-color: #f59e0b; }
+.toast-error { border-left-color: var(--danger); }
+
+.toast-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  margin-top: 1px;
+}
+
+.toast-icon-info { background: var(--accent-glow); color: var(--accent-hover); }
+.toast-icon-success { background: rgba(74, 222, 128, 0.18); color: #4ade80; }
+.toast-icon-warning { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+.toast-icon-error { background: rgba(233, 69, 96, 0.18); color: var(--danger); }
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-message {
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.toast-detail {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.toast-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.toast-dismiss:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+@keyframes toast-slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
 }

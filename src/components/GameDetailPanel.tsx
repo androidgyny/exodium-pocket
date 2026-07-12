@@ -8,6 +8,7 @@ import { GameSettingsDialog } from "./GameSettingsDialog";
 import type { Game, GameMetadata } from "../api/tauri";
 import { launchGame, getGameVariants } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
+import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
 import { downloads, startGameDownload, getDownloadState, cancelGameDownload } from "../stores/downloads";
 import { loadGameMetadata } from "../stores/metadata";
@@ -29,6 +30,9 @@ export function GameDetailPanel(props: Props) {
   const [lightboxStart, setLightboxStart] = createSignal(0);
   const [manualOpen, setManualOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [launchingId, setLaunchingId] = createSignal<number | null>(null);
+  let launchTimer: number | undefined;
+  onCleanup(() => { if (launchTimer) { clearTimeout(launchTimer); } });
 
   createEffect(() => {
     const g = props.game;
@@ -76,7 +80,7 @@ export function GameDetailPanel(props: Props) {
     if (e.key === "Escape") { props.onClose(); }
   };
 
-  // Register once for the lifetime of the component — the handler reads props.onClose()
+  // Register once for the lifetime of the component - the handler reads props.onClose()
   // reactively through the Proxy so it always calls the current callback.
   onMount(() => {
     window.addEventListener("keydown", handleKeyDown);
@@ -124,25 +128,37 @@ export function GameDetailPanel(props: Props) {
   };
 
   const handleLaunch = async (gameId: number) => {
-    setStatus("Launching...");
+    if (launchingId() != null) { return; }
+    setLaunchingId(gameId);
+    setStatus("");
+    const startedAt = Date.now();
     try {
-      const result = await launchGame(gameId);
-      setStatus(result);
+      await launchGame(gameId);
+      // DOSBox spawns immediately but the window can take 1-3s to paint
+      // (codesign re-sign on macOS dev, asset preload). Hold the spinner
+      // for at least 4s so the user sees it before the button reverts.
+      const elapsed = Date.now() - startedAt;
+      const remaining = Math.max(0, 4000 - elapsed);
+      if (launchTimer) { clearTimeout(launchTimer); }
+      launchTimer = window.setTimeout(() => setLaunchingId(null), remaining);
     } catch (e) {
-      setStatus(`Error: ${e}`);
+      setLaunchingId(null);
+      setStatus("");
+      const detail = String(e).replace(/^Error:\s*/, "");
+      showToast(`Couldn't launch ${props.game?.title ?? "game"}`, "error", { detail });
     }
-    setTimeout(() => setStatus(""), 3000);
   };
 
   const handleUninstall = async (gameId: number) => {
-    // Capture shortcode now — props.game may change before the async callback runs.
+    // Capture shortcode + title now - props.game may change before the async callback runs.
     const shortcode = props.game?.shortcode;
+    const title = variants().find((v) => v.id === gameId)?.title ?? props.game?.title;
     await performUninstall(gameId, setStatus, async () => {
       if (shortcode) {
         const v = await getGameVariants(shortcode).catch(() => []);
         setVariants(v);
       }
-    });
+    }, title);
   };
 
   const ratingStars = (rating: number | null) => {
@@ -151,6 +167,33 @@ export function GameDetailPanel(props: Props) {
     const full = Math.round(rating);
     const empty = 5 - full;
     return "★".repeat(full) + "☆".repeat(empty);
+  };
+
+  // Shared "Play" button - same disabled+spinner UX whether it's the main
+  // single-language action or one row of the multi-language variant list.
+  const PlayButton = (p: { id: number; class: string }) => (
+    <button
+      class={p.class}
+      onClick={() => handleLaunch(p.id)}
+      disabled={launchingId() === p.id}
+    >
+      <Show when={launchingId() === p.id} fallback={<>▶ Play</>}>
+        <span class="btn-spinner" /> Starting…
+      </Show>
+    </button>
+  );
+
+  // Genre column is semicolon-joined. The hero chip shows the first piece
+  // alone (the "primary" genre); the fields row joins all pieces with " · ".
+  const genreList = (): string[] => {
+    const raw = props.game?.genre;
+    if (!raw) { return []; }
+    return raw.split(";").map((p) => p.trim()).filter(Boolean);
+  };
+  const primaryGenre = (): string | null => genreList()[0] ?? null;
+  const allGenres = (): string | null => {
+    const list = genreList();
+    return list.length > 0 ? list.join(" · ") : null;
   };
 
   return (
@@ -179,7 +222,7 @@ export function GameDetailPanel(props: Props) {
               <div class="game-detail-title">{props.game!.title}</div>
               <div class="game-detail-chips">
                 {props.game!.year && <span class="badge">{props.game!.year}</span>}
-                {props.game!.genre && <span class="badge badge-genre">{props.game!.genre}</span>}
+                {primaryGenre() && <span class="badge badge-genre">{primaryGenre()}</span>}
               </div>
             </div>
           </div>
@@ -194,13 +237,20 @@ export function GameDetailPanel(props: Props) {
             <Show when={!isMultiLang()}>
               <div class="game-detail-actions">
                 <Show when={isInstalled()}>
-                  <button class="game-detail-btn btn-play" onClick={() => handleLaunch(props.game!.id!)}>
-                    ▶ Play
-                  </button>
+                  <PlayButton id={props.game!.id!} class="game-detail-btn btn-play" />
                 </Show>
-                <Show when={metadata()?.manual_path}>
-                  <button class="game-detail-btn btn-manual" onClick={() => setManualOpen(true)}>
-                    ⊞ Manual
+                {/* Manual: render a placeholder while metadata is loading so the
+                    real button doesn't pop in and shift the action row. After
+                    load, swap to real button (when manual exists) or hide. */}
+                <Show when={isInstalled() && (metadataLoading() || metadata()?.manual_path)}>
+                  <button
+                    class="game-detail-btn btn-manual"
+                    onClick={() => { if (metadata()?.manual_path) { setManualOpen(true); } }}
+                    disabled={metadataLoading()}
+                  >
+                    <Show when={metadataLoading()} fallback={<>⊞ Manual</>}>
+                      <span class="btn-spinner" /> Manual
+                    </Show>
                   </button>
                 </Show>
                 <Show when={isInstalled()}>
@@ -260,7 +310,7 @@ export function GameDetailPanel(props: Props) {
                           <button class="lang-picker-btn action-cancel" onClick={() => cancelGameDownload(vId()!)}>✕</button>
                         </Show>
                         <Show when={!vDl()?.downloading && variant.installed}>
-                          <button class="lang-picker-btn action-play" onClick={() => handleLaunch(vId()!)}>▶ Play</button>
+                          <PlayButton id={vId()!} class="lang-picker-btn action-play" />
                           <button class="lang-picker-btn action-uninstall" onClick={() => handleUninstall(vId()!)}>✕</button>
                         </Show>
                         <Show when={!vDl()?.downloading && !variant.installed}>
@@ -268,7 +318,7 @@ export function GameDetailPanel(props: Props) {
                             class="lang-picker-btn action-download"
                             onClick={() => { if (variant.game_torrent_index != null) { handleDownload(vId()!, variant.title); } }}
                           >
-                            {variant.game_torrent_index != null ? `↓ ${formatBytes(variant.download_size ?? 0)}` : "—"}
+                            {variant.game_torrent_index != null ? `↓ ${formatBytes(variant.download_size ?? 0)}` : "-"}
                           </button>
                         </Show>
                       </div>
@@ -278,17 +328,39 @@ export function GameDetailPanel(props: Props) {
               </div>
             </Show>
 
-            {/* Meta: developer · publisher · series */}
-            <Show when={props.game!.developer || props.game!.publisher || props.game!.series}>
-              <div class="game-detail-meta">
-                {[props.game!.developer, props.game!.publisher, props.game!.series]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </div>
-            </Show>
-
-            {/* Detail fields */}
+            {/* Detail fields - structured key/value rows for metadata that
+                doesn't fit in chips. */}
             <div class="game-detail-fields">
+              <Show when={props.game!.developer}>
+                <div class="game-detail-field">
+                  <span class="game-detail-field-label">Developer</span>
+                  <span>{props.game!.developer}</span>
+                </div>
+              </Show>
+              <Show when={props.game!.publisher}>
+                <div class="game-detail-field">
+                  <span class="game-detail-field-label">Publisher</span>
+                  <span>{props.game!.publisher}</span>
+                </div>
+              </Show>
+              <Show when={props.game!.series}>
+                <div class="game-detail-field">
+                  <span class="game-detail-field-label">Series</span>
+                  <span>{props.game!.series}</span>
+                </div>
+              </Show>
+              <Show when={allGenres()}>
+                <div class="game-detail-field">
+                  <span class="game-detail-field-label">Genre</span>
+                  <span>{allGenres()}</span>
+                </div>
+              </Show>
+              <Show when={props.game!.play_mode}>
+                <div class="game-detail-field">
+                  <span class="game-detail-field-label">Mode</span>
+                  <span>{props.game!.play_mode}</span>
+                </div>
+              </Show>
               <Show when={props.game!.region}>
                 <div class="game-detail-field">
                   <span class="game-detail-field-label">Region</span>
@@ -309,22 +381,24 @@ export function GameDetailPanel(props: Props) {
               </Show>
             </div>
 
-            {/* Description */}
-            <Show when={props.game!.description}>
-              <div class="game-detail-description">{props.game!.description}</div>
-            </Show>
+            {/* Scrollable section: long-form text. Pinned between fixed fields
+                above and screenshots below so the gallery is always reachable
+                without scrolling past the description first. */}
+            <div class="game-detail-scroll">
+              <Show when={props.game!.description}>
+                <div class="game-detail-description">{props.game!.description}</div>
+              </Show>
+              <Show when={props.game!.notes}>
+                <div class="game-detail-notes">{props.game!.notes}</div>
+              </Show>
+              <Show when={metadataLoading()}>
+                <div class="game-detail-loading">Loading media…</div>
+              </Show>
+            </div>
 
-            {/* Notes */}
-            <Show when={props.game!.notes}>
-              <div class="game-detail-notes">{props.game!.notes}</div>
-            </Show>
-
-            <Show when={metadataLoading()}>
-              <div class="game-detail-loading">Loading media…</div>
-            </Show>
-
-            {/* Media: manual + screenshots/art — only renders if the metadata
-                content pack has assets for this game's shortcode. */}
+            {/* Media: screenshots/art - only renders if the metadata content
+                pack has assets for this game. Pinned to the bottom of the
+                panel so it's always visible. */}
             <Show when={!metadataLoading() && metadata() && metadata()!.images.length > 0}>
               <div class="game-detail-media">
                 {(() => {

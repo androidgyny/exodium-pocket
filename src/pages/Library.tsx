@@ -22,7 +22,7 @@ type Tab = "library" | "browse";
  *  <For>'s reference-based keying stable: unchanged cards don't remount (no
  *  flicker), only cards whose state flipped get re-rendered with new data.
  *
- *  Previously these shelves guarded refresh on ID-set equality — that missed
+ *  Previously these shelves guarded refresh on ID-set equality - that missed
  *  the case where a pre-favorited game becomes installed: same IDs, different
  *  state, no refresh, stale card. */
 function mergeShelfList(prev: Game[], fresh: Game[]): Game[] {
@@ -31,7 +31,7 @@ function mergeShelfList(prev: Game[], fresh: Game[]): Game[] {
     const old = prevById.get(f.id);
     // available_languages is part of the equality check because a variant
     // of a multi-lang game (e.g. DE) can transition independently of the
-    // primary row (EN) — its state shows up in the primary's badges via
+    // primary row (EN) - its state shows up in the primary's badges via
     // available_languages like "EN:0,DE:2". Without this, shelf cards
     // display stale language badges after installing a sibling variant.
     if (old
@@ -61,6 +61,16 @@ export function Library() {
   let libraryRef: HTMLDivElement | undefined;
   const [sectionLabels, setSectionLabels] = createSignal<string[]>([]);
   const [activeTab, setActiveTab] = createSignal<Tab>("browse");
+  // Direction of the last tab switch - "right" means new content slides in
+  // from the right (forward), "left" from the left (backward). Drives the
+  // CSS animation on the freshly mounted tab pane.
+  const [tabSlideDir, setTabSlideDir] = createSignal<"right" | "left">("right");
+  const TAB_ORDER: Record<Tab, number> = { browse: 0, library: 1 };
+  const switchTab = (tab: Tab) => {
+    if (tab === activeTab()) { return; }
+    setTabSlideDir(TAB_ORDER[tab] > TAB_ORDER[activeTab()] ? "right" : "left");
+    setActiveTab(tab);
+  };
   const [genres, setGenres] = createSignal<string[]>([]);
   const [recentGames, setRecentGames] = createSignal<Game[]>([]);
   const [installedGames, setInstalledGames] = createSignal<Game[]>([]);
@@ -82,7 +92,7 @@ export function Library() {
   // or uninstall finishes), refresh the shelves and re-sync the detail panel.
   // The shelves come from separate DB queries, so fetchGames() alone isn't
   // enough. detailGame() can hold an object that no longer matches reality
-  // — fetch the fresh row directly by id to be sure.
+  // - fetch the fresh row directly by id to be sure.
   createEffect(() => {
     const change = lastGameLibraryChange();
     if (!change) { return; }
@@ -122,8 +132,19 @@ export function Library() {
         const n = Math.round(game.rating);
         return "★".repeat(Math.max(0, n)) + "☆".repeat(Math.max(0, 5 - n));
       }
-      case "genre":
-        return game.genre ?? "Unknown";
+      case "genre": {
+        // genre is a semicolon-joined list ("Action;Adventure;RPG") whose
+        // entries can themselves carry " / "-delimited parent/child
+        // ("Sports / Baseball"). Sections + jumpbar both key on the
+        // *parent* of the FIRST entry so games collapse into ~15 top-level
+        // categories - matches the genre filter's tree view and what
+        // get_section_keys returns server-side. split() always yields at
+        // least one element, so direct [0] indexing is safe.
+        const raw = game.genre ?? "";
+        const first = raw.split(";")[0].trim();
+        const parent = first.split(" / ")[0].trim();
+        return parent || "Unknown";
+      }
       default:
         return "";
     }
@@ -173,8 +194,10 @@ export function Library() {
     }
     if (label === "Unrated") { return "?"; }
     // Year: "1992" stays "1992" (4 chars fits)
-    // Genre: truncate long names for jump bar
-    if (label.length > 8) { return label.slice(0, 7) + "…"; }
+    // Genre: truncate long names for jump bar - keep enough chars to
+    // distinguish prefix-sharing genres ("Board Game" vs "Boats", "Puzzle"
+    // vs "Puzzle-Solving"). 14 chars covers the bulk of eXoDOS taxonomy.
+    if (label.length > 14) { return label.slice(0, 13) + "…"; }
     return label;
   };
 
@@ -184,7 +207,7 @@ export function Library() {
       if (!el || !libraryRef) { return; }
       // .grid-separator is position:sticky, so its bounding rect reports the
       // stuck position (~separatorTop) once its section has been scrolled past
-      // — measuring it directly would make scrollBy a no-op. Measure the
+      // - measuring it directly would make scrollBy a no-op. Measure the
       // adjacent .game-grid sibling (in normal flow) and back out the
       // separator's rendered height to land the letter at the sticky slot.
       const grid = el.nextElementSibling as HTMLElement | null;
@@ -207,10 +230,59 @@ export function Library() {
     }
   };
 
-  const genreOptions = createMemo(() => [
-    { value: "", label: "All Genres" },
-    ...genres().map((g) => ({ value: g, label: g })),
-  ]);
+  // Build a hierarchical option list from the flat genre vocabulary. eXoDOS
+  // uses " / " to separate parent/child genres (e.g. "Sports / Baseball").
+  // We sort everything alphabetically, then for each group emit the parent
+  // header (synthesizing one if all that exist are children) followed by
+  // its children at depth 1, indented in the dropdown via Select's depth
+  // class. Selecting a parent filters by its prefix (the existing
+  // `genre LIKE '%...%'` matcher already covers the subgenre rows).
+  const genreOptions = createMemo(() => {
+    const flat = genres();
+    type Opt = { value: string; label: string; depth?: number; triggerLabel?: string };
+    const result: Opt[] = [{ value: "", label: "All Genres" }];
+
+    // Group by first segment. Standalone genres (no " / ") still create a
+    // group with an empty children array, so they render as a depth-0 row
+    // with no nested entries - same shape as a parent that has children
+    // but listed alone in the dropdown. If a parent header only exists via
+    // its children (e.g. "Sports / Baseball" without bare "Sports") we
+    // still synthesize it; selecting it works because the backend's
+    // LIKE '%...%' matcher covers all subgenres.
+    const groups = new Map<string, string[]>();
+    for (const g of flat) {
+      const idx = g.indexOf(" / ");
+      if (idx < 0) {
+        if (!groups.has(g)) { groups.set(g, []); }
+      } else {
+        const parent = g.slice(0, idx);
+        const child = g.slice(idx + 3);
+        const list = groups.get(parent) ?? [];
+        list.push(child);
+        groups.set(parent, list);
+      }
+    }
+
+    const sortedParents = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+    for (const parent of sortedParents) {
+      const children = (groups.get(parent) ?? []).slice().sort((a, b) => a.localeCompare(b));
+      result.push({ value: parent, label: parent, depth: 0 });
+      for (const child of children) {
+        const full = `${parent} / ${child}`;
+        result.push({
+          value: full,
+          label: child,
+          depth: 1,
+          // Trigger shows full path so the active filter is unambiguous;
+          // dropdown row shows only the child name because the parent
+          // header already supplies the context.
+          triggerLabel: full,
+        });
+      }
+    }
+
+    return result;
+  });
 
   const refreshRecent = async () => {
     try {
@@ -242,7 +314,7 @@ export function Library() {
   const handleFavoriteChanged = (id: number, favorited: boolean) => {
     // NOTE: do NOT call updateGameFavorited here. That creates a new object in
     // games() via spread, which forces <For> to unmount/remount the card whose
-    // star was just clicked — visible as a flicker (thumb reloads, etc).
+    // star was just clicked - visible as a flicker (thumb reloads, etc).
     // The card already tracks favorited state optimistically in its own signal;
     // games() will heal on the next refetch.
     if (!favorited) {
@@ -264,7 +336,7 @@ export function Library() {
   };
 
   onMount(async () => {
-    // Load recently played first — if any exist, auto-switch to My Library tab.
+    // Load recently played first - if any exist, auto-switch to My Library tab.
     const recent = await getRecentlyPlayed(12).catch(() => [] as Game[]);
     setRecentGames(recent);
     if (recent.length > 0) {
@@ -332,7 +404,7 @@ export function Library() {
       <div class="lib-tabs">
         <button
           class={`lib-tab ${activeTab() === "browse" ? "active" : ""}`}
-          onClick={() => setActiveTab("browse")}
+          onClick={() => switchTab("browse")}
         >
           Browse
           <Show when={totalGames() > 0}>
@@ -341,7 +413,7 @@ export function Library() {
         </button>
         <button
           class={`lib-tab ${activeTab() === "library" ? "active" : ""}`}
-          onClick={() => setActiveTab("library")}
+          onClick={() => switchTab("library")}
         >
           My Library
           <Show when={installedGames().length > 0}>
@@ -352,6 +424,7 @@ export function Library() {
 
       {/* ── Browse tab ── */}
       <Show when={activeTab() === "browse"}>
+        <div class={`tab-pane tab-pane-${tabSlideDir()}`}>
         <Show when={collections().length > 1}>
           <div class="collection-bar">
             <For each={collections()}>
@@ -418,10 +491,12 @@ export function Library() {
             )}
           </For>
         </div>
+        </div>
       </Show>
 
       {/* ── My Library tab ── */}
       <Show when={activeTab() === "library"}>
+        <div class={`tab-pane tab-pane-${tabSlideDir()}`}>
         <Show
           when={recentGames().length > 0 || favoriteGames().length > 0 || installedGames().length > 0}
           fallback={
@@ -429,7 +504,7 @@ export function Library() {
               <div class="lib-empty-icon">🎮</div>
               <div class="lib-empty-text">No games yet</div>
               <div class="lib-empty-sub">Switch to Browse to find and download games</div>
-              <button class="lib-empty-btn" onClick={() => setActiveTab("browse")}>Browse games</button>
+              <button class="lib-empty-btn" onClick={() => switchTab("browse")}>Browse games</button>
             </div>
           }
         >
@@ -466,9 +541,10 @@ export function Library() {
             </div>
           </Show>
         </Show>
+        </div>
       </Show>
 
-      {/* Infinite scroll sentinel — always mounted */}
+      {/* Infinite scroll sentinel - always mounted */}
       <div ref={sentinelRef} class="scroll-sentinel">
         <Show when={loading()}>
           <div class="loading">Loading...</div>

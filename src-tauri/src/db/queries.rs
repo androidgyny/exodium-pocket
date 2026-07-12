@@ -271,7 +271,7 @@ pub fn fetch_game_variants(conn: &Connection, shortcode: &str) -> DbResult<Vec<G
         .query_map(params![shortcode], row_to_game)?
         .collect::<Result<Vec<_>, _>>()?;
 
-    // LP overlay ZIPs (< 1 MB) are just localized bat files — they require the EN base game
+    // LP overlay ZIPs (< 1 MB) are just localized bat files - they require the EN base game
     // to function. Always show the combined total (LP overlay + EN base) so the user sees a
     // consistent, realistic game size regardless of whether EN is already on disk.
     if let Some(en_game) = games.iter().find(|g| g.language == "EN") {
@@ -365,10 +365,29 @@ pub fn get_section_keys(conn: &Connection, f: &GameFilter) -> DbResult<Vec<Strin
         }).collect());
     }
 
+    if f.sort_by == "genre" {
+        // The `genre` column stores semicolon-joined values like
+        // "Action;Adventure;RPG", and individual entries can contain
+        // " / "-delimited parent/child like "Sports / Baseball". For the
+        // jumpbar we collapse to just the parent so users see ~15 top-level
+        // categories (matches the parent rows in the genre filter dropdown)
+        // instead of dozens of subgenre permutations.
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in raw {
+            for piece in entry.split(';') {
+                let parent = piece.split(" / ").next().unwrap_or(piece).trim();
+                if !parent.is_empty() {
+                    seen.insert(parent.to_string());
+                }
+            }
+        }
+        return Ok(seen.into_iter().collect());
+    }
+
     Ok(raw)
 }
 
-/// Fetch installed games — flat list, one row per installed variant.
+/// Fetch installed games - flat list, one row per installed variant.
 pub fn fetch_installed_games(conn: &Connection) -> DbResult<Vec<Game>> {
     let sql = format!(
         "SELECT {} FROM games WHERE installed = 1 ORDER BY title, language",
@@ -581,7 +600,7 @@ mod tests {
         insert_games(&conn, &[make_game("Doom"), make_game("Doom DE")]).unwrap();
 
         // torrent_source is set post-import by the torrent matching phase,
-        // not by insert_games — update it directly here.
+        // not by insert_games - update it directly here.
         conn.execute("UPDATE games SET torrent_source = 'eXoDOS' WHERE title = 'Doom'", []).unwrap();
         conn.execute("UPDATE games SET torrent_source = 'eXoDOS_GLP' WHERE title = 'Doom DE'", []).unwrap();
 
