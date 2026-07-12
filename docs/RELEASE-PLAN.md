@@ -2,6 +2,11 @@
 
 *Generated 2026-07-12 from a 7-agent deep audit (backend, frontend/UX, release engineering, eXoDOS feature parity, tests, uncommitted-diff review, completeness critic). All findings below cite verified code evidence unless marked "likely".*
 
+> **Status 2026-07-12:** Phase 0 and Phase 1 are DONE (incl. an adversarial
+> review pass; fixes landed for its findings - see CHANGELOG). Still open from
+> Phase 1: one manual end-to-end test of download → uninstall → re-download
+> with a live torrent. Next up: Phase 2 (MIDI) and Phase 5 (CI tests).
+
 ## Verdict
 
 **No design rehaul needed.** The frontend reads as a releasable Steam-like launcher with a coherent dark design system. CI already builds installers for all three OSes (verified green through v0.6.7). Both test suites pass (26/26 vitest, 36/36 cargo).
