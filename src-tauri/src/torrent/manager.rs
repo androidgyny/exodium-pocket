@@ -158,6 +158,14 @@ pub struct DownloadManager {
     torrent_bytes: Arc<Vec<u8>>,
     selected_files: RwLock<HashSet<usize>>,
     data_dir: PathBuf,
+    /// Torrent-relative paths that placeholder cleanup must never delete.
+    /// All four eXoDOS torrents overlay into the same root, so this must be
+    /// the UNION of every enabled collection's file list (set after all
+    /// managers are built) - cleaning with only this torrent's list deletes
+    /// placeholders that sibling torrents still track (cross-collection
+    /// variant of the v0.6.6 stuck-download bug). Falls back to this
+    /// torrent's own list when unset.
+    cleanup_keep_paths: std::sync::RwLock<Option<Arc<Vec<String>>>>,
 }
 
 /// Default location for librqbit's fastresume persistence (`<info_hash>.bitv`,
@@ -226,7 +234,15 @@ impl DownloadManager {
             torrent_bytes,
             selected_files: RwLock::new(HashSet::new()),
             data_dir: data_dir.to_path_buf(),
+            cleanup_keep_paths: std::sync::RwLock::new(None),
         })
+    }
+
+    /// Set the union keep-list for placeholder cleanup (see field docs).
+    pub fn set_cleanup_keep_paths(&self, paths: Arc<Vec<String>>) {
+        if let Ok(mut guard) = self.cleanup_keep_paths.write() {
+            *guard = Some(paths);
+        }
     }
 
     /// Convenience: create session + manager in one call (for single-torrent use).
@@ -414,13 +430,26 @@ impl DownloadManager {
             // librqbit's in-memory state lie about disk state, leaving the
             // user stuck in a "100% but zip missing" loop on subsequent
             // downloads (observed v0.6.4-v0.6.6).
+            // ... and because all collections share one overlay root, prefer
+            // the union keep-list over this torrent's own file list.
             let root = self.torrent_root();
-            let all_torrent_paths: Vec<String> = self.torrent_index.files.iter()
-                .map(|f| f.path.clone())
-                .collect();
+            let keep_paths: Arc<Vec<String>> = self
+                .cleanup_keep_paths
+                .read()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| {
+                    Arc::new(
+                        self.torrent_index
+                            .files
+                            .iter()
+                            .map(|f| f.path.clone())
+                            .collect(),
+                    )
+                });
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                if let Err(e) = cleanup_placeholder_files(&root, &all_torrent_paths) {
+                if let Err(e) = cleanup_placeholder_files(&root, &keep_paths) {
                     log::warn!("Failed to clean up placeholder files: {}", e);
                 }
             });

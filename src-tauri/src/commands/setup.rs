@@ -367,6 +367,10 @@ pub async fn init_download_manager(
         }
     }
 
+    // All enabled torrents overlay into the same root - placeholder cleanup
+    // in any one manager must keep the union of every torrent's file list.
+    set_union_cleanup_keep_paths(&new_managers);
+
     // Acquire write lock only for the insert - no blocking work inside.
     let count = new_managers.len();
     {
@@ -378,6 +382,20 @@ pub async fn init_download_manager(
 
     log::info!("Download managers initialized: {} (data_dir: {})", count, data_dir);
     Ok(count > 0)
+}
+
+/// Give every manager the union of all managers' torrent file lists as its
+/// placeholder-cleanup keep-list. See DownloadManager::cleanup_keep_paths.
+fn set_union_cleanup_keep_paths(managers: &[(String, Arc<DownloadManager>)]) {
+    let union: Arc<Vec<String>> = Arc::new(
+        managers
+            .iter()
+            .flat_map(|(_, m)| m.index().files.iter().map(|f| f.path.clone()))
+            .collect(),
+    );
+    for (_, mgr) in managers {
+        mgr.set_cleanup_keep_paths(Arc::clone(&union));
+    }
 }
 
 /// Reset all data: clear DB, remove config. Returns to setup state.
@@ -1417,6 +1435,7 @@ pub async fn setup_from_local(
             }
         }
     }
+    set_union_cleanup_keep_paths(&new_managers);
 
     // Backfill any LP collections that are absent from the DB.
     // This happens when the DB was originally built from XODOSMetadata.zip (EN only) by the
