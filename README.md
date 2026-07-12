@@ -36,6 +36,28 @@ eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/library.png" width="820" alt="Browse view with cover-art grid, language packs, genre and rating filters" />
+</p>
+
+<p align="center"><em>Browse the full eXoDOS catalogue with genre, rating, and language-pack filters.</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/cover.png" width="820" alt="Game detail with cover-art lightbox" />
+</p>
+
+<p align="center"><em>Game detail panel with description, metadata, and a click-to-zoom cover-art lightbox.</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/gallery.png" width="820" alt="In-game screenshot gallery with thumbnail strip" />
+</p>
+
+<p align="center"><em>Per-game screenshot gallery - flip through original box scans, in-game shots, and ads.</em></p>
+
+---
+
 ## Installation
 
 Download the binary for your platform from the [latest release](https://github.com/tvollstaedt/exodium/releases/latest).
@@ -48,7 +70,7 @@ Because Exodium is not yet signed with an Apple Developer ID, macOS Gatekeeper w
 xattr -cr /Applications/Exodium.app
 ```
 
-This removes the quarantine attribute that macOS adds to downloaded files. The app is otherwise unmodified — the binary itself is built and distributed directly from this repo's CI pipeline.
+This removes the quarantine attribute that macOS adds to downloaded files. The app is otherwise unmodified - the binary itself is built and distributed directly from this repo's CI pipeline.
 
 ### Linux
 
@@ -66,7 +88,7 @@ Two installers are provided: `Exodium_<version>_x64-setup.exe` (NSIS) and `Exodi
    ```powershell
    Unblock-File "$HOME\Downloads\Exodium_<version>_x64-setup.exe"
    ```
-3. Run the installer normally. SmartScreen may still show a warning — click "More info" → "Run anyway".
+3. Run the installer normally. SmartScreen may still show a warning - click "More info" → "Run anyway".
 
 If `Unblock-File` is unavailable, right-click the `.exe` → Properties → tick "Unblock" at the bottom of the General tab → OK.
 
@@ -76,9 +98,9 @@ If `Unblock-File` is unavailable, right-click the `.exe` → Properties → tick
 msiexec /a "path\to\Exodium_<version>_x64_en-US.msi" /qb TARGETDIR=C:\Exodium
 ```
 
-This unpacks the payload to `C:\Exodium\` without invoking Windows Installer's policy checks. Run `C:\Exodium\Exodium.exe` directly — no Start Menu entry, but fully functional.
+This unpacks the payload to `C:\Exodium\` without invoking Windows Installer's policy checks. Run `C:\Exodium\Exodium.exe` directly - no Start Menu entry, but fully functional.
 
-**If downloads are stuck at 0%**: check `%APPDATA%\Exodium\logs\exodium.log` for error details. Firewall issues are one possible cause — allow both "Private" and "Public" networks for Exodium under Windows Security → Firewall & network protection → Allow an app through firewall.
+**If downloads are stuck at 0%**: check `%APPDATA%\Exodium\logs\exodium.log` for error details. Firewall issues are one possible cause - allow both "Private" and "Public" networks for Exodium under Windows Security → Firewall & network protection → Allow an app through firewall.
 
 ---
 
