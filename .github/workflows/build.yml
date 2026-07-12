@@ -91,6 +91,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/rpm/*.rpm
           retention-days: 14
 
       - name: Upload Windows artifacts
@@ -129,5 +130,6 @@ jobs:
             artifacts/**/*.dmg
             artifacts/**/*.deb
             artifacts/**/*.AppImage
+            artifacts/**/*.rpm
             artifacts/**/*.msi
             artifacts/**/*.exe
