@@ -429,7 +429,12 @@ pub async fn get_download_progress(
                         .map(|mut map| {
                             // Prune stale entries (>2 minutes idle) to bound memory.
                             map.retain(|_, (t, _)| now.duration_since(*t).as_secs() < 120);
-                            let entry = map.entry(retry_key).or_insert((now - std::time::Duration::from_secs(60), 0));
+                            // checked_sub: `Instant - Duration` panics when the process
+                            // hasn't been alive that long (observed shortly after boot).
+                            let seed = now
+                                .checked_sub(std::time::Duration::from_secs(60))
+                                .unwrap_or(now);
+                            let entry = map.entry(retry_key).or_insert((seed, 0));
                             if now.duration_since(entry.0).as_secs() >= 5 {
                                 entry.0 = now;
                                 entry.1 = entry.1.saturating_add(1);
@@ -490,9 +495,37 @@ pub async fn cancel_download(
         let game = queries::fetch_game_by_id(&conn, id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Game {} not found", id))?;
+
+        // The GameData ZIP is shared with this game's other language
+        // variants (LP installs auto-download the EN GameData). Only
+        // deselect it when no other in-flight download still needs it.
+        let gamedata_idx = match game.gamedata_torrent_index {
+            Some(gd) => {
+                let still_needed: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM games \
+                         WHERE gamedata_torrent_index = ?1 AND id != ?2 \
+                           AND in_library = 1 AND installed = 0",
+                        rusqlite::params![gd, id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                if still_needed > 0 {
+                    log::info!(
+                        "cancel_download: keeping shared GameData index {} ({} other download(s) need it)",
+                        gd, still_needed
+                    );
+                    None
+                } else {
+                    Some(gd as usize)
+                }
+            }
+            None => None,
+        };
+
         (
             game.game_torrent_index.map(|i| i as usize),
-            game.gamedata_torrent_index.map(|i| i as usize),
+            gamedata_idx,
             game.torrent_source.unwrap_or_else(|| "eXoDOS".to_string()),
         )
     };
@@ -1331,11 +1364,25 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
             let game_name = game.application_path.as_deref()
                 .and_then(crate::commands::setup::game_name_from_app_path)
                 .unwrap_or_else(|| game.title.clone());
-            let zip_path = torrent_root.join(format!("eXo/eXoDOS/{}.zip", game_name));
-            if zip_path.exists() {
+            // LP ZIPs live under the collection's language dir
+            // ("eXo/eXoDOS/<lang>/<name>.zip"); EN under the prefix root.
+            let mut zip_candidates: Vec<PathBuf> = Vec::new();
+            if let Some(ld) = collection_lang_dir(source) {
+                zip_candidates
+                    .push(torrent_root.join(format!("{}/{}/{}.zip", src_game_prefix, ld, game_name)));
+            }
+            zip_candidates.push(torrent_root.join(format!("{}/{}.zip", src_game_prefix, game_name)));
+
+            if let Some(zip_path) = zip_candidates.iter().find(|z| z.exists()) {
                 log::info!("Auto-extracting {} before launch", zip_path.display());
-                let dest = torrent_root.join("eXo/eXoDOS");
-                if let Err(e) = extract_game_zip(&zip_path, &dest) {
+                // Extract next to the ZIP so the game dir lands where the
+                // game_dir probe above expects it (lang dir for LP, prefix
+                // root for EN).
+                let dest = zip_path
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| torrent_root.join(src_game_prefix));
+                if let Err(e) = extract_game_zip(zip_path, &dest) {
                     let msg = e.to_string();
                     if msg.contains("EOCD") || msg.contains("invalid Zip") || msg.contains("Invalid archive") {
                         // ZIP is a torrent stub or corrupted file - reset installed flag so the

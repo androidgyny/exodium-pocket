@@ -62,6 +62,46 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the installed DB, (re)installing the bundled one when the file is
+/// missing, unreadable, or empty (post factory-reset). Every failure comes
+/// back as a message for the startup error dialog instead of a panic.
+fn open_or_reinstall_db(db_path: &Path) -> Result<rusqlite::Connection, String> {
+    if !db_path.exists() {
+        install_bundled_db(db_path)?;
+    }
+
+    match db::open(db_path).and_then(|c| {
+        db::init(&c)?;
+        Ok(c)
+    }) {
+        Ok(c) => {
+            // Check if DB has games; if empty (factory reset), reinstall
+            let count: i64 = c
+                .query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))
+                .unwrap_or(0);
+            if count == 0 {
+                drop(c);
+                install_bundled_db(db_path)?;
+                let c = db::open(db_path)
+                    .map_err(|e| format!("failed to open freshly installed DB: {}", e))?;
+                db::init(&c).map_err(|e| format!("failed to run migrations: {}", e))?;
+                Ok(c)
+            } else {
+                Ok(c)
+            }
+        }
+        Err(e) => {
+            log::warn!("Database unreadable ({}), reinstalling", e);
+            let _ = std::fs::remove_file(db_path);
+            install_bundled_db(db_path)?;
+            let c = db::open(db_path)
+                .map_err(|e| format!("failed to open freshly installed DB: {}", e))?;
+            db::init(&c).map_err(|e| format!("failed to initialize schema: {}", e))?;
+            Ok(c)
+        }
+    }
+}
+
 /// Stage the bundled catalog DB as a plain file so it can be ATTACHed for a
 /// catalog refresh. Returns (path, is_temp) - temp files (gz-extracted) must
 /// be deleted by the caller.
@@ -232,50 +272,36 @@ pub fn run() {
                 log::warn!("resource_dir() unavailable; bundled assets may not be found");
             }
 
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
+            // Any failure from here on is fatal but must be VISIBLE: a panic
+            // in setup() kills the process with nothing on screen. Show a
+            // native error dialog (works before any window exists), then
+            // bail out of setup.
+            let fatal = |app: &tauri::App, msg: String| -> Box<dyn std::error::Error> {
+                log::error!("Fatal startup error: {}", msg);
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                app.dialog()
+                    .message(format!("{}\n\nSee the log folder for details.", msg))
+                    .title("Exodium failed to start")
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+                msg.into()
+            };
+
+            let data_dir = match app.path().app_data_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    return Err(fatal(app, format!("Could not resolve the application data directory: {}", e)));
+                }
+            };
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("exodium.db");
 
             log::info!("Database path: {}", db_path.display());
 
-            // If no DB exists, install the bundled one
-            if !db_path.exists() {
-                if let Err(e) = install_bundled_db(&db_path) {
-                    log::error!("Failed to install bundled DB: {}", e);
-                }
-            }
-
-            // Open DB, reinstall if corrupt
-            let mut conn = match db::open(&db_path).and_then(|c| { db::init(&c)?; Ok(c) }) {
-                Ok(c) => {
-                    // Check if DB has games; if empty (factory reset), reinstall
-                    let count: i64 = c
-                        .query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))
-                        .unwrap_or(0);
-                    if count == 0 {
-                        drop(c);
-                        if let Err(e) = install_bundled_db(&db_path) {
-                            log::error!("Failed to install bundled DB: {}", e);
-                        }
-                        let c = db::open(&db_path).expect("failed to open installed DB");
-                        db::init(&c).expect("failed to run migrations on bundled DB");
-                        c
-                    } else {
-                        c
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Database unreadable ({}), reinstalling", e);
-                    let _ = std::fs::remove_file(&db_path);
-                    if let Err(e) = install_bundled_db(&db_path) {
-                        log::error!("Failed to install bundled DB: {}", e);
-                    }
-                    let c = db::open(&db_path).expect("failed to create database");
-                    db::init(&c).expect("failed to initialize schema");
-                    c
+            let mut conn = match open_or_reinstall_db(&db_path) {
+                Ok(c) => c,
+                Err(msg) => {
+                    return Err(fatal(app, format!("Could not open the game database: {}", msg)));
                 }
             };
 
