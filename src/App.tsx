@@ -17,6 +17,7 @@ import {
   factoryReset,
   getConfig,
   setConfig,
+  setSeedingEnabled,
   scanInstalledGames,
   openLogFolder,
   checkForUpdates,
@@ -157,16 +158,30 @@ function App() {
   const [crtAuto, setCrtAuto] = createSignal(false);
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
 
+  const [seeding, setSeeding] = createSignal(true);
+
   const loadGameDefaults = async () => {
     try {
-      const [shader, fs] = await Promise.all([
+      const [shader, fs, seed] = await Promise.all([
         getConfig("global_glshader"),
         getConfig("default_fullscreen"),
+        getConfig("seeding_enabled"),
       ]);
       setCrtAuto(shader == null || shader === "crt-auto");
       setDefaultFullscreen(fs === "fullscreen");
+      setSeeding(seed !== "0");
     } catch (e) {
       console.warn("[settings] failed to load game defaults:", e);
+    }
+  };
+
+  const handleToggleSeeding = async (next: boolean) => {
+    setSeeding(next);
+    try {
+      await setSeedingEnabled(next);
+    } catch (e) {
+      console.error("[settings] failed to save seeding preference:", e);
+      setSeeding(!next);
     }
   };
 
@@ -322,6 +337,22 @@ function App() {
                           <span class="setting-toggle-info">
                             <span class="setting-toggle-label">Launch in fullscreen</span>
                             <span class="setting-toggle-hint">Start every game fullscreen instead of windowed. Alt+Enter still toggles at runtime.</span>
+                          </span>
+                        </label>
+                      </section>
+
+                      <section class="settings-section">
+                        <h3 class="settings-section-title">Network</h3>
+                        <p class="settings-section-hint">Games are downloaded from the eXoDOS BitTorrent swarm. While Exodium runs, it also uploads pieces you already have to other players.</p>
+                        <label class="setting-toggle">
+                          <input
+                            type="checkbox"
+                            checked={seeding()}
+                            onChange={(e) => handleToggleSeeding(e.currentTarget.checked)}
+                          />
+                          <span class="setting-toggle-info">
+                            <span class="setting-toggle-label">Share with other players (seeding)</span>
+                            <span class="setting-toggle-hint">Keeps the collection alive for everyone. Turning this off caps upload at 1 KB/s.</span>
                           </span>
                         </label>
                       </section>

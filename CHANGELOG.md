@@ -24,6 +24,10 @@
 
 ### Security / hardening
 
+- **Seeding disclosure + toggle**: the setup flow now says plainly that
+  Exodium joins the eXoDOS BitTorrent swarm and uploads while running, and
+  Settings → Network gets a "Share with other players" toggle (default on;
+  off caps upload at 1 KB/s, applied live and persisted).
 - **Single-instance guard**: launching Exodium twice now focuses the existing
   window instead of corrupting the torrent session and contending on the DB.
 - **Disk-space preflight**: downloads are refused upfront with a clear message

@@ -182,6 +182,27 @@ pub fn set_config(
     Ok(())
 }
 
+/// Toggle seeding (uploading to the swarm). Persists the choice and applies
+/// it live to the shared torrent session.
+#[tauri::command]
+pub async fn set_seeding_enabled(
+    db_state: State<'_, DbState>,
+    torrent_state: State<'_, TorrentState>,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        queries::set_config(&conn, "seeding_enabled", if enabled { "1" } else { "0" })
+            .map_err(|e| e.to_string())?;
+    }
+    // All managers share one session - applying via any of them is enough.
+    let mgr = { torrent_state.0.read().await.values().next().cloned() };
+    if let Some(mgr) = mgr {
+        mgr.set_seeding(enabled);
+    }
+    Ok(())
+}
+
 /// Queue a game for download via torrent.
 #[tauri::command]
 pub async fn download_game(

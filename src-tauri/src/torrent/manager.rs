@@ -304,6 +304,21 @@ impl DownloadManager {
         &self.torrent_index
     }
 
+    /// Enable/disable seeding by (un)limiting the shared session's upload
+    /// rate. librqbit has no runtime upload kill-switch; 1 KB/s keeps
+    /// protocol handshakes working while making uploads negligible. The
+    /// session is shared across collections, so calling this on any one
+    /// manager affects all of them.
+    pub fn set_seeding(&self, enabled: bool) {
+        let bps = if enabled {
+            None
+        } else {
+            std::num::NonZeroU32::new(1024)
+        };
+        self.session.ratelimits.set_upload_bps(bps);
+        log::info!("Seeding {}", if enabled { "enabled" } else { "disabled (upload capped at 1 KB/s)" });
+    }
+
     /// Returns true if the given file index has been queued for download.
     pub async fn is_file_selected(&self, file_index: usize) -> bool {
         self.selected_files.read().await.contains(&file_index)

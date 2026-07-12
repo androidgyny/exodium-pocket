@@ -312,6 +312,7 @@ pub async fn init_download_manager(
         .await
         .map_err(|e| e.to_string())?;
     evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
+    apply_seeding_preference(&session, &db_state);
 
     // Build all managers and do slow work (infohash, config extraction) WITHOUT holding
     // the torrent_state write lock - archive.extract() on 7 000+ files blocks for seconds.
@@ -391,6 +392,25 @@ pub async fn init_download_manager(
 
     log::info!("Download managers initialized: {} (data_dir: {})", count, data_dir);
     Ok(count > 0)
+}
+
+/// Apply the persisted seeding preference to a freshly created session.
+/// Default is seeding ON (keeps the eXoDOS swarm healthy); "0" caps upload
+/// at 1 KB/s - see DownloadManager::set_seeding.
+fn apply_seeding_preference(session: &Arc<librqbit::Session>, db_state: &State<'_, DbState>) {
+    let enabled = db_state
+        .0
+        .lock()
+        .ok()
+        .and_then(|conn| queries::get_config(&conn, "seeding_enabled").ok().flatten())
+        .as_deref()
+        != Some("0");
+    if !enabled {
+        session
+            .ratelimits
+            .set_upload_bps(std::num::NonZeroU32::new(1024));
+        log::info!("Seeding disabled by user preference (upload capped at 1 KB/s)");
+    }
 }
 
 /// Drop session torrents whose persisted output folder is outside the current
@@ -1500,6 +1520,7 @@ pub async fn setup_from_local(
         .await
         .map_err(|e| format!("Failed to init session: {}", e))?;
     evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
+    apply_seeding_preference(&session, &db_state);
 
     let mut new_managers = Vec::new();
     for col in COLLECTION_MAP {

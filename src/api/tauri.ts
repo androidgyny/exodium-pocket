@@ -134,6 +134,10 @@ export async function setConfig(key: string, value: string): Promise<void> {
   return invoke("set_config", { key, value });
 }
 
+export async function setSeedingEnabled(enabled: boolean): Promise<void> {
+  return invoke("set_seeding_enabled", { enabled });
+}
+
 export interface TorrentInfo {
   name: string;
   file_count: number;

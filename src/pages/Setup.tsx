@@ -163,6 +163,11 @@ export function Setup(props: SetupProps) {
               </div>
             </Show>
           </div>
+          <p class="setup-note">
+            Games are downloaded from the eXoDOS BitTorrent network. While
+            Exodium runs, it also shares pieces you already have with other
+            players - you can turn this off later in Settings → Network.
+          </p>
           <div class="setup-actions" style="margin-top:20px">
             <div style="display:flex;gap:8px">
               <button class="btn-secondary" onClick={() => setPhase("mode")}>

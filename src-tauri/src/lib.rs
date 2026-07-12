@@ -23,7 +23,7 @@ use commands::{
     get_section_keys, set_game_settings,
     get_setup_status, get_thumbnail_dir, get_torrent_info, init_download_manager,
     init_log_dir, init_resource_dir, install_content_pack, launch_game, list_content_packs,
-    open_log_folder, scan_installed_games, set_config, setup_from_local, setup_import,
+    open_log_folder, scan_installed_games, set_config, set_seeding_enabled, setup_from_local, setup_import,
     setup_start, toggle_favorite, uninstall_content_pack, uninstall_game, validate_exodos_dir,
     ContentPackState, DbState, TorrentState,
 };
@@ -419,6 +419,7 @@ pub fn run() {
             launch_game,
             get_config,
             set_config,
+            set_seeding_enabled,
             get_torrent_info,
             setup_start,
             get_setup_status,
