@@ -3,7 +3,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const win = getCurrentWindow();
 
+// macOS uses native traffic-light controls (decorations: true via
+// tauri.macos.conf.json). The custom frame is for Linux/Windows only,
+// where Tauri runs decorations: false to allow a fully themed shell.
+const isMacOS = typeof navigator !== "undefined"
+  && /Mac/i.test(navigator.platform || navigator.userAgent || "");
+
 export function WindowFrame() {
+  if (isMacOS) { return null; }
+
   const [maximized, setMaximized] = createSignal(false);
 
   onMount(async () => {

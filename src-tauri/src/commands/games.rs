@@ -28,7 +28,7 @@ use crate::torrent::manager::DownloadProgress;
 use super::TorrentState;
 
 /// Resolve the data directory for a collection.
-/// All collections share the same data directory (overlay model — no collection subdirectories).
+/// All collections share the same data directory (overlay model - no collection subdirectories).
 pub fn collection_data_dir(data_dir: &str, _source: &str) -> PathBuf {
     std::path::Path::new(data_dir).to_path_buf()
 }
@@ -192,7 +192,7 @@ pub async fn download_game(
 
     let game_idx = game
         .game_torrent_index
-        .ok_or_else(|| format!("{} has no torrent index — cannot download", game.title))?
+        .ok_or_else(|| format!("{} has no torrent index - cannot download", game.title))?
         as usize;
 
     let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
@@ -259,7 +259,7 @@ pub async fn get_download_progress(
         }
     };
 
-    // Clone Arc references and drop the guard immediately — the guard must not be held
+    // Clone Arc references and drop the guard immediately - the guard must not be held
     // across any .await point to avoid blocking concurrent writers.
     let (manager, main_mgr_opt) = {
         let guard = torrent_state.0.read().await;
@@ -289,7 +289,7 @@ pub async fn get_download_progress(
 
     // Disk-based completion fallback: librqbit's in-memory file_progress can
     // stall short of total_bytes for files that are in fact fully written to
-    // disk — observed when multiple parallel downloads share a torrent and
+    // disk - observed when multiple parallel downloads share a torrent and
     // the per-file stat lags behind actual assembly. The bug manifests as
     // "Waiting for last pieces..." forever, only recovering on app restart
     // (when session state is reloaded from disk). If the target file exists
@@ -349,7 +349,7 @@ pub async fn get_download_progress(
             );
             if let Some(zip_path) = zip_out {
                 if zip_path.exists() {
-                    // ZIP materialised — clear any stuck-download retry counter so a
+                    // ZIP materialised - clear any stuck-download retry counter so a
                     // future stuck cycle on the same game id starts fresh from 0.
                     if let Ok(mut map) = retry_state().lock() {
                         map.remove(&id);
@@ -408,8 +408,8 @@ pub async fn get_download_progress(
                     // Common cause: pieces covering this file were received as a side effect of
                     // downloading a neighboring file, but librqbit never assembled the pieces
                     // into the output file. A plain re-select is a no-op when librqbit's view
-                    // of the file is "already complete", so we toggle the selection — deselect,
-                    // briefly yield, then re-add — to nudge librqbit into re-evaluating the file.
+                    // of the file is "already complete", so we toggle the selection - deselect,
+                    // briefly yield, then re-add - to nudge librqbit into re-evaluating the file.
                     // Throttled to one attempt every 5 seconds to avoid spamming the session.
                     log::warn!(
                         "Download reports 100% but ZIP missing: {}. Re-requesting file assembly.",
@@ -458,13 +458,13 @@ pub async fn get_download_progress(
                         }
                     }
                     // Show as still in-progress so the frontend keeps polling until the ZIP
-                    // appears and extraction can proceed normally — unless we've exhausted retries,
+                    // appears and extraction can proceed normally - unless we've exhausted retries,
                     // in which case surface an error so the UI can prompt the user to cancel.
                     if let Some(ref mut p) = progress {
                         p.finished = false;
                         if attempts > MAX_ATTEMPTS {
                             p.error = Some(
-                                "Download stuck — librqbit reports 100% but the file isn't on disk. \
+                                "Download stuck - librqbit reports 100% but the file isn't on disk. \
                                  Cancel and re-download to recover.".to_string()
                             );
                         }
@@ -497,7 +497,7 @@ pub async fn cancel_download(
         )
     };
 
-    // Deselect from torrent first — if this fails silently, we still want to clear the DB flag.
+    // Deselect from torrent first - if this fails silently, we still want to clear the DB flag.
     // Clone Arc before dropping the guard so we don't hold the read lock across awaits.
     {
         let manager_arc = {
@@ -582,7 +582,7 @@ pub async fn uninstall_game(
                 if save_dir.exists() {
                     let _ = std::fs::remove_dir_all(&save_dir);
                 }
-                // Rename is the fastest way to "back up" — atomic move
+                // Rename is the fastest way to "back up" - atomic move
                 if let Err(e) = std::fs::rename(dir, &save_dir) {
                     // Rename failed (cross-device?), fall back to copy + delete
                     log::warn!("Rename to save dir failed ({}), falling back to copy", e);
@@ -689,7 +689,7 @@ fn patch_dosbox_conf(
             }
             result
         } else {
-            // Strategy 2: Different directory structure — generate custom autoexec
+            // Strategy 2: Different directory structure - generate custom autoexec
             log::info!("LP launch: generating custom autoexec for {} (redirected path not found)", shortcode);
             let settings = content
                 .split("[autoexec]")
@@ -864,7 +864,7 @@ fn find_lp_launch(game_dir: &std::path::Path) -> Option<(String, String)> {
     // Strategy 4: Look for a .exe in subdirectories (skip utilities and installers)
     const SKIP_EXE_STEMS: &[&str] = &[
         "install", "setup", "uninst", "config", "cdtest", "showtext",
-        // DOS/4GW and protected-mode extenders — not the game itself
+        // DOS/4GW and protected-mode extenders - not the game itself
         "rtm", "dos4gw", "dpmi", "cwsdpmi",
     ];
     for (subdir, dir) in search_dirs.iter().filter(|(s, _)| !s.is_empty()) {
@@ -990,7 +990,7 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
     use tauri::Manager;
     let bin = if cfg!(windows) { "dosbox-staging.exe" } else { "dosbox-staging" };
 
-    // 1. resource_dir/dosbox-bin/ — the canonical location since v0.6.6 on
+    // 1. resource_dir/dosbox-bin/ - the canonical location since v0.6.6 on
     //    Windows, where the .exe MUST live alongside its bundled DLLs
     //    (SDL2.dll, vcruntime140.dll, …) plus DOSBox's `resources/` codepage
     //    folder for Windows DLL search to find them. On macOS/Linux this
@@ -1065,7 +1065,7 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
 /// Here we copy it to the user config dir on first launch; subsequent
 /// launches see the dir already exists and no-op.
 ///
-/// On macOS this is only needed when the user opts into CRT shaders —
+/// On macOS this is only needed when the user opts into CRT shaders -
 /// otherwise launch_game writes `output = texture` (SDL renderer, no
 /// shader pipeline) which sidesteps the startup check entirely.
 fn ensure_dosbox_shaders(app: &AppHandle) {
@@ -1206,7 +1206,7 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
             log::warn!("Failed to update last_played for {}: {}", game.title, e);
         }
         (game, data_dir, global_glshader == "crt-auto", default_fullscreen == "fullscreen", per_game_config)
-    }; // lock dropped here — before path resolution + DOSBox spawning
+    }; // lock dropped here - before path resolution + DOSBox spawning
 
     if !game.installed {
         return Err(format!("{} is not installed. Download it first.", game.title));
@@ -1226,8 +1226,8 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
     let dosbox_conf = dosbox_conf.replace('\\', "/");
 
     // Each collection has its own subdirectory (except eXoDOS which is at the root).
-    // Layout:  <data_dir>/<inner_folder>/           — for eXoDOS
-    //          <data_dir>/<col_id>/<inner_folder>/  — for sub-collections
+    // Layout:  <data_dir>/<inner_folder>/           - for eXoDOS
+    //          <data_dir>/<col_id>/<inner_folder>/  - for sub-collections
     let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
     let main_inner = collection_inner_folder("eXoDOS");
     let src_inner = collection_inner_folder(source);
@@ -1247,7 +1247,7 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
         let main_conf = main_torrent_root.join(&dosbox_conf);
         if main_conf.exists() {
             game_conf = main_conf;
-            // Keep working_dir as LP torrent root — lp_redirect will fix mount paths
+            // Keep working_dir as LP torrent root - lp_redirect will fix mount paths
         }
     }
 
@@ -1321,7 +1321,7 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
                 if let Err(e) = extract_game_zip(&zip_path, &dest) {
                     let msg = e.to_string();
                     if msg.contains("EOCD") || msg.contains("invalid Zip") || msg.contains("Invalid archive") {
-                        // ZIP is a torrent stub or corrupted file — reset installed flag so the
+                        // ZIP is a torrent stub or corrupted file - reset installed flag so the
                         // user can re-download rather than hitting this error on every launch.
                         if let Ok(conn) = db_state.0.lock() {
                             let _ = queries::set_game_installed(&conn, id, false);
@@ -1361,12 +1361,12 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
     );
 
     // Log variant for diagnostics; all variants currently map to DOSBox Staging.
-    // ECE builds have no cross-platform release — Staging is used as best-effort.
+    // ECE builds have no cross-platform release - Staging is used as best-effort.
     if let Some(ref variant) = game.dosbox_variant {
         if variant.starts_with("ece") {
             log::warn!(
                 "Game '{}' uses ECE variant '{}' which has no cross-platform build. \
-                 Using DOSBox Staging — gameplay accuracy may differ.",
+                 Using DOSBox Staging - gameplay accuracy may differ.",
                 game.title, variant
             );
         }
@@ -1397,7 +1397,7 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
     // Contents/Resources/glshaders/, so DOSBox aborts when it can't find the
     // mandatory 'interpolation/bilinear' fallback shader. Default path is to
     // force `output = texture` (SDL hardware renderer, no shader pipeline) via
-    // a last-wins conf fragment — sidesteps the shader requirement entirely.
+    // a last-wins conf fragment - sidesteps the shader requirement entirely.
     // If the user enabled CRT shaders globally we skip this override and rely
     // on ensure_dosbox_shaders having installed the pack into
     // ~/Library/Preferences/DOSBox/glshaders (see that function).
@@ -1413,11 +1413,11 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
 
     // Global user-preference overrides (all platforms, applied LAST so they win
     // against per-game and options.conf settings). Always written and always
-    // authoritative — for BOTH the on and off states. Reason: in DOSBox Staging
+    // authoritative - for BOTH the on and off states. Reason: in DOSBox Staging
     // 0.82+ the default `glshader` is `crt-auto`, and ~90% of eXoDOS per-game
     // configs don't explicitly set glshader, so without an active "off" override
     // the user's unchecked CRT toggle would still get crt-auto from Staging's
-    // default. Same logic applies to fullscreen — write the explicit value so
+    // default. Same logic applies to fullscreen - write the explicit value so
     // the user's UI state always wins, regardless of what eXoDOS configs or
     // DOSBox defaults say.
     {
@@ -1493,31 +1493,67 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
         }
     }
 
-    // Capture DOSBox's stdout+stderr to a per-game log file. Without this,
-    // a Tauri GUI build's child process inherits null stdio on Windows and
-    // any DOSBox diagnostic / panic output disappears — making "started then
-    // closed" crashes (Issue #4) impossible to diagnose. The log is truncated
-    // on each launch so it always reflects the most recent attempt.
-    if let Some(log_dir) = crate::commands::setup::LOG_DIR.get() {
-        let _ = std::fs::create_dir_all(log_dir);
-        let dosbox_log_path = log_dir.join(format!("dosbox-{}.log", id));
-        match std::fs::File::create(&dosbox_log_path) {
-            Ok(stdout_file) => match stdout_file.try_clone() {
-                Ok(stderr_file) => {
-                    cmd.stdout(std::process::Stdio::from(stdout_file));
-                    cmd.stderr(std::process::Stdio::from(stderr_file));
-                    log::info!("DOSBox output → {}", dosbox_log_path.display());
-                }
-                Err(e) => log::warn!("DOSBox log handle clone failed: {e}"),
-            },
-            Err(e) => log::warn!(
-                "Failed to open DOSBox log file {}: {e}",
-                dosbox_log_path.display()
-            ),
+    // Stdio handling differs by platform:
+    //
+    // macOS: Tauri 2 GUI builds were observed returning EBADF from posix_spawn
+    // when stdout/stderr used Stdio::from(File) (dup2-based file_actions). We
+    // null all three streams there. DOSBox Staging on macOS writes its own
+    // logs into ~/Library/Preferences/DOSBox/, so the diagnostic surface is
+    // preserved.
+    //
+    // Linux/Windows: keep the per-game log file capture introduced for Issue
+    // #4 ("started then closed" crashes). On Windows in particular, DOSBox
+    // doesn't write a user-accessible log otherwise, so dropping this would
+    // be a diagnostic regression.
+    #[cfg(target_os = "macos")]
+    {
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        cmd.stdin(std::process::Stdio::null());
+        let mut stdio_set = false;
+        if let Some(log_dir) = crate::commands::setup::LOG_DIR.get() {
+            let _ = std::fs::create_dir_all(log_dir);
+            let dosbox_log_path = log_dir.join(format!("dosbox-{}.log", id));
+            match std::fs::File::create(&dosbox_log_path) {
+                Ok(stdout_file) => match stdout_file.try_clone() {
+                    Ok(stderr_file) => {
+                        cmd.stdout(std::process::Stdio::from(stdout_file));
+                        cmd.stderr(std::process::Stdio::from(stderr_file));
+                        log::info!("DOSBox output → {}", dosbox_log_path.display());
+                        stdio_set = true;
+                    }
+                    Err(e) => log::warn!("DOSBox log handle clone failed: {e}"),
+                },
+                Err(e) => log::warn!(
+                    "Failed to open DOSBox log file {}: {e}",
+                    dosbox_log_path.display()
+                ),
+            }
+        }
+        if !stdio_set {
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::null());
         }
     }
 
+    // macOS-only: force fork+exec instead of posix_spawn via a no-op pre_exec.
+    // posix_spawn was the EBADF source on Tauri 2 GUI builds; fork+exec is more
+    // permissive about parent fd state. Linux doesn't have the bug and would
+    // pay a perf cost from skipping posix_spawn, so we don't apply it there.
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe { cmd.pre_exec(|| Ok(())); }
+    }
+
+    log::info!("Spawning DOSBox: {}", dosbox_bin.display());
     cmd.spawn().map_err(|e| {
+        log::error!("DOSBox spawn failed for {}: {} (raw_os_error={:?})",
+            dosbox_bin.display(), e, e.raw_os_error());
         format!(
             "Failed to launch DOSBox Staging ({}): {}",
             dosbox_bin.display(), e

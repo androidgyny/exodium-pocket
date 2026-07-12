@@ -118,7 +118,7 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     // Diagnostic default. Captures the events we need to triage Windows
     // stuck-at-0% (file open errors, peer / tracker activity, sparse-file
     // allocation, our own info) without drowning the file in DHT bootstrap
-    // chatter. Set `RUST_LOG` to override — e.g. `RUST_LOG=librqbit_dht=debug`
+    // chatter. Set `RUST_LOG` to override - e.g. `RUST_LOG=librqbit_dht=debug`
     // if DHT diagnosis is needed too. ~30s of normal startup ≈ tens of KB.
     let default_filter = "info,librqbit=debug,librqbit_dht=info,exodium_lib=debug,rqbit=info";
     let env_filter = EnvFilter::try_from_default_env()
@@ -165,7 +165,7 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     };
 
     if result.is_err() {
-        // A subscriber was already installed (e.g. tests) — not fatal.
+        // A subscriber was already installed (e.g. tests) - not fatal.
         return None;
     }
 
@@ -189,7 +189,7 @@ pub fn run() {
             //   Linux:    ~/.local/share/com.redfox.exodium/logs
             let log_dir = app.path().app_log_dir().ok();
             // Cache the log directory so the `get_log_dir` Tauri command can
-            // serve it without going through `app.path()` again — the
+            // serve it without going through `app.path()` again - the
             // round-trip was observed failing in shipped Windows builds.
             if let Some(ref dir) = log_dir {
                 init_log_dir(dir.clone());
@@ -200,7 +200,7 @@ pub fn run() {
             }
 
             // Cache the resource_dir BEFORE any code tries to read bundled metadata,
-            // torrents, or shaders — the sync helpers in setup.rs rely on this.
+            // torrents, or shaders - the sync helpers in setup.rs rely on this.
             if let Ok(res_dir) = app.path().resource_dir() {
                 init_resource_dir(res_dir);
             } else {
@@ -268,6 +268,18 @@ pub fn run() {
             app.manage(DbState(Mutex::new(conn)));
             app.manage(TorrentState(RwLock::new(std::collections::HashMap::new())));
             app.manage(ContentPackState::new());
+
+            // macOS uses native traffic-light controls (no custom titlebar).
+            // Linux/Windows keep the framed shell from tauri.conf.json
+            // (decorations: false). Done at runtime so we don't depend on
+            // platform-specific config files which weren't picking up reliably.
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_decorations(true);
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
