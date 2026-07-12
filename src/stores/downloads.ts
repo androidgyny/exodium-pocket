@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 import { cancelDownload, downloadGame, getDownloadProgress } from "../api/tauri";
-import { fetchGames, notifyGameLibraryChanged } from "./games";
+import { refreshLoadedGames, notifyGameLibraryChanged } from "./games";
 import { showToast } from "./toasts";
 
 interface DownloadState {
@@ -24,6 +24,18 @@ const NULL_POLL_THRESHOLD = 5; // ~5 seconds at 1s polling interval
 const intervals: Record<number, ReturnType<typeof setInterval>> = {};
 // Track when a game first reached 100% without finishing (stuck detection).
 const stuckSince: Record<number, number> = {};
+// True while the download_game backend command is still in flight. Progress
+// legitimately polls null during that window (torrent handle not attached
+// yet, validation pass, first-ever torrent add), so the didn't-start verdict
+// must not fire until the command has actually resolved.
+const commandPending: Record<number, boolean> = {};
+// Stall detection: timestamp + value of the last observed progress increase.
+const lastProgressAt: Record<number, number> = {};
+const lastProgressVal: Record<number, number> = {};
+// Seconds without progress before the status turns into peer-wait feedback,
+// and before it becomes an actionable stall warning.
+const STALL_HINT_SECS = 15;
+const STALL_WARN_SECS = 90;
 // Highest progress seen per game - prevents bar from jumping backwards due to
 // librqbit stats blips or component remounts resetting the CSS transition.
 const maxProgress: Record<number, number> = {};
@@ -39,6 +51,9 @@ export function getDownloadState(gameId: number): DownloadState | undefined {
 
 export function startGameDownload(gameId: number, title?: string) {
   maxProgress[gameId] = 0;
+  commandPending[gameId] = true;
+  lastProgressVal[gameId] = -1;
+  lastProgressAt[gameId] = Date.now();
   if (title) { titles[gameId] = title; }
   setDownloads((prev) => ({
     ...prev,
@@ -49,9 +64,16 @@ export function startGameDownload(gameId: number, title?: string) {
     try {
       const p = await getDownloadProgress(gameId);
       if (!p) {
-        // Backend returned null - torrent handle not attached yet. Count
-        // consecutive misses and surface a clear error if we've been stuck
-        // here too long (silent-stuck bug on Windows).
+        // Backend returned null - torrent handle not attached yet. While the
+        // download_game command is still running that's expected (first-ever
+        // torrent add + validation can take a while) - keep waiting. Only
+        // once the command has resolved do consecutive misses indicate the
+        // silent-stuck bug (observed on Windows: session.add_torrent()
+        // failure leaves the handle None forever).
+        if (commandPending[gameId]) {
+          nullPollCount[gameId] = 0;
+          return;
+        }
         nullPollCount[gameId] = (nullPollCount[gameId] ?? 0) + 1;
         if (nullPollCount[gameId] >= NULL_POLL_THRESHOLD) {
           clearInterval(interval);
@@ -81,6 +103,8 @@ export function startGameDownload(gameId: number, title?: string) {
         delete intervals[gameId];
         delete stuckSince[gameId];
         delete maxProgress[gameId];
+        delete lastProgressAt[gameId];
+        delete lastProgressVal[gameId];
         setDownloads((prev) => ({
           ...prev,
           [gameId]: { status: p.error!, progress: 0, downloading: false, title: titles[gameId] },
@@ -95,11 +119,13 @@ export function startGameDownload(gameId: number, title?: string) {
         delete intervals[gameId];
         delete stuckSince[gameId];
         delete maxProgress[gameId];
+        delete lastProgressAt[gameId];
+        delete lastProgressVal[gameId];
         setDownloads((prev) => ({
           ...prev,
           [gameId]: { status: "Installed!", progress: 1, downloading: false, title: titles[gameId] },
         }));
-        fetchGames();
+        refreshLoadedGames();
         notifyGameLibraryChanged(gameId);
         // Delay cleanup so isInstalled() stays true until fetchGames() propagates the
         // updated installed flag from the DB into the games store.
@@ -147,10 +173,26 @@ export function startGameDownload(gameId: number, title?: string) {
         }));
       } else {
         delete stuckSince[gameId];
+        // Stall feedback: a torrent with no peers (or a dropped connection)
+        // otherwise sits at "0%" forever with no signal that anything is
+        // wrong. Track the last progress increase and escalate the status.
+        const now = Date.now();
+        if (safeProgress > (lastProgressVal[gameId] ?? -1)) {
+          lastProgressVal[gameId] = safeProgress;
+          lastProgressAt[gameId] = now;
+        }
+        const stalledSecs = (now - (lastProgressAt[gameId] ?? now)) / 1000;
+        const pct = `${(safeProgress * 100).toFixed(0)}%`;
+        let status = pct;
+        if (stalledSecs >= STALL_WARN_SECS) {
+          status = `Stalled at ${pct} - no data received. Check your connection, or cancel and retry.`;
+        } else if (stalledSecs >= STALL_HINT_SECS) {
+          status = safeProgress === 0 ? "Looking for peers…" : `${pct} - waiting for peers…`;
+        }
         setDownloads((prev) => ({
           ...prev,
           [gameId]: {
-            status: `${(safeProgress * 100).toFixed(0)}%`,
+            status,
             progress: safeProgress,
             downloading: true,
             title: titles[gameId],
@@ -165,12 +207,15 @@ export function startGameDownload(gameId: number, title?: string) {
   intervals[gameId] = interval;
 
   // Fire download command
-  downloadGame(gameId).catch((e) => {
+  downloadGame(gameId).then(() => {
+    commandPending[gameId] = false;
+  }).catch((e) => {
     clearInterval(interval);
     delete intervals[gameId];
     delete stuckSince[gameId];
     delete maxProgress[gameId];
     delete nullPollCount[gameId];
+    delete commandPending[gameId];
     setDownloads((prev) => ({
       ...prev,
       [gameId]: { status: `Error: ${e}`, progress: 0, downloading: false, title: titles[gameId] },
@@ -189,6 +234,9 @@ export async function cancelGameDownload(gameId: number) {
   delete stuckSince[gameId];
   delete maxProgress[gameId];
   delete nullPollCount[gameId];
+  delete commandPending[gameId];
+  delete lastProgressAt[gameId];
+  delete lastProgressVal[gameId];
   setDownloads((prev) => {
     const next = { ...prev };
     delete next[gameId];
@@ -196,6 +244,6 @@ export async function cancelGameDownload(gameId: number) {
   });
   try {
     await cancelDownload(gameId);
-    fetchGames();
+    refreshLoadedGames();
   } catch {}
 }

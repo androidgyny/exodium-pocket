@@ -177,6 +177,15 @@ export function Library() {
     }
   };
 
+  // Keep the jump bar in sync with the search box: SearchBar triggers
+  // fetchGames() itself, but section keys come from a separate query and
+  // otherwise go stale (clicking a stale key force-loads all games and then
+  // finds no section to scroll to). Runs on mount too.
+  createEffect(() => {
+    searchQuery();
+    refreshSectionKeys();
+  });
+
   // Jump bar labels: prefer backend-supplied (all keys, deduplicated), fall back to loaded sections
   const jumpBarLabels = createMemo(() => {
     const backend = sectionLabels();
@@ -368,7 +377,6 @@ export function Library() {
 
     refreshGenres();
     fetchGames();
-    refreshSectionKeys();
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -460,6 +468,16 @@ export function Library() {
 
         <Show when={error()}>
           <div class="error">{error()}</div>
+        </Show>
+
+        <Show when={!loading() && !error() && games().length === 0}>
+          <div class="lib-empty">
+            <div class="lib-empty-icon">🔍</div>
+            <div class="lib-empty-text">
+              {searchQuery() ? `No results for "${searchQuery()}"` : "No games match these filters"}
+            </div>
+            <div class="lib-empty-sub">Try a different search or clear the genre filter</div>
+          </div>
         </Show>
 
         <div class="sections-list">

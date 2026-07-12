@@ -65,6 +65,33 @@ export async function fetchGames() {
   }
 }
 
+/// Re-fetch every already-loaded row in one request and swap the list in
+/// place. For background changes (install finished, uninstall) - a plain
+/// fetchGames() would reset infinite scroll to page 1 and yank the user's
+/// Browse position while they're reading.
+export async function refreshLoadedGames() {
+  const count = games().length;
+  if (count === 0) {
+    return fetchGames();
+  }
+  if (loading()) {
+    // A page fetch is in flight; replacing the list now could drop or
+    // duplicate rows. The next library change will refresh again.
+    return;
+  }
+  try {
+    const result: GameList = await getGames(
+      1, Math.max(count, PER_PAGE), searchQuery(), genreFilter(), sortBy(), collectionFilter()
+    );
+    setGames(result.games);
+    setTotalGames(result.total);
+    setHasMore(result.games.length < result.total);
+  } catch (e) {
+    // Background refresh - don't surface an error banner over a working list.
+    console.error("[games] background refresh failed:", e);
+  }
+}
+
 /// Fetch the next page and append to existing list.
 export async function fetchMoreGames() {
   if (loading() || !hasMore()) return;

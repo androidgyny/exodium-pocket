@@ -1,5 +1,5 @@
 import { uninstallGame } from "./api/tauri";
-import { fetchGames, notifyGameLibraryChanged } from "./stores/games";
+import { refreshLoadedGames, notifyGameLibraryChanged } from "./stores/games";
 import { getDownloadState, cancelGameDownload } from "./stores/downloads";
 import { showToast } from "./stores/toasts";
 
@@ -19,7 +19,7 @@ export async function performUninstall(
   setStatus("Uninstalling...");
   try {
     await uninstallGame(gameId);
-    fetchGames();
+    refreshLoadedGames();
     notifyGameLibraryChanged(gameId);
     await onSuccess?.();
     setStatus("");

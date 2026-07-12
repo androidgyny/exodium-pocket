@@ -372,13 +372,15 @@ pub fn get_section_keys(conn: &Connection, f: &GameFilter) -> DbResult<Vec<Strin
         // jumpbar we collapse to just the parent so users see ~15 top-level
         // categories (matches the parent rows in the genre filter dropdown)
         // instead of dozens of subgenre permutations.
+        // IMPORTANT: use only the FIRST entry's parent - Library.tsx's
+        // sectionKey() does the same, and a key derived from a later entry
+        // would appear in the jumpbar with no section to scroll to.
         let mut seen = std::collections::BTreeSet::new();
         for entry in raw {
-            for piece in entry.split(';') {
-                let parent = piece.split(" / ").next().unwrap_or(piece).trim();
-                if !parent.is_empty() {
-                    seen.insert(parent.to_string());
-                }
+            let first = entry.split(';').next().unwrap_or("");
+            let parent = first.split(" / ").next().unwrap_or(first).trim();
+            if !parent.is_empty() {
+                seen.insert(parent.to_string());
             }
         }
         return Ok(seen.into_iter().collect());
