@@ -1,6 +1,7 @@
 import { createSignal, createEffect, Show, For } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { listContentPacks, setConfig, type ContentPackStatus } from "../api/tauri";
 import { startContentPackInstall } from "../stores/contentPacks";
 import { formatBytes } from "../util";
@@ -110,6 +111,15 @@ export function WelcomeModal(props: Props) {
                 </For>
               </div>
             </Show>
+
+            <p class="welcome-credit">
+              Exodium is an unofficial launcher. Every game, config, and piece
+              of artwork is the work of the{" "}
+              <button
+                class="welcome-credit-link"
+                onClick={() => openUrl("https://www.retro-exo.com/exodos.html")}
+              >eXoDOS preservation project</button>.
+            </p>
 
             <div class="ark-dialog-actions">
               <Show when={error()}>

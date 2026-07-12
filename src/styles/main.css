@@ -1947,6 +1947,27 @@ body {
   margin-top: 12px;
 }
 
+.welcome-credit {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-top: 16px;
+}
+
+.welcome-credit-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.welcome-credit-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
 .setup-validation {
   font-size: 11px;
   padding: 6px 10px;
