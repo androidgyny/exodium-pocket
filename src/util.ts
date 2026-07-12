@@ -1,13 +1,15 @@
 import { uninstallGame } from "./api/tauri";
 import { fetchGames, notifyGameLibraryChanged } from "./stores/games";
 import { getDownloadState, cancelGameDownload } from "./stores/downloads";
+import { showToast } from "./stores/toasts";
 
 export async function performUninstall(
   gameId: number,
   setStatus: (s: string) => void,
   onSuccess?: () => void | Promise<void>,
+  title?: string,
 ): Promise<void> {
-  // If a download is in flight, cancel it before removing the directory —
+  // If a download is in flight, cancel it before removing the directory -
   // otherwise the torrent writer races the uninstall and can leave partial
   // files or error out mid-extract.
   if (getDownloadState(gameId)?.downloading) {
@@ -20,12 +22,12 @@ export async function performUninstall(
     fetchGames();
     notifyGameLibraryChanged(gameId);
     await onSuccess?.();
-    setStatus("Uninstalled");
-    setTimeout(() => setStatus(""), 2000);
+    setStatus("");
+    showToast(title ? `Uninstalled ${title}` : "Uninstalled", "success");
   } catch (e) {
     console.error("Uninstall failed:", e);
-    setStatus(`Error: ${String(e)}`);
-    setTimeout(() => setStatus(""), 3000);
+    setStatus("");
+    showToast(title ? `Couldn't uninstall ${title}` : "Uninstall failed", "error", { detail: String(e) });
   }
 }
 

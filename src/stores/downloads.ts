@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { cancelDownload, downloadGame, getDownloadProgress } from "../api/tauri";
 import { fetchGames, notifyGameLibraryChanged } from "./games";
+import { showToast } from "./toasts";
 
 interface DownloadState {
   status: string;
@@ -23,7 +24,7 @@ const NULL_POLL_THRESHOLD = 5; // ~5 seconds at 1s polling interval
 const intervals: Record<number, ReturnType<typeof setInterval>> = {};
 // Track when a game first reached 100% without finishing (stuck detection).
 const stuckSince: Record<number, number> = {};
-// Highest progress seen per game — prevents bar from jumping backwards due to
+// Highest progress seen per game - prevents bar from jumping backwards due to
 // librqbit stats blips or component remounts resetting the CSS transition.
 const maxProgress: Record<number, number> = {};
 // Titles tracked separately so state updates inside the poll loop don't have
@@ -48,7 +49,7 @@ export function startGameDownload(gameId: number, title?: string) {
     try {
       const p = await getDownloadProgress(gameId);
       if (!p) {
-        // Backend returned null — torrent handle not attached yet. Count
+        // Backend returned null - torrent handle not attached yet. Count
         // consecutive misses and surface a clear error if we've been stuck
         // here too long (silent-stuck bug on Windows).
         nullPollCount[gameId] = (nullPollCount[gameId] ?? 0) + 1;
@@ -61,7 +62,7 @@ export function startGameDownload(gameId: number, title?: string) {
           setDownloads((prev) => ({
             ...prev,
             [gameId]: {
-              status: "Download didn't start — open Settings → Diagnostics to view exodium.log.",
+              status: "Download didn't start - open Settings → Diagnostics to view exodium.log.",
               progress: 0,
               downloading: false,
               title: titles[gameId],
@@ -71,7 +72,7 @@ export function startGameDownload(gameId: number, title?: string) {
         return;
       }
       delete nullPollCount[gameId];
-      // Only allow progress to increase — prevents backwards jumps.
+      // Only allow progress to increase - prevents backwards jumps.
       const safeProgress = Math.max(maxProgress[gameId] ?? 0, p.progress);
       maxProgress[gameId] = safeProgress;
 
@@ -84,6 +85,11 @@ export function startGameDownload(gameId: number, title?: string) {
           ...prev,
           [gameId]: { status: p.error!, progress: 0, downloading: false, title: titles[gameId] },
         }));
+        showToast(
+          titles[gameId] ? `Download failed: ${titles[gameId]}` : "Download failed",
+          "error",
+          { detail: p.error! },
+        );
       } else if (p.installed) {
         clearInterval(interval);
         delete intervals[gameId];
@@ -111,7 +117,7 @@ export function startGameDownload(gameId: number, title?: string) {
           [gameId]: { status: "Extracting...", progress: safeProgress, downloading: true, title: titles[gameId] },
         }));
       } else if (safeProgress >= 0.999) {
-        // 100% but ZIP not yet assembled — detect if stuck.
+        // 100% but ZIP not yet assembled - detect if stuck.
         if (!stuckSince[gameId]) { stuckSince[gameId] = Date.now(); }
         const elapsed = (Date.now() - stuckSince[gameId]) / 1000;
         const status = elapsed > 30
@@ -169,6 +175,11 @@ export function startGameDownload(gameId: number, title?: string) {
       ...prev,
       [gameId]: { status: `Error: ${e}`, progress: 0, downloading: false, title: titles[gameId] },
     }));
+    showToast(
+      titles[gameId] ? `Couldn't start download: ${titles[gameId]}` : "Couldn't start download",
+      "error",
+      { detail: String(e) },
+    );
   });
 }
 

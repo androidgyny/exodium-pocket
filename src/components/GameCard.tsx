@@ -19,7 +19,7 @@ interface GameCardProps {
 export function GameCard(props: GameCardProps) {
   const [status, setStatus] = createSignal("");
   const [imgError, setImgError] = createSignal(false);
-  // Index into `thumbnailCandidates()` — advances on each <img onError> so
+  // Index into `thumbnailCandidates()` - advances on each <img onError> so
   // a stale poster dir (shortcode-keyed files from a previous Exodium version)
   // still falls through to the bundled preview on 404.
   const [thumbIdx, setThumbIdx] = createSignal(0);
@@ -32,7 +32,7 @@ export function GameCard(props: GameCardProps) {
   onCleanup(() => { if (favAnimTimeout) { clearTimeout(favAnimTimeout); } });
 
   // Re-sync favorited from props only when the card is reused for a different game (For loop
-  // key change). Do NOT run on favorited-flag-only changes — that would race with the
+  // key change). Do NOT run on favorited-flag-only changes - that would race with the
   // optimistic update in handleToggleFavorite and cause a visible flicker.
   createEffect(on(() => props.game.id, () => { setFavorited(props.game.favorited); }, { defer: true }));
 
@@ -69,7 +69,7 @@ export function GameCard(props: GameCardProps) {
   const langEntries = () => parseLangEntries(props.game);
   const isMultiLang = () => langEntries().length > 1;
 
-  // Read download state — check primary game and any loaded variants
+  // Read download state - check primary game and any loaded variants
   const dlState = () => {
     const dl = downloads();
     if (props.game.id != null && dl[props.game.id]) { return dl[props.game.id]; }
@@ -81,7 +81,7 @@ export function GameCard(props: GameCardProps) {
 
   const handleContextMenu = (e: MouseEvent) => {
     if ((!props.game.installed && !props.game.in_library) || props.game.id == null) { return; }
-    // Don't offer uninstall while a download is in flight — performUninstall
+    // Don't offer uninstall while a download is in flight - performUninstall
     // would cancel it first, but exposing both actions side-by-side is confusing.
     if (isDownloading()) { return; }
     e.preventDefault();
@@ -92,7 +92,7 @@ export function GameCard(props: GameCardProps) {
   const handleContextUninstall = async () => {
     setContextMenu(null);
     if (props.game.id == null) { return; }
-    await performUninstall(props.game.id, setStatus);
+    await performUninstall(props.game.id, setStatus, undefined, props.game.title);
   };
 
   const handleClick = (e: MouseEvent) => {
@@ -105,7 +105,7 @@ export function GameCard(props: GameCardProps) {
     if (props.game.id == null) { return; }
     const prev = favorited();
     setFavorited(!prev);
-    // Retrigger CSS animation by flipping off-then-on across a frame — just
+    // Retrigger CSS animation by flipping off-then-on across a frame - just
     // setting true-to-true wouldn't restart a keyframe animation already in
     // flight (e.g. double-click taps). Clear any previously-scheduled
     // turn-off so a second click within 500ms doesn't clip its own animation.

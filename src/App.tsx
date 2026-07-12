@@ -10,6 +10,7 @@ import { WelcomeModal } from "./components/WelcomeModal";
 import { ContentPackSettings } from "./components/ContentPackSettings";
 import { DownloadIndicator } from "./components/DownloadIndicator";
 import { WindowFrame } from "./components/WindowFrame";
+import { ToastContainer } from "./components/ToastContainer";
 import {
   getSetupStatus,
   initDownloadManager,
@@ -18,13 +19,54 @@ import {
   setConfig,
   scanInstalledGames,
   openLogFolder,
+  checkForUpdates,
 } from "./api/tauri";
 import { fetchGames } from "./stores/games";
 import { loadThumbnailDir } from "./stores/thumbnails";
 import { refreshInstalledPacks } from "./stores/contentPacks";
+import { showToast } from "./stores/toasts";
 import "./styles/main.css";
 
 type AppPhase = "loading" | "setup" | "ready";
+
+/** Friendly labels for collection IDs used in update toasts. */
+const COLLECTION_LABEL: Record<string, string> = {
+  eXoDOS: "eXoDOS",
+  eXoDOS_GLP: "German Language Pack",
+  eXoDOS_PLP: "Polish Language Pack",
+  eXoDOS_SLP: "Spanish Language Pack",
+};
+
+/** Compare bundled-manifest infohashes against the per-collection hashes
+ *  stored at last `init_download_manager`. A mismatch means the shipped
+ *  catalogue moved ahead of the user's DB (typically after an Exodium
+ *  upgrade). Phase 1 only notifies; applying the update is deferred until
+ *  a non-destructive merge-import path exists. Suppress per-session via
+ *  `sessionStorage` so users aren't re-toasted on every focus event. */
+async function notifyCatalogUpdates() {
+  try {
+    if (sessionStorage.getItem("catalog_update_notified") === "1") { return; }
+    const info = await checkForUpdates();
+    if (!info.updates || info.updates.length === 0) { return; }
+    const totalNew = info.updates.reduce((sum, u) => sum + (u.new_game_count ?? 0), 0);
+    const cols = info.updates
+      .map((u) => COLLECTION_LABEL[u.collection] ?? u.collection)
+      .join(", ");
+    showToast(
+      totalNew > 0
+        ? `Catalogue update available: ${totalNew.toLocaleString()} games in ${cols}`
+        : `Catalogue update available for ${cols}`,
+      "info",
+      {
+        detail: "A reimport flow will be added in a future release. For now, run Factory Reset to refresh.",
+        durationMs: 12000,
+      },
+    );
+    sessionStorage.setItem("catalog_update_notified", "1");
+  } catch (e) {
+    console.warn("[updates] check_for_updates failed:", e);
+  }
+}
 
 function App() {
   const [phase, setPhase] = createSignal<AppPhase>("loading");
@@ -58,6 +100,7 @@ function App() {
         if (dir) { setDataDir(dir); }
         loadThumbnailDir();
         refreshInstalledPacks();
+        notifyCatalogUpdates();
       } else {
         setPhase("setup");
       }
@@ -162,7 +205,7 @@ function App() {
     setDeleteGameData(false);
     setResetError("");
     // Block the UI immediately so the user doesn't see a stale Library frame
-    // while the reset (which may take seconds — DB clear + recursive deletes
+    // while the reset (which may take seconds - DB clear + recursive deletes
     // for game folders + content packs) runs to completion. Closing the
     // settings dialog FIRST then setting `resetting()` puts the overlay over
     // whatever was behind the dialog (Library or Setup).
@@ -364,6 +407,8 @@ function App() {
           onClose={() => setShowWelcomeModal(false)}
         />
       </Show>
+
+      <ToastContainer />
 
       <Show when={resetting()}>
         <div class="reset-overlay">

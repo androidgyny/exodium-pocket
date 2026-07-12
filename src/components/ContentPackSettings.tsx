@@ -12,6 +12,7 @@ import {
   installedPacks,
 } from "../stores/contentPacks";
 import { formatBytes } from "../util";
+import { showToast } from "../stores/toasts";
 
 type CollectionPacks = {
   id: string;
@@ -19,8 +20,21 @@ type CollectionPacks = {
   packs: ContentPackStatus[];
 };
 
+type PendingAction = "install" | "remove" | "cancel";
+
 export function ContentPackSettings() {
   const [collections, setCollections] = createSignal<CollectionPacks[]>([]);
+  // Per-pack in-flight action so the matching button shows a spinner and is
+  // disabled until the backend resolves. Keyed by `${col}:${pack}`.
+  const [pending, setPending] = createSignal<Record<string, PendingAction>>({});
+
+  const setPendingFor = (key: string, action: PendingAction | null) => {
+    setPending((prev) => {
+      const next = { ...prev };
+      if (action) { next[key] = action; } else { delete next[key]; }
+      return next;
+    });
+  };
 
   const loadPacks = async () => {
     try {
@@ -54,26 +68,44 @@ export function ContentPackSettings() {
   });
 
   const handleInstall = async (collectionId: string, packId: string, displayName: string) => {
+    const key = `${collectionId}:${packId}`;
+    setPendingFor(key, "install");
     try {
       await startContentPackInstall(collectionId, packId, displayName);
     } catch (e) {
       console.error("Install failed:", e);
+      showToast(`Couldn't install ${displayName}`, "error", { detail: String(e) });
+    } finally {
+      setPendingFor(key, null);
     }
   };
 
-  const handleUninstall = async (collectionId: string, packId: string) => {
+  const handleUninstall = async (collectionId: string, packId: string, displayName: string) => {
+    const key = `${collectionId}:${packId}`;
+    setPendingFor(key, "remove");
     try {
       await removeContentPack(collectionId, packId);
+      showToast(`Removed ${displayName}`, "success");
     } catch (e) {
       console.error("Uninstall failed:", e);
+      showToast(`Couldn't remove ${displayName}`, "error", { detail: String(e) });
+    } finally {
+      setPendingFor(key, null);
     }
   };
 
-  const handleCancel = async (collectionId: string, packId: string) => {
+  const handleCancel = async (collectionId: string, packId: string, displayName: string) => {
+    // cancelContentPackJob clears its activeJobs entry synchronously and
+    // fires the backend cancel asynchronously, so we DON'T set
+    // pending="cancel" - that would briefly mark a row whose job has
+    // already disappeared from the active state, causing a flash where
+    // the "Install"/"Remove" branch shows a stale spinner. Just await
+    // the backend round-trip and surface any error via toast.
     try {
       await cancelContentPackJob(collectionId, packId);
     } catch (e) {
       console.error("Cancel failed:", e);
+      showToast(`Couldn't cancel ${displayName}`, "error", { detail: String(e) });
     }
   };
 
@@ -96,6 +128,7 @@ export function ContentPackSettings() {
                 const isActive = () => !!job() && !job()!.finished;
                 const isFuture = () => !pack.available;
                 const progress = () => job()?.progress ?? 0;
+                const pendingAction = () => pending()[key()];
 
                 const isSupersededByInstalled = () =>
                   col.packs.some((other) =>
@@ -127,7 +160,10 @@ export function ContentPackSettings() {
 
                     <Show when={isActive()}>
                       <span class="pack-status-inline">{statusText()}</span>
-                      <button class="btn-small btn-danger" onClick={() => handleCancel(col.id, pack.id)}>Cancel</button>
+                      <button
+                        class="btn-small btn-danger"
+                        onClick={() => handleCancel(col.id, pack.id, pack.display_name)}
+                      >Cancel</button>
                       <div class="pack-progress">
                         <AutoProgress value={progress()} class="mini" indeterminate={job()?.phase !== "downloading" || undefined} />
                       </div>
@@ -139,8 +175,18 @@ export function ContentPackSettings() {
 
                     <Show when={!isActive() && !job()}>
                       <Show when={pack.installed}>
-                        <span class="pack-status-inline">Installed · v{pack.installed_version}</span>
-                        <button class="btn-small btn-danger" onClick={() => handleUninstall(col.id, pack.id)}>Remove</button>
+                        <span class="pack-status-inline">
+                          {pendingAction() === "remove" ? "Removing…" : `Installed · v${pack.installed_version}`}
+                        </span>
+                        <button
+                          class="btn-small btn-danger"
+                          onClick={() => handleUninstall(col.id, pack.id, pack.display_name)}
+                          disabled={pendingAction() === "remove"}
+                        >
+                          <Show when={pendingAction() === "remove"} fallback={<>Remove</>}>
+                            <span class="btn-spinner" /> Remove
+                          </Show>
+                        </button>
                       </Show>
 
                       <Show when={!pack.installed && isSupersededByInstalled()}>
@@ -148,7 +194,15 @@ export function ContentPackSettings() {
                       </Show>
 
                       <Show when={!pack.installed && !isSupersededByInstalled() && !isFuture()}>
-                        <button class="btn-small" onClick={() => handleInstall(col.id, pack.id, pack.display_name)}>Install</button>
+                        <button
+                          class="btn-small"
+                          onClick={() => handleInstall(col.id, pack.id, pack.display_name)}
+                          disabled={pendingAction() === "install"}
+                        >
+                          <Show when={pendingAction() === "install"} fallback={<>Install</>}>
+                            <span class="btn-spinner" /> Starting…
+                          </Show>
+                        </button>
                       </Show>
 
                       <Show when={isFuture()}>
