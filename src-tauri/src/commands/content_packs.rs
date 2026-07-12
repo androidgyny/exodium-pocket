@@ -26,7 +26,7 @@ impl ContentPackState {
     }
 }
 
-struct ContentPackJob {
+pub struct ContentPackJob {
     phase: String,
     downloaded_bytes: u64,
     total_bytes: u64,
@@ -339,6 +339,7 @@ fn resolve_pack_install_dir(
 
 /// Full install pipeline: pre-flight (supersede removal, disk space) + download/verify/extract.
 /// Runs entirely inside tokio::spawn so no blocking work stalls the Tauri command handler.
+#[allow(clippy::too_many_arguments)]
 async fn do_install_full(
     jobs: &Arc<RwLock<HashMap<String, ContentPackJob>>>,
     app_handle: &AppHandle,
@@ -536,7 +537,7 @@ async fn do_install(
 ) -> Result<(), String> {
     use flate2::read::GzDecoder;
     use sha2::{Digest, Sha256};
-    use std::io::Read;
+    
 
     let downloads_dir = Path::new(data_dir).join(".content-downloads");
     std::fs::create_dir_all(&downloads_dir)
@@ -670,7 +671,7 @@ async fn do_install(
     }
 
     // Atomic rename; fall back to copy+remove on EXDEV.
-    if let Err(_) = std::fs::rename(&staging_dir, &install_dir) {
+    if std::fs::rename(&staging_dir, &install_dir).is_err() {
         // Cross-filesystem: copy then remove.
         copy_dir_recursive(&staging_dir, &install_dir)?;
         let _ = std::fs::remove_dir_all(&staging_dir);
@@ -714,7 +715,7 @@ pub async fn uninstall_content_pack(
     collection: String,
     pack_id: String,
 ) -> Result<(), String> {
-    let (data_dir, install_dir) = {
+    let (_data_dir, install_dir) = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         let data_dir = queries::get_config(&conn, "data_dir")
             .map_err(|e| e.to_string())?

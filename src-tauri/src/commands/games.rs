@@ -64,6 +64,7 @@ pub struct GameList {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn get_games(
     state: State<DbState>,
     page: Option<usize>,
@@ -360,7 +361,7 @@ pub async fn get_download_progress(
                     if lock_path.exists() {
                         if let Ok(age) = std::fs::metadata(&lock_path)
                             .and_then(|m| m.modified())
-                            .and_then(|t| t.elapsed().map_err(|e| std::io::Error::other(e)))
+                            .and_then(|t| t.elapsed().map_err(std::io::Error::other))
                         {
                             if age.as_secs() > 300 {
                                 log::warn!("Removing stale extraction lock: {}", lock_path.display());
@@ -1098,6 +1099,7 @@ fn extract_game_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Resul
 ///  - macOS: Exodium.app/Contents/MacOS/dosbox-staging (next to the main binary)
 ///  - Windows: <install_dir>/dosbox-staging.exe (next to the main .exe)
 ///  - Linux (AppImage/deb): resources/dosbox-staging (inside the resource dir)
+///
 /// So we check `current_exe().parent()` AND `resource_dir()`, then fall back to PATH.
 fn resolve_dosbox(app: &AppHandle) -> PathBuf {
     use tauri::Manager;

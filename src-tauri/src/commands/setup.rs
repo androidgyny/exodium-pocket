@@ -250,7 +250,7 @@ fn seed_fastresume_bitvs(
         }
 
         let piece_count = torrent.pieces.len();
-        let byte_count = (piece_count + 7) / 8;
+        let byte_count = piece_count.div_ceil(8);
         match std::fs::write(&bitv_path, vec![0u8; byte_count]) {
             Ok(_) => log::info!(
                 "fastresume: seeded empty bitv for {} ({} pieces, {} bytes)",
@@ -1909,7 +1909,7 @@ fn scan_installed_games_with_db(
                 .filter(|e| {
                     e.path()
                         .extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("zip"))
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
                         // Skip zero-byte stubs and tiny torrent placeholders (<1 KB)
                         && e.metadata().map(|m| m.len() >= 1024).unwrap_or(false)
                 })

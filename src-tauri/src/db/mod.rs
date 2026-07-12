@@ -383,7 +383,7 @@ fn populate_manual_paths(conn: &Connection) -> DbResult<()> {
         )?;
         let mut updated = 0usize;
         for (title, mp) in &manual_map {
-            updated += stmt.execute(rusqlite::params![mp, title])? as usize;
+            updated += stmt.execute(rusqlite::params![mp, title])?;
         }
         log::info!("populate_manual_paths: updated {} rows from {} XML entries", updated, manual_map.len());
     }
@@ -556,7 +556,7 @@ pub fn propagate_lp_thumbnail_keys(conn: &Connection) -> DbResult<()> {
                 AND en.thumbnail_key IS NOT NULL
           )",
         [],
-    )? as usize;
+    )?;
 
     // Pass 2: canonical-title matching - catches LP games with divergent
     // shortcodes but recognizably-same titles.

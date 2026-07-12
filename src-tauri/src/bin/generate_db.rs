@@ -32,8 +32,8 @@ fn normalize_title(title: &str) -> String {
     }
 
     // Normalize punctuation to spaces
-    t = t.replace(':', " ").replace('-', " ").replace(',', " ").replace('&', " and ");
-    t = t.replace('\'', "").replace('!', " ").replace('.', " ");
+    t = t.replace([':', '-', ','], " ").replace('&', " and ");
+    t = t.replace('\'', "").replace(['!', '.'], " ");
 
     // Strip trailing year suffix like " (1993)"
     if let Some(idx) = t.rfind('(') {
@@ -275,10 +275,13 @@ fn main() {
             .unwrap();
         for row in rows.flatten() {
             let normalized = normalize_title(&row.0);
-            if en_lookup.contains_key(&normalized) {
-                en_ambiguous.insert(normalized);
-            } else {
-                en_lookup.insert(normalized, row.1);
+            match en_lookup.entry(normalized) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    en_ambiguous.insert(e.key().clone());
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(row.1);
+                }
             }
         }
     }

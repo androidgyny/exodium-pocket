@@ -131,7 +131,9 @@ impl TorrentIndex {
 
 // Compile-time check that DownloadManager can be used in Tauri State<>.
 const _: () = {
+    #[allow(dead_code)]
     fn assert_send_sync<T: Send + Sync>() {}
+    #[allow(dead_code)]
     fn check() {
         assert_send_sync::<manager::DownloadManager>();
     }
