@@ -607,6 +607,9 @@ fn main() {
     // Save default collections config
     db::queries::set_config(&conn, "collections", "eXoDOS,eXoDOS_GLP,eXoDOS_SLP,eXoDOS_PLP")
         .unwrap();
+    // Stamp the catalog version so fresh installs skip the startup refresh.
+    db::queries::set_config(&conn, "catalog_version", &db::CATALOG_VERSION.to_string())
+        .unwrap();
 
     println!("\nDatabase written to {}", output_path.display());
     let size = std::fs::metadata(&output_path).unwrap().len();

@@ -62,6 +62,31 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Stage the bundled catalog DB as a plain file so it can be ATTACHed for a
+/// catalog refresh. Returns (path, is_temp) - temp files (gz-extracted) must
+/// be deleted by the caller.
+fn stage_bundled_catalog(data_dir: &Path) -> Result<(std::path::PathBuf, bool), String> {
+    let metadata_dir = bundled_metadata_dir()?;
+
+    let bundled_db = metadata_dir.join("exodium.db");
+    if bundled_db.exists() {
+        return Ok((bundled_db, false));
+    }
+    let bundled_db_gz = metadata_dir.join("exodium.db.gz");
+    if bundled_db_gz.exists() {
+        let tmp = data_dir.join("catalog-refresh.db");
+        let file = std::fs::File::open(&bundled_db_gz).map_err(|e| e.to_string())?;
+        let mut decoder = flate2::read::GzDecoder::new(file);
+        let mut out = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        std::io::copy(&mut decoder, &mut out).map_err(|e| e.to_string())?;
+        return Ok((tmp, true));
+    }
+    Err(format!(
+        "No bundled database found in {}",
+        metadata_dir.display()
+    ))
+}
+
 /// Make-writer that locks a shared file handle on every write. Cloning the
 /// `Arc` is cheap; locking is per-event and brief, so contention is not a
 /// concern for our log volume.
@@ -224,7 +249,7 @@ pub fn run() {
             }
 
             // Open DB, reinstall if corrupt
-            let conn = match db::open(&db_path).and_then(|c| { db::init(&c)?; Ok(c) }) {
+            let mut conn = match db::open(&db_path).and_then(|c| { db::init(&c)?; Ok(c) }) {
                 Ok(c) => {
                     // Check if DB has games; if empty (factory reset), reinstall
                     let count: i64 = c
@@ -253,6 +278,30 @@ pub fn run() {
                     c
                 }
             };
+
+            // Catalog refresh: existing installs never re-read the bundled DB,
+            // so corrected/new catalog data (torrent indices, sizes, new games)
+            // is applied here whenever the shipped CATALOG_VERSION moves ahead
+            // of the installed one. User state (installed/favorites/...) and
+            // games.id survive - see db::refresh_catalog.
+            let installed_ver = db::catalog_version(&conn);
+            if installed_ver < db::CATALOG_VERSION {
+                match stage_bundled_catalog(&data_dir) {
+                    Ok((cat_path, is_temp)) => {
+                        match db::refresh_catalog(&mut conn, &cat_path) {
+                            Ok((updated, inserted)) => log::info!(
+                                "Catalog refreshed v{} -> v{}: {} rows updated, {} inserted",
+                                installed_ver, db::CATALOG_VERSION, updated, inserted
+                            ),
+                            Err(e) => log::error!("Catalog refresh failed: {}", e),
+                        }
+                        if is_temp {
+                            let _ = std::fs::remove_file(&cat_path);
+                        }
+                    }
+                    Err(e) => log::error!("Catalog refresh: bundled DB unavailable: {}", e),
+                }
+            }
 
             // Clean up stale content-pack download artifacts from interrupted installs.
             if let Ok(Some(user_data_dir)) = db::queries::get_config(&conn, "data_dir") {

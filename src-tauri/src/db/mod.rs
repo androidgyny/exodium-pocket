@@ -15,6 +15,14 @@ pub enum DbError {
 
 pub type DbResult<T> = Result<T, DbError>;
 
+/// Version of the bundled game catalog. Bump whenever the bundled
+/// exodium.db ships materially different catalog data (new eXoDOS torrent,
+/// corrected torrent indices, ...). At startup, an installed DB whose
+/// `catalog_version` config is older gets its catalog rows refreshed from
+/// the bundled DB via `refresh_catalog` - user state is preserved.
+/// History: 1 = pre-versioning (0.6.x), 2 = path-anchored torrent indices.
+pub const CATALOG_VERSION: i64 = 2;
+
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
     let conn = Connection::open(path)?;
@@ -27,6 +35,128 @@ pub fn init(conn: &Connection) -> DbResult<()> {
     schema::create_tables(conn)?;
     migrate(conn)?;
     Ok(())
+}
+
+/// Column names of a table, in declaration order. Accepts a
+/// schema-qualified name ("cat.games") - PRAGMA requires the schema on the
+/// pragma itself, not in the argument.
+fn table_columns(conn: &Connection, table: &str) -> DbResult<Vec<String>> {
+    let pragma = match table.split_once('.') {
+        Some((schema, name)) => format!("PRAGMA {}.table_info({})", schema, name),
+        None => format!("PRAGMA table_info({})", table),
+    };
+    let mut stmt = conn.prepare(&pragma)?;
+    let cols = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(cols)
+}
+
+/// Refresh catalog data from a newer bundled DB while preserving user state.
+///
+/// Rows are matched on `application_path` (unique in practice; the few rows
+/// with an empty path fall back to title+language). Matched rows are updated
+/// in place so `games.id` stays stable - `game_config` and `downloads` FKs
+/// remain valid. Rows new in the bundled catalog are inserted with clean
+/// user state; installed rows that vanished from the catalog are kept and
+/// logged (their torrent indices may be stale).
+///
+/// Returns (updated, inserted).
+pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(usize, usize)> {
+    conn.execute(
+        "ATTACH DATABASE ?1 AS cat",
+        [bundled_db.to_string_lossy().as_ref()],
+    )?;
+
+    let result = (|| {
+        // Catalog columns = intersection of both schemas, minus the id and
+        // the per-user columns. Computed dynamically so future ALTER TABLE
+        // additions are picked up without touching this function.
+        const USER_COLS: [&str; 5] = ["id", "in_library", "installed", "favorited", "last_played"];
+        let installed_cols = table_columns(conn, "games")?;
+        let cat_cols = table_columns(conn, "cat.games")?;
+        let catalog_cols: Vec<&str> = installed_cols
+            .iter()
+            .filter(|c| cat_cols.contains(c) && !USER_COLS.contains(&c.as_str()))
+            .map(|c| c.as_str())
+            .collect();
+
+        let tx = conn.unchecked_transaction()?;
+
+        // The same row-matching predicate everywhere: by application_path
+        // when the catalog row has one, by title+language otherwise.
+        const MATCH: &str = "((c.application_path IS NOT NULL AND c.application_path != '' \
+                              AND g.application_path = c.application_path) \
+                          OR ((c.application_path IS NULL OR c.application_path = '') \
+                              AND g.title = c.title AND g.language = c.language))";
+
+        let set_list = catalog_cols
+            .iter()
+            .map(|c| format!("{c} = c.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let updated = tx.execute(
+            &format!(
+                "UPDATE games AS g SET {set_list} FROM cat.games AS c \
+                 WHERE {MATCH}"
+            ),
+            [],
+        )?;
+
+        let col_list = catalog_cols.join(", ");
+        let sel_list = catalog_cols
+            .iter()
+            .map(|c| format!("c.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let inserted = tx.execute(
+            &format!(
+                "INSERT INTO games ({col_list}) \
+                 SELECT {sel_list} FROM cat.games AS c \
+                 WHERE NOT EXISTS (SELECT 1 FROM games g WHERE {MATCH})"
+            ),
+            [],
+        )?;
+
+        let stale: i64 = tx.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM games g \
+                 WHERE NOT EXISTS (SELECT 1 FROM cat.games c WHERE {MATCH})"
+            ),
+            [],
+            |r| r.get(0),
+        )?;
+        if stale > 0 {
+            log::warn!(
+                "refresh_catalog: {} installed rows are no longer in the bundled catalog \
+                 (kept; their torrent indices may be stale)",
+                stale
+            );
+        }
+
+        tx.execute(
+            "INSERT INTO config (key, value) VALUES ('catalog_version', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [CATALOG_VERSION.to_string()],
+        )?;
+        tx.commit()?;
+        Ok((updated, inserted))
+    })();
+
+    let _ = conn.execute("DETACH DATABASE cat", []);
+    result
+}
+
+/// Installed DB's catalog version (0 when the key predates versioning).
+pub fn catalog_version(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT value FROM config WHERE key = 'catalog_version'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(0)
 }
 
 /// Additive migrations for existing databases.
@@ -497,4 +627,109 @@ pub fn populate_thumbnail_keys(conn: &Connection) -> DbResult<()> {
     tx.commit()?;
     log::info!("Populated thumbnail_key for {} games (migration)", rows.len());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_db(dir: &Path, name: &str) -> (std::path::PathBuf, Connection) {
+        let path = dir.join(name);
+        let conn = open(&path).unwrap();
+        init(&conn).unwrap();
+        (path, conn)
+    }
+
+    fn insert_game(
+        conn: &Connection,
+        title: &str,
+        app_path: &str,
+        torrent_index: i64,
+        description: &str,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO games (title, language, application_path, game_torrent_index, description) \
+             VALUES (?1, 'EN', ?2, ?3, ?4)",
+            rusqlite::params![title, app_path, torrent_index, description],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn refresh_catalog_updates_in_place_and_preserves_user_state() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // "Installed" DB: two games, user state on A, per-game config on A.
+        let (_, mut installed) = mk_db(dir.path(), "installed.db");
+        let id_a = insert_game(&installed, "Alpha", "eXo\\eXoDOS\\!dos\\AL\\dosbox.conf", 10, "old");
+        let id_b = insert_game(&installed, "Beta", "eXo\\eXoDOS\\!dos\\BE\\dosbox.conf", 20, "old");
+        installed
+            .execute(
+                "UPDATE games SET installed = 1, in_library = 1, favorited = 1, \
+                 last_played = '2026-01-01' WHERE id = ?1",
+                [id_a],
+            )
+            .unwrap();
+        installed
+            .execute(
+                "INSERT INTO game_config (game_id, key, value) VALUES (?1, 'k', 'v')",
+                [id_a],
+            )
+            .unwrap();
+
+        // "Bundled" DB: A with corrected index + new description, D brand new.
+        // B is gone from the catalog (must be kept in the installed DB).
+        let (bundled_path, bundled) = mk_db(dir.path(), "bundled.db");
+        insert_game(&bundled, "Alpha", "eXo\\eXoDOS\\!dos\\AL\\dosbox.conf", 99, "new");
+        insert_game(&bundled, "Delta", "eXo\\eXoDOS\\!dos\\DE\\dosbox.conf", 30, "new");
+        drop(bundled);
+
+        assert_eq!(catalog_version(&installed), 0);
+        let (updated, inserted) = refresh_catalog(&mut installed, &bundled_path).unwrap();
+        assert_eq!((updated, inserted), (1, 1));
+        assert_eq!(catalog_version(&installed), CATALOG_VERSION);
+
+        // A: catalog columns refreshed, id + user state intact.
+        let (id, idx, desc, inst, fav, last): (i64, i64, String, i64, i64, String) = installed
+            .query_row(
+                "SELECT id, game_torrent_index, description, installed, favorited, last_played \
+                 FROM games WHERE title = 'Alpha'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(id, id_a);
+        assert_eq!(idx, 99);
+        assert_eq!(desc, "new");
+        assert_eq!((inst, fav), (1, 1));
+        assert_eq!(last, "2026-01-01");
+
+        // game_config survived (id stable, no cascade).
+        let cfg: String = installed
+            .query_row(
+                "SELECT value FROM game_config WHERE game_id = ?1 AND key = 'k'",
+                [id_a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cfg, "v");
+
+        // B kept even though gone from the catalog; D inserted with clean state.
+        let b_count: i64 = installed
+            .query_row("SELECT COUNT(*) FROM games WHERE id = ?1", [id_b], |r| r.get(0))
+            .unwrap();
+        assert_eq!(b_count, 1);
+        let (d_inst, d_lib): (i64, i64) = installed
+            .query_row(
+                "SELECT installed, in_library FROM games WHERE title = 'Delta'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((d_inst, d_lib), (0, 0));
+
+        // Second run is a no-op refresh gate.
+        assert!(catalog_version(&installed) >= CATALOG_VERSION);
+    }
 }
