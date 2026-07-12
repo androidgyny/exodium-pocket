@@ -462,7 +462,12 @@ impl DownloadManager {
                         format!("[{}]={}/{} ({:.1}%) {}", idx, dl, size, pct, name)
                     }).collect();
                     if let Some(ref err) = s.error {
+                        // Also fires when the torrent was removed from the
+                        // session (uninstall invalidation) - stats() then
+                        // reports a broken "None" state every poll. Log once
+                        // and stop instead of spamming for the full 60 s.
                         log::error!("[stats] state={} error={:?}", s.state, err);
+                        break;
                     }
                     log::info!(
                         "[stats] {} | live={} | files: {}",

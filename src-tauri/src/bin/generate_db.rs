@@ -611,6 +611,35 @@ fn main() {
     db::queries::set_config(&conn, "catalog_version", &db::CATALOG_VERSION.to_string())
         .unwrap();
 
+    // refresh_catalog matches rows on application_path (title+language for
+    // empty paths) - duplicates would make the in-place update pick an
+    // arbitrary winner and the insert duplicate rows. Fail the build instead.
+    let dup_paths: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (SELECT application_path FROM games \
+             WHERE application_path IS NOT NULL AND application_path != '' \
+             GROUP BY application_path HAVING COUNT(*) > 1)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let dup_fallback: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (SELECT title, language FROM games \
+             WHERE application_path IS NULL OR application_path = '' \
+             GROUP BY title, language HAVING COUNT(*) > 1)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        dup_paths == 0 && dup_fallback == 0,
+        "catalog refresh keys are not unique: {} duplicate application_paths, \
+         {} duplicate title+language among empty-path rows",
+        dup_paths,
+        dup_fallback
+    );
+
     println!("\nDatabase written to {}", output_path.display());
     let size = std::fs::metadata(&output_path).unwrap().len();
     println!("Size: {:.1} MB", size as f64 / 1024.0 / 1024.0);

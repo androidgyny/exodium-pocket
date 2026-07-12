@@ -501,11 +501,15 @@ pub async fn cancel_download(
         // deselect it when no other in-flight download still needs it.
         let gamedata_idx = match game.gamedata_torrent_index {
             Some(gd) => {
+                // in_library alone (not installed=0): a variant whose game
+                // ZIP already extracted may still be fetching this GameData.
+                // Over-retention for long-installed variants is harmless -
+                // their GameData is complete anyway.
                 let still_needed: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM games \
                          WHERE gamedata_torrent_index = ?1 AND id != ?2 \
-                           AND in_library = 1 AND installed = 0",
+                           AND in_library = 1",
                         rusqlite::params![gd, id],
                         |r| r.get(0),
                     )
@@ -608,7 +612,7 @@ pub async fn uninstall_game(
             .ok_or_else(|| "Cannot determine database path".to_string())?
     };
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let deleted_rels: Vec<String> = tauri::async_runtime::spawn_blocking(move || {
         if let Some(ref dir) = game_dir {
             if dir.exists() {
                 // Back up the entire game directory (preserves saves, configs, etc.)
@@ -631,12 +635,19 @@ pub async fn uninstall_game(
             }
         }
 
-        let mut zip_paths = vec![torrent_root.join(format!("{}/{}.zip", game_prefix, game_name))];
+        // Track which ZIPs actually got deleted (torrent-relative paths) so
+        // the caller can reset piece bookkeeping in exactly the torrents
+        // that tracked them.
+        let mut zip_rels = vec![format!("{}/{}.zip", game_prefix, game_name)];
         for ld in LANG_DIRS {
-            zip_paths.push(torrent_root.join(format!("{}/{}/{}.zip", game_prefix, ld, game_name)));
+            zip_rels.push(format!("{}/{}/{}.zip", game_prefix, ld, game_name));
         }
-        for zip in &zip_paths {
-            let _ = std::fs::remove_file(zip);
+        let mut deleted_rels: Vec<String> = Vec::new();
+        for rel in &zip_rels {
+            let zip = torrent_root.join(rel);
+            if zip.exists() && std::fs::remove_file(&zip).is_ok() {
+                deleted_rels.push(rel.clone());
+            }
         }
 
         if let Ok(conn) = db::open(&db_path) {
@@ -651,23 +662,75 @@ pub async fn uninstall_game(
         } else {
             log::error!("Failed to open DB for uninstall update");
         }
+
+        deleted_rels
     })
     .await
     .map_err(|e| e.to_string())?;
 
-    // The deleted ZIP's pieces are still marked "had" in librqbit's
-    // fastresume state; a later re-download would report 100% instantly with
-    // no file on disk (stuck-download loop). Drop the torrent from the
-    // session so the next download re-derives piece state from disk.
-    let mgr = { torrent_state.0.read().await.get(source).cloned() };
-    if let Some(mgr) = mgr {
-        let drop_indices: Vec<usize> = game
-            .game_torrent_index
-            .map(|i| i as usize)
-            .into_iter()
+    // Deleted ZIPs' pieces are still marked "had" in librqbit's fastresume
+    // state; a later re-download would report 100% instantly with no file on
+    // disk (stuck-download loop). All collections overlay one root, so a
+    // deleted ZIP may be tracked by a torrent OTHER than this game's source
+    // (e.g. a GLP uninstall also removes the EN ZIP). Reset exactly the
+    // torrents that tracked a deleted path.
+    let managers: Vec<(String, std::sync::Arc<crate::torrent::manager::DownloadManager>)> = {
+        let guard = torrent_state.0.read().await;
+        guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+
+    // Only deselect this game's shared GameData when no other variant still
+    // wants it (mirrors cancel_download).
+    let gamedata_drop: Option<usize> = match game.gamedata_torrent_index {
+        Some(gd) => {
+            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+            let still_needed: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM games \
+                     WHERE gamedata_torrent_index = ?1 AND id != ?2 AND in_library = 1",
+                    rusqlite::params![gd, id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if still_needed > 0 { None } else { Some(gd as usize) }
+        }
+        None => None,
+    };
+
+    for (col_id, mgr) in managers {
+        let mut drop_indices: Vec<usize> = deleted_rels
+            .iter()
+            .filter_map(|rel| mgr.index().find_by_path(rel).map(|f| f.index))
             .collect();
-        if let Err(e) = mgr.invalidate_after_file_delete(&drop_indices).await {
-            log::warn!("Failed to reset torrent state after uninstall: {}", e);
+        let is_source = col_id == source;
+        if is_source {
+            if let Some(gi) = game.game_torrent_index {
+                let gi = gi as usize;
+                if !drop_indices.contains(&gi) {
+                    drop_indices.push(gi);
+                }
+            }
+            if let Some(gd) = gamedata_drop {
+                if !drop_indices.contains(&gd) {
+                    drop_indices.push(gd);
+                }
+            }
+        }
+
+        let tracked_deleted = deleted_rels
+            .iter()
+            .any(|rel| mgr.index().find_by_path(rel).is_some());
+        if tracked_deleted {
+            // Disk state changed under this torrent - full invalidation.
+            if let Err(e) = mgr.invalidate_after_file_delete(&drop_indices).await {
+                log::warn!("Failed to reset {} torrent state after uninstall: {}", col_id, e);
+            }
+        } else if is_source {
+            // Nothing deleted from this torrent's files; just drop the
+            // selection so the re-add doesn't fetch the uninstalled game.
+            for idx in drop_indices {
+                mgr.deselect_file(idx).await;
+            }
         }
     }
 

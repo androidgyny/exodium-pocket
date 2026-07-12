@@ -81,24 +81,37 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
             .map(|c| c.as_str())
             .collect();
 
+        // The rows-match rule: by application_path when the catalog row has
+        // one, by title+language otherwise. IMPORTANT: this must stay split
+        // into separate equality-joined statements - a single OR'd predicate
+        // defeats the query planner and turns each statement into a 9k x 9k
+        // nested scan (~70 s of frozen startup, measured).
         let tx = conn.unchecked_transaction()?;
 
-        // The same row-matching predicate everywhere: by application_path
-        // when the catalog row has one, by title+language otherwise.
-        const MATCH: &str = "((c.application_path IS NOT NULL AND c.application_path != '' \
-                              AND g.application_path = c.application_path) \
-                          OR ((c.application_path IS NULL OR c.application_path = '') \
-                              AND g.title = c.title AND g.language = c.language))";
+        // Equality joins need an index to be cheap; the games table has none
+        // on application_path.
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_games_application_path ON games(application_path)",
+        )?;
 
         let set_list = catalog_cols
             .iter()
             .map(|c| format!("{c} = c.{c}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let updated = tx.execute(
+        let mut updated = tx.execute(
             &format!(
                 "UPDATE games AS g SET {set_list} FROM cat.games AS c \
-                 WHERE {MATCH}"
+                 WHERE c.application_path IS NOT NULL AND c.application_path != '' \
+                   AND g.application_path = c.application_path"
+            ),
+            [],
+        )?;
+        updated += tx.execute(
+            &format!(
+                "UPDATE games AS g SET {set_list} FROM cat.games AS c \
+                 WHERE (c.application_path IS NULL OR c.application_path = '') \
+                   AND g.title = c.title AND g.language = c.language"
             ),
             [],
         )?;
@@ -109,23 +122,28 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
             .map(|c| format!("c.{c}"))
             .collect::<Vec<_>>()
             .join(", ");
+        // NOT IN (SELECT ...) materializes into an ephemeral index - one
+        // build over ~9k rows, then O(1) probes per catalog row.
         let inserted = tx.execute(
             &format!(
                 "INSERT INTO games ({col_list}) \
                  SELECT {sel_list} FROM cat.games AS c \
-                 WHERE NOT EXISTS (SELECT 1 FROM games g WHERE {MATCH})"
+                 WHERE (c.application_path IS NOT NULL AND c.application_path != '' \
+                        AND c.application_path NOT IN \
+                            (SELECT application_path FROM games \
+                             WHERE application_path IS NOT NULL AND application_path != '')) \
+                    OR ((c.application_path IS NULL OR c.application_path = '') \
+                        AND NOT EXISTS (SELECT 1 FROM games g \
+                                        WHERE g.title = c.title AND g.language = c.language))"
             ),
             [],
         )?;
 
-        let stale: i64 = tx.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM games g \
-                 WHERE NOT EXISTS (SELECT 1 FROM cat.games c WHERE {MATCH})"
-            ),
-            [],
-            |r| r.get(0),
-        )?;
+        // Rows the catalog no longer contains are kept (with possibly stale
+        // torrent indices); updated counts each matched row once, so the
+        // difference is the stale set. Log-only.
+        let total: i64 = tx.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))?;
+        let stale = (total as usize).saturating_sub(updated + inserted);
         if stale > 0 {
             log::warn!(
                 "refresh_catalog: {} installed rows are no longer in the bundled catalog \
@@ -729,7 +747,18 @@ mod tests {
             .unwrap();
         assert_eq!((d_inst, d_lib), (0, 0));
 
-        // Second run is a no-op refresh gate.
-        assert!(catalog_version(&installed) >= CATALOG_VERSION);
+        // Idempotency: a second refresh updates the same rows again but must
+        // not duplicate anything or clobber user state.
+        let (updated2, inserted2) = refresh_catalog(&mut installed, &bundled_path).unwrap();
+        assert_eq!(inserted2, 0);
+        assert_eq!(updated2, 2); // Alpha + Delta both match now
+        let total: i64 = installed
+            .query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 3); // Alpha, Beta (stale, kept), Delta
+        let still_fav: i64 = installed
+            .query_row("SELECT favorited FROM games WHERE id = ?1", [id_a], |r| r.get(0))
+            .unwrap();
+        assert_eq!(still_fav, 1);
     }
 }

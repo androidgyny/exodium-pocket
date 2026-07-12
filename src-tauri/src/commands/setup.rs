@@ -311,6 +311,7 @@ pub async fn init_download_manager(
     let session = DownloadManager::create_session(&config_dir, &persistence_dir)
         .await
         .map_err(|e| e.to_string())?;
+    evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
 
     // Build all managers and do slow work (infohash, config extraction) WITHOUT holding
     // the torrent_state write lock - archive.extract() on 7 000+ files blocks for seconds.
@@ -390,6 +391,70 @@ pub async fn init_download_manager(
 
     log::info!("Download managers initialized: {} (data_dir: {})", count, data_dir);
     Ok(count > 0)
+}
+
+/// Drop session torrents whose persisted output folder is outside the current
+/// data dir (the user changed the data dir since they were added). Adopting
+/// them via hydrate_from_session would report progress against files librqbit
+/// writes to the OLD location - extraction probes the new one and loops on
+/// "100% but ZIP missing" forever.
+async fn evict_mismatched_session_torrents(
+    session: &Arc<librqbit::Session>,
+    persistence_dir: &Path,
+    data_path: &Path,
+) {
+    let session_json = persistence_dir.join("session.json");
+    let content = match std::fs::read_to_string(&session_json) {
+        Ok(c) => c,
+        Err(_) => return, // no persisted session yet
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("Could not parse {}: {}", session_json.display(), e);
+            return;
+        }
+    };
+    let Some(torrents) = parsed.get("torrents").and_then(|t| t.as_object()) else {
+        return;
+    };
+
+    // Normalize for comparison: strip Windows \\?\ long-path prefix, unify
+    // slashes (output folders are written with to_long_path on Windows).
+    let normalize = |p: &str| p.trim_start_matches(r"\\?\").replace('\\', "/");
+    let data_norm = normalize(&data_path.to_string_lossy());
+
+    for entry in torrents.values() {
+        let (Some(hash), Some(folder)) = (
+            entry.get("info_hash").and_then(|h| h.as_str()),
+            entry.get("output_folder").and_then(|f| f.as_str()),
+        ) else {
+            continue;
+        };
+        if normalize(folder).starts_with(&data_norm) {
+            continue;
+        }
+        let stale_id = session.with_torrents(|iter| {
+            for (tid, t) in iter {
+                if t.info_hash().as_string().eq_ignore_ascii_case(hash) {
+                    return Some(tid);
+                }
+            }
+            None
+        });
+        if let Some(tid) = stale_id {
+            log::warn!(
+                "Evicting session torrent {} - persisted output folder {} is outside data dir {}",
+                hash, folder, data_norm
+            );
+            if let Err(e) = session
+                .delete(librqbit::api::TorrentIdOrHash::Id(tid), false)
+                .await
+            {
+                log::warn!("Failed to evict stale session torrent {}: {}", hash, e);
+            }
+        }
+    }
 }
 
 /// Give every manager the union of all managers' torrent file lists as its
@@ -1433,6 +1498,7 @@ pub async fn setup_from_local(
     let session = DownloadManager::create_session(&config_dir, &persistence_dir)
         .await
         .map_err(|e| format!("Failed to init session: {}", e))?;
+    evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
 
     let mut new_managers = Vec::new();
     for col in COLLECTION_MAP {

@@ -62,6 +62,16 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Empty in-memory DB used when the real one can't be opened, so the app
+/// can still reach the event loop and show the startup-error dialog without
+/// commands panicking on missing state.
+fn fallback_in_memory_db() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory()
+        .expect("in-memory SQLite cannot fail to open");
+    let _ = db::init(&conn);
+    conn
+}
+
 /// Open the installed DB, (re)installing the bundled one when the file is
 /// missing, unreadable, or empty (post factory-reset). Every failure comes
 /// back as a message for the startup error dialog instead of a panic.
@@ -102,24 +112,26 @@ fn open_or_reinstall_db(db_path: &Path) -> Result<rusqlite::Connection, String> 
     }
 }
 
-/// Stage the bundled catalog DB as a plain file so it can be ATTACHed for a
-/// catalog refresh. Returns (path, is_temp) - temp files (gz-extracted) must
-/// be deleted by the caller.
-fn stage_bundled_catalog(data_dir: &Path) -> Result<(std::path::PathBuf, bool), String> {
+/// Stage the bundled catalog DB as a temp file so it can be ATTACHed for a
+/// catalog refresh. Always a copy in data_dir - ATTACHing the bundled file
+/// in place would create WAL sidecars inside the (possibly read-only/signed)
+/// resources dir. The caller deletes the temp file when done.
+fn stage_bundled_catalog(data_dir: &Path) -> Result<std::path::PathBuf, String> {
     let metadata_dir = bundled_metadata_dir()?;
+    let tmp = data_dir.join("catalog-refresh.db");
 
     let bundled_db = metadata_dir.join("exodium.db");
     if bundled_db.exists() {
-        return Ok((bundled_db, false));
+        std::fs::copy(&bundled_db, &tmp).map_err(|e| e.to_string())?;
+        return Ok(tmp);
     }
     let bundled_db_gz = metadata_dir.join("exodium.db.gz");
     if bundled_db_gz.exists() {
-        let tmp = data_dir.join("catalog-refresh.db");
         let file = std::fs::File::open(&bundled_db_gz).map_err(|e| e.to_string())?;
         let mut decoder = flate2::read::GzDecoder::new(file);
         let mut out = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
         std::io::copy(&mut decoder, &mut out).map_err(|e| e.to_string())?;
-        return Ok((tmp, true));
+        return Ok(tmp);
     }
     Err(format!(
         "No bundled database found in {}",
@@ -273,37 +285,58 @@ pub fn run() {
             }
 
             // Any failure from here on is fatal but must be VISIBLE: a panic
-            // in setup() kills the process with nothing on screen. Show a
-            // native error dialog (works before any window exists), then
-            // bail out of setup.
-            let fatal = |app: &tauri::App, msg: String| -> Box<dyn std::error::Error> {
-                log::error!("Fatal startup error: {}", msg);
-                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-                app.dialog()
-                    .message(format!("{}\n\nSee the log folder for details.", msg))
-                    .title("Exodium failed to start")
-                    .kind(MessageDialogKind::Error)
-                    .blocking_show();
-                msg.into()
-            };
+            // in setup() kills the process with nothing on screen. A BLOCKING
+            // dialog can't be used here either - setup() runs on the main
+            // thread before the event loop, and tauri-plugin-dialog's
+            // blocking_show deadlocks there on macOS (the alert needs the
+            // main run loop, which would be parked). Instead: show a
+            // non-blocking dialog whose dismissal exits the app, and continue
+            // setup on an empty in-memory DB so the event loop starts and
+            // the dialog can actually render.
+            let mut startup_error: Option<String> = None;
 
             let data_dir = match app.path().app_data_dir() {
                 Ok(d) => d,
                 Err(e) => {
-                    return Err(fatal(app, format!("Could not resolve the application data directory: {}", e)));
+                    startup_error =
+                        Some(format!("Could not resolve the application data directory: {}", e));
+                    std::env::temp_dir().join("exodium-fallback")
                 }
             };
-            std::fs::create_dir_all(&data_dir)?;
+            if startup_error.is_none() {
+                if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                    startup_error = Some(format!(
+                        "Could not create the application data directory {}: {}",
+                        data_dir.display(),
+                        e
+                    ));
+                }
+            }
             let db_path = data_dir.join("exodium.db");
-
             log::info!("Database path: {}", db_path.display());
 
-            let mut conn = match open_or_reinstall_db(&db_path) {
-                Ok(c) => c,
-                Err(msg) => {
-                    return Err(fatal(app, format!("Could not open the game database: {}", msg)));
+            let mut conn = if startup_error.is_none() {
+                match open_or_reinstall_db(&db_path) {
+                    Ok(c) => c,
+                    Err(msg) => {
+                        startup_error = Some(format!("Could not open the game database: {}", msg));
+                        fallback_in_memory_db()
+                    }
                 }
+            } else {
+                fallback_in_memory_db()
             };
+
+            if let Some(msg) = &startup_error {
+                log::error!("Fatal startup error: {}", msg);
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                let exit_handle = app.handle().clone();
+                app.dialog()
+                    .message(format!("{}\n\nSee the log folder for details.", msg))
+                    .title("Exodium failed to start")
+                    .kind(MessageDialogKind::Error)
+                    .show(move |_| exit_handle.exit(1));
+            }
 
             // Catalog refresh: existing installs never re-read the bundled DB,
             // so corrected/new catalog data (torrent indices, sizes, new games)
@@ -311,9 +344,9 @@ pub fn run() {
             // of the installed one. User state (installed/favorites/...) and
             // games.id survive - see db::refresh_catalog.
             let installed_ver = db::catalog_version(&conn);
-            if installed_ver < db::CATALOG_VERSION {
+            if startup_error.is_none() && installed_ver < db::CATALOG_VERSION {
                 match stage_bundled_catalog(&data_dir) {
-                    Ok((cat_path, is_temp)) => {
+                    Ok(cat_path) => {
                         match db::refresh_catalog(&mut conn, &cat_path) {
                             Ok((updated, inserted)) => log::info!(
                                 "Catalog refreshed v{} -> v{}: {} rows updated, {} inserted",
@@ -321,9 +354,7 @@ pub fn run() {
                             ),
                             Err(e) => log::error!("Catalog refresh failed: {}", e),
                         }
-                        if is_temp {
-                            let _ = std::fs::remove_file(&cat_path);
-                        }
+                        let _ = std::fs::remove_file(&cat_path);
                     }
                     Err(e) => log::error!("Catalog refresh: bundled DB unavailable: {}", e),
                 }
