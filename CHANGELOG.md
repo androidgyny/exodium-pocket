@@ -2,7 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- **Toast notification system** (`stores/toasts.ts`, `ToastContainer.tsx`): download,
+  uninstall, launch, and content-pack errors now surface as toasts instead of being
+  silent or confined to inline status text. Includes a catalog-update notice on startup.
+- **Hierarchical genre browsing**: genre sections and the jumpbar collapse
+  " / "-delimited subgenres into ~15 top-level categories, matching the genre
+  filter's new tree dropdown (`Select.tsx` depth rendering, `get_section_keys`
+  parent collapsing).
+- **README screenshots** and release plan under `docs/`.
+
+### Changed
+
+- **macOS: native titlebar** - macOS builds use the system traffic-light controls
+  (`tauri.macos.conf.json` + runtime `set_decorations(true)`); the custom
+  `WindowFrame` is now Linux/Windows-only.
+- **Game detail panel rework**: pinned media strip, launch-button spinner, errors
+  via toasts.
+- Tab switches animate with a directional slide.
+
 ### Fixed
+
+- **macOS: DOSBox launch EBADF** - Tauri 2 GUI builds hit `posix_spawn` EBADF when
+  redirecting DOSBox stdio to log files. On macOS stdio is now nulled and a no-op
+  `pre_exec` forces fork+exec; other platforms keep per-game DOSBox log files.
 
 - **LP game launch - commented-out autoexec** (`patch_dosbox_conf`): LP games whose
   `dosbox.conf` has the game-launch lines commented out with `#` (e.g. _Das Amt_) now
