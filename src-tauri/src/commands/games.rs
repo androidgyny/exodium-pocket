@@ -214,17 +214,19 @@ pub async fn download_game(
         files.push(gd_idx as usize);
     }
 
-    // Also queue !DOSmetadata.zip (DOSBox configs) if not already extracted
+    // Also queue !DOSmetadata.zip (15 MB: MT-32 ROMs, SoundCanvas soundfont,
+    // eXo support tree). Gate on the mt32 payload itself: the old check
+    // (`!dos` dir missing) never fired because the bundled configs zip
+    // pre-creates that directory - so ~2,900 games' MIDI music silently
+    // never had its ROMs/soundfont on disk.
     if let Some(ref main_mgr) = main_mgr_opt {
-        let main_prefix = collection_game_prefix("eXoDOS");
-        let main_segment = crate::commands::setup::collection_def("eXoDOS")
-            .map(|c| c.shortcode_segment)
-            .unwrap_or("!dos");
-        let dosbox_dir = main_mgr.torrent_root().join(format!("{}/{}", main_prefix, main_segment));
-        if !dosbox_dir.exists() {
+        let mt32_dir = main_mgr.torrent_root().join("eXo/mt32");
+        if !mt32_dir.exists() {
             if let Some(dm) = main_mgr.index().find_dosbox_metadata_zip() {
-                let _ = main_mgr.download_files(vec![dm.index]).await;
-                log::info!("Also downloading !DOSmetadata.zip (DOSBox configs)");
+                if !main_mgr.is_file_selected(dm.index).await {
+                    let _ = main_mgr.download_files(vec![dm.index]).await;
+                    log::info!("Also downloading !DOSmetadata.zip (MT-32 ROMs + DOSBox support files)");
+                }
             }
         }
     }
@@ -837,6 +839,8 @@ fn patch_dosbox_conf(
             .replace('\\', "/")
     };
 
+    let patched = translate_midi_for_staging(&patched);
+
     let patched_path = working_dir.join(".exodium_launch.conf");
     std::fs::write(&patched_path, &patched)
         .map_err(|e| format!("Failed to write patched config: {}", e))?;
@@ -844,6 +848,99 @@ fn patch_dosbox_conf(
     log::debug!("Patched config written to {}", patched_path.display());
 
     Ok(patched_path)
+}
+
+/// Translate DOSBox-ECE MIDI settings to DOSBox Staging equivalents.
+///
+/// ~1,500 eXoDOS configs carry ECE-style dotted keys in [midi]
+/// (`mt32.romdir`, `fluid.soundfont`, `fluid.*`) that Staging silently
+/// ignores - MT-32 and General-MIDI games then play with wrong or no music.
+/// Staging expects the same settings in dedicated [mt32] / [fluidsynth]
+/// sections, so: capture the ECE values, drop the dotted keys, and append
+/// the Staging sections (unless the config already has them - the ~750
+/// Staging-authored eXoDOS configs pass through unchanged). Also maps
+/// `mididevice = default` (ECE) to Staging's `auto`.
+///
+/// Runs after the path rewriting in patch_dosbox_conf, so captured values
+/// like `.\mt32` are already absolute forward-slash paths.
+fn translate_midi_for_staging(conf: &str) -> String {
+    let lower = conf.to_ascii_lowercase();
+    let has_ece_keys = lower.contains("mt32.") || lower.contains("fluid.");
+    let has_default_device = lower.contains("mididevice");
+    if !has_ece_keys && !has_default_device {
+        return conf.to_string();
+    }
+    let has_mt32_section = lower.lines().any(|l| l.trim() == "[mt32]");
+    let has_fluid_section = lower.lines().any(|l| l.trim() == "[fluidsynth]");
+
+    let mut romdir: Option<String> = None;
+    let mut soundfont: Option<String> = None;
+    let mut out: Vec<String> = Vec::with_capacity(conf.lines().count() + 6);
+    let mut section = String::new();
+
+    for line in conf.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            section = trimmed.to_ascii_lowercase();
+            out.push(line.to_string());
+            continue;
+        }
+        if section == "[midi]" && !trimmed.starts_with('#') {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_ascii_lowercase();
+                let value = value.trim();
+                if key == "mt32.romdir" {
+                    romdir = Some(value.to_string());
+                    continue; // drop the ECE key
+                }
+                if key == "fluid.soundfont" {
+                    soundfont = Some(value.to_string());
+                    continue;
+                }
+                if key.starts_with("mt32.") || key.starts_with("fluid.") {
+                    continue; // ECE tuning keys with no Staging equivalent
+                }
+                if key == "mididevice" && value.eq_ignore_ascii_case("default") {
+                    out.push("mididevice = auto".to_string());
+                    continue;
+                }
+            }
+        }
+        out.push(line.to_string());
+    }
+
+    if !has_mt32_section {
+        if let Some(dir) = romdir {
+            out.push(String::new());
+            out.push("[mt32]".to_string());
+            out.push(format!("romdir = {}", dir));
+            if !std::path::Path::new(&dir).exists() {
+                log::warn!(
+                    "MT-32 ROM dir {} not on disk yet - music will be missing until \
+                     the DOSBox support files finish downloading",
+                    dir
+                );
+            }
+        }
+    }
+    if !has_fluid_section {
+        if let Some(sf) = soundfont {
+            out.push(String::new());
+            out.push("[fluidsynth]".to_string());
+            out.push(format!("soundfont = {}", sf));
+            if !std::path::Path::new(&sf).exists() {
+                log::warn!(
+                    "Soundfont {} not on disk yet - General MIDI music will be missing \
+                     until the DOSBox support files finish downloading",
+                    sf
+                );
+            }
+        }
+    }
+
+    let mut result = out.join("\n");
+    result.push('\n');
+    result
 }
 
 /// Find the launch command for an LP game by inspecting its directory.
@@ -1696,6 +1793,60 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
 mod tests {
     use super::*;
     use std::fs;
+
+    // ── translate_midi_for_staging ───────────────────────────────────────────
+
+    #[test]
+    fn midi_translate_converts_ece_keys_to_staging_sections() {
+        // Shape of ~1,500 real eXoDOS configs after path rewriting.
+        let conf = "[sdl]\nfullscreen = true\n\
+                    [midi]\nmididevice = mt32\nmpu401 = intelligent\n\
+                    mt32.romdir = /data/eXo/mt32\n\
+                    fluid.soundfont = /data/eXo/mt32/SoundCanvas.sf2\n\
+                    fluid.gain = 0.4\n\
+                    [autoexec]\nmount c /data/eXo/eXoDOS/SQ5\n";
+        let out = translate_midi_for_staging(conf);
+
+        // ECE dotted keys removed from [midi], Staging keys kept.
+        assert!(!out.contains("mt32.romdir"));
+        assert!(!out.contains("fluid.soundfont"));
+        assert!(!out.contains("fluid.gain"));
+        assert!(out.contains("mididevice = mt32"));
+        assert!(out.contains("mpu401 = intelligent"));
+
+        // Staging sections appended with the captured values.
+        assert!(out.contains("[mt32]\nromdir = /data/eXo/mt32"));
+        assert!(out.contains("[fluidsynth]\nsoundfont = /data/eXo/mt32/SoundCanvas.sf2"));
+
+        // Autoexec untouched.
+        assert!(out.contains("mount c /data/eXo/eXoDOS/SQ5"));
+    }
+
+    #[test]
+    fn midi_translate_maps_default_device_to_auto() {
+        let conf = "[midi]\nmididevice = default\nmt32.romdir = /x/mt32\n";
+        let out = translate_midi_for_staging(conf);
+        assert!(out.contains("mididevice = auto"));
+        assert!(!out.contains("default"));
+    }
+
+    #[test]
+    fn midi_translate_leaves_staging_native_configs_alone() {
+        // Shape of the ~750 Staging-authored eXoDOS configs.
+        let conf = "[midi]\nmididevice = auto\n\
+                    [mt32]\nromdir = /data/eXo/mt32\n\
+                    [fluidsynth]\nsoundfont = /data/eXo/mt32/SoundCanvas.sf2\n";
+        let out = translate_midi_for_staging(conf);
+        assert_eq!(out.matches("[mt32]").count(), 1);
+        assert_eq!(out.matches("[fluidsynth]").count(), 1);
+        assert!(out.contains("romdir = /data/eXo/mt32"));
+    }
+
+    #[test]
+    fn midi_translate_no_midi_config_is_passthrough() {
+        let conf = "[sdl]\nfullscreen = true\n[autoexec]\nrunme.exe\n";
+        assert_eq!(translate_midi_for_staging(conf), conf);
+    }
 
     // ── collection_data_dir ──────────────────────────────────────────────────
 

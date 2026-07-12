@@ -24,6 +24,14 @@
 
 ### Fixed
 
+- **MT-32 / General MIDI music for ~2,900 games**: two stacked bugs left MIDI
+  games silent or with wrong music. (1) The `!DOSmetadata.zip` download (15 MB:
+  Roland MT-32 ROMs + SoundCanvas soundfont) never fired because the bundled
+  configs zip pre-created the directory the check gated on - it now gates on
+  `eXo/mt32/` itself. (2) ~1,500 configs use DOSBox-ECE key names
+  (`[midi] mt32.romdir`, `fluid.soundfont`) that DOSBox Staging ignores -
+  launch-time patching now translates them into Staging's `[mt32]` /
+  `[fluidsynth]` sections (Staging-authored configs pass through unchanged).
 - **38 games downloaded the wrong ZIP** (`find_game_files`): the torrent file
   matcher used an unanchored suffix match, so short titles matched longer ones -
   _Tetris_ fetched _Atomic Tetris_, _Pac-Man_ fetched _Ms. Pac-Man_, _Gods_

@@ -110,7 +110,13 @@ This unpacks the payload to `C:\Exodium\` without invoking Windows Installer's p
 - ✅ Browse ~9,200 games across eXoDOS + German, Spanish, and Polish language packs
 - ✅ Stream individual games on demand - no full collection download required
 - ✅ Launch via bundled DOSBox Staging with no external dependencies
+- ✅ MT-32 and General MIDI music - Roland ROMs and the SoundCanvas soundfont are fetched from the collection and eXoDOS' DOSBox-ECE configs are translated for DOSBox Staging automatically
 - ✅ Favorites and a personal library of installed games
+
+> **Compatibility note:** every game runs under DOSBox Staging. A handful of
+> titles are tuned for DOSBox-ECE / DOSBox-X specials (3dfx Voodoo tuning,
+> GunStick light-gun, ~19 special builds) and may look or behave slightly
+> differently than under the original Windows eXoDOS setup.
 
 ### Planned
 - 🔲 Full metadata support including manuals, game videos, and other media from the eXoDOS archive
