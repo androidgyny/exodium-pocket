@@ -77,7 +77,12 @@ export function GameDetailPanel(props: Props) {
   });
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") { props.onClose(); }
+    if (e.key !== "Escape") { return; }
+    // A stacked overlay (lightbox, manual, settings) handles this Escape
+    // itself - closing the panel underneath in the same press would yank
+    // the user two levels at once.
+    if (lightboxOpen() || manualOpen() || settingsOpen()) { return; }
+    props.onClose();
   };
 
   // Register once for the lifetime of the component - the handler reads props.onClose()

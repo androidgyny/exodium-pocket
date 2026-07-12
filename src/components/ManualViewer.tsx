@@ -31,6 +31,13 @@ export function ManualViewer(props: ManualViewerProps) {
   const filename = () => props.path ? props.path.split("/").pop() ?? "Manual" : "Manual";
   const iframeSrc = () => props.path ? convertFileSrc(props.path) : "";
 
+  // WebKitGTK (the Linux webview) ships no built-in PDF renderer, so a PDF
+  // iframe stays blank. Offer the system viewer instead.
+  const isLinux = typeof navigator !== "undefined"
+    && /Linux/.test(navigator.userAgent)
+    && !/Android/.test(navigator.userAgent);
+  const inlinePdf = () => props.kind === "pdf" && !isLinux;
+
   const zoomIn = () => setZoom((z) => Math.min(3.0, z + 0.25));
   const zoomOut = () => setZoom((z) => Math.max(0.5, z - 0.25));
   const zoomReset = () => setZoom(1.0);
@@ -57,7 +64,7 @@ export function ManualViewer(props: ManualViewerProps) {
           <Dialog.Content class="manual-viewer-content">
           <div class="manual-viewer-toolbar">
             <Dialog.Title class="manual-viewer-title">{filename()}</Dialog.Title>
-            <Show when={props.kind === "pdf"}>
+            <Show when={inlinePdf()}>
               <div class="manual-viewer-zoom">
                 <button class="manual-viewer-zoom-btn" onClick={zoomOut} title="Zoom out">−</button>
                 <button class="manual-viewer-zoom-pct" onClick={zoomReset} title="Reset zoom">{zoomPct()}</button>
@@ -71,7 +78,15 @@ export function ManualViewer(props: ManualViewerProps) {
           </div>
 
           <div class="manual-viewer-body">
-            <Show when={props.kind === "pdf" || props.kind === "html"}>
+            <Show when={props.kind === "pdf" && !inlinePdf()}>
+              <div class="manual-viewer-loading">
+                <p>Inline PDF preview isn't available on Linux.</p>
+                <button class="manual-viewer-btn" onClick={handleOpenExternal}>
+                  ↗ Open in system PDF viewer
+                </button>
+              </div>
+            </Show>
+            <Show when={inlinePdf() || props.kind === "html"}>
               <div
                 class="manual-viewer-iframe-wrap"
                 style={{

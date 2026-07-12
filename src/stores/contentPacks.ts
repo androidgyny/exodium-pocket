@@ -8,6 +8,7 @@ import {
   getAvailableCollections,
 } from "../api/tauri";
 import { loadThumbnailDir } from "./thumbnails";
+import { showToast } from "./toasts";
 
 // ── Installed pack state (reactive) ──────────────────────────────────────────
 
@@ -94,6 +95,11 @@ function startPolling(collection: string, packId: string) {
           // resolution picks up the new poster dir without an app restart.
           await refreshInstalledPacks();
           await loadThumbnailDir();
+        } else if (progress.error && progress.error !== "Cancelled") {
+          // Surface failures globally - installs started from the welcome
+          // flow otherwise fail silently unless the Settings dialog is open.
+          const name = jobLabels[key] ?? packId;
+          showToast(`Couldn't install ${name}`, "error", { detail: progress.error });
         }
         // Clear the job entry after a brief delay so the UI can show "Done!".
         setTimeout(() => {

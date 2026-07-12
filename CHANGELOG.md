@@ -24,6 +24,22 @@
 
 ### Fixed
 
+- **Download stall feedback**: a download with no peers no longer sits at
+  "0%" forever - after 15 s without progress the card shows "Looking for
+  peers…", after 90 s an actionable stall warning. The premature
+  "Download didn't start" verdict (which killed polling while the backend
+  was still working) now waits for the backend command to actually resolve.
+- **Browse keeps your scroll position**: background install/uninstall
+  completion no longer resets the infinite-scroll list to page 1.
+- **Jump bar stays in sync with search**, genre jump-bar keys can no longer
+  point at sections that don't exist, and an empty search shows a
+  "No results" state instead of a blank grid.
+- **Content-pack install failures surface as toasts** even when the Settings
+  dialog is closed (affects the first-run welcome flow).
+- **Escape closes one overlay at a time** - manual/lightbox/settings no
+  longer take the detail panel down with them.
+- **Linux: PDF manuals** open via the system viewer with a clear hint -
+  WebKitGTK has no inline PDF renderer, the old iframe stayed blank.
 - **MT-32 / General MIDI music for ~2,900 games**: two stacked bugs left MIDI
   games silent or with wrong music. (1) The `!DOSmetadata.zip` download (15 MB:
   Roland MT-32 ROMs + SoundCanvas soundfont) never fired because the bundled
