@@ -650,4 +650,45 @@ impl DownloadManager {
         let entry = self.torrent_index.files.get(file_index)?;
         Some(self.torrent_root().join(&entry.path))
     }
+
+    /// Reset librqbit's piece bookkeeping after a tracked file was deleted
+    /// from disk (uninstall). The persisted fastresume bitfield still claims
+    /// the deleted file's pieces exist, so a re-download would instantly
+    /// report 100% with no file on disk - the unrecoverable "stuck at 100%"
+    /// loop. Dropping the torrent from the session deletes its .bitv +
+    /// session entry; the next download re-adds it and re-derives state from
+    /// what is actually on disk (an initial hash-check pass, so still-selected
+    /// downloads keep their completed pieces).
+    ///
+    /// `drop_indices`: file indices to remove from the selection first
+    /// (the uninstalled game's own files), so the re-add doesn't fetch them.
+    pub async fn invalidate_after_file_delete(&self, drop_indices: &[usize]) -> anyhow::Result<()> {
+        // Lock order: handle before selected_files (see struct docs).
+        let mut handle_guard = self.handle.write().await;
+        let remaining: Vec<usize> = {
+            let mut selected = self.selected_files.write().await;
+            for idx in drop_indices {
+                selected.remove(idx);
+            }
+            selected.iter().copied().collect()
+        };
+        let Some(handle) = handle_guard.take() else {
+            // Torrent not in the session this run (and hydrate_from_session
+            // would have adopted a persisted one) - nothing to invalidate.
+            return Ok(());
+        };
+        self.session
+            .delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false)
+            .await?;
+        drop(handle_guard);
+        log::info!(
+            "Dropped torrent from session after uninstall ({} files still selected)",
+            remaining.len()
+        );
+        if !remaining.is_empty() {
+            // Re-add immediately so other in-flight downloads continue.
+            self.download_files(remaining).await?;
+        }
+        Ok(())
+    }
 }

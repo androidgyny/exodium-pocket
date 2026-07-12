@@ -527,6 +527,7 @@ pub async fn cancel_download(
 #[tauri::command]
 pub async fn uninstall_game(
     db_state: State<'_, DbState>,
+    torrent_state: State<'_, TorrentState>,
     id: i64,
 ) -> Result<String, String> {
     let (game, data_dir) = {
@@ -620,6 +621,22 @@ pub async fn uninstall_game(
     })
     .await
     .map_err(|e| e.to_string())?;
+
+    // The deleted ZIP's pieces are still marked "had" in librqbit's
+    // fastresume state; a later re-download would report 100% instantly with
+    // no file on disk (stuck-download loop). Drop the torrent from the
+    // session so the next download re-derives piece state from disk.
+    let mgr = { torrent_state.0.read().await.get(source).cloned() };
+    if let Some(mgr) = mgr {
+        let drop_indices: Vec<usize> = game
+            .game_torrent_index
+            .map(|i| i as usize)
+            .into_iter()
+            .collect();
+        if let Err(e) = mgr.invalidate_after_file_delete(&drop_indices).await {
+            log::warn!("Failed to reset torrent state after uninstall: {}", e);
+        }
+    }
 
     Ok(format!("Uninstalled: {}", game.title))
 }
