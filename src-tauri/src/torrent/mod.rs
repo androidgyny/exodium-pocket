@@ -91,8 +91,13 @@ impl TorrentIndex {
         let game_zip = format!("{}.zip", game_title);
         let gamedata_prefix = "Content/GameData/eXoDOS/";
 
+        // Anchor the match on a path boundary: a bare ends_with would let
+        // "Billiards (1993).zip" match "eXo/eXoDOS/4 Balls Billiards (1993).zip"
+        // (34 such collisions across the bundled torrents).
+        let game_zip_anchored = format!("/{}", game_zip);
         let game = self.files.iter().find(|f| {
-            f.path.ends_with(&game_zip) && !f.path.starts_with(gamedata_prefix)
+            (f.path == game_zip || f.path.ends_with(&game_zip_anchored))
+                && !f.path.starts_with(gamedata_prefix)
         });
 
         let gamedata = self
@@ -165,6 +170,39 @@ mod tests {
         println!("Torrent: {} files, {:.1} GB", index.files.len(), index.total_size as f64 / 1e9);
         println!("Metadata ZIP: index={}, size={}", meta.index, meta.size);
         println!("Capitalism: game index={}, gamedata index={}", game.index, gamedata.unwrap().index);
+    }
+
+    #[test]
+    fn test_find_game_files_is_path_anchored() {
+        // Regression: an unanchored ends_with() let short titles match longer
+        // ones ("Billiards (1993).zip" -> "4 Balls Billiards (1993).zip"),
+        // mapping ~34 games to the wrong torrent file.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("torrents/eXoDOS.torrent");
+        if !path.exists() {
+            eprintln!("Skipping: torrent file not found at {:?}", path);
+            return;
+        }
+
+        let index = TorrentIndex::from_file(&path).unwrap();
+        for title in [
+            "Billiards (1993)",
+            "Gods (1991)",
+            "Tetris (1991)",
+            "Pac-Man (1983)",
+            "Quake (1996)",
+            "Incredible Machine, The (1993)",
+        ] {
+            let (game, _) = index.find_game_files(title);
+            let game = game.unwrap_or_else(|| panic!("{title} not found"));
+            assert_eq!(
+                game.path,
+                format!("eXo/eXoDOS/{title}.zip"),
+                "wrong file matched for {title}"
+            );
+        }
     }
 
     #[test]
