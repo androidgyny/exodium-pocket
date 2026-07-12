@@ -33,6 +33,9 @@ src-tauri/resources/dosbox-bin/
 metadata/*.db
 metadata/*.db-shm
 metadata/*.db-wal
+src-tauri/*.db
+src-tauri/*.db-shm
+src-tauri/*.db-wal
 
 # Claude Code
 .claude/

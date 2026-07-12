@@ -1,6 +1,6 @@
 [package]
 name = "exodium"
-version = "0.3.2"
+version = "0.6.9"
 description = "Cross-platform eXoDOS game launcher"
 authors = ["redfox"]
 edition = "2021"
@@ -50,7 +50,7 @@ tokio = { version = "1", features = ["fs", "sync"] }
 lava_torrent = "0.11"
 
 # Torrent downloading
-# Pinned to v9.0.0-beta.2 git tag — 8.x silently stalls Windows downloads at 0%
+# Pinned to v9.0.0-beta.2 git tag - 8.x silently stalls Windows downloads at 0%
 # because it does NOT use sparse files on NTFS, so it tries to pre-allocate the
 # full multi-100-GB torrent before any pieces transfer. Upstream PR #390 fixed
 # this only on the v9 line. Stable 8.1.1 (latest on crates.io) lacks the fix.
