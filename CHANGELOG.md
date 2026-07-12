@@ -24,6 +24,39 @@
 
 ### Fixed
 
+- **38 games downloaded the wrong ZIP** (`find_game_files`): the torrent file
+  matcher used an unanchored suffix match, so short titles matched longer ones -
+  _Tetris_ fetched _Atomic Tetris_, _Pac-Man_ fetched _Ms. Pac-Man_, _Gods_
+  fetched _Dusk of the Gods_, etc. The match is now anchored on a path boundary,
+  the bundled DB is regenerated, and a regression test guards the collision set.
+- **Versioned catalog refresh**: existing installs never re-read the bundled
+  catalog, so fixes like the above (or a new eXoDOS torrent) would only reach
+  fresh installs. A `catalog_version` check at startup now updates catalog rows
+  in place - user state (installed, library, favorites, per-game config)
+  and `games.id` are preserved.
+- **Cross-collection placeholder cleanup**: downloading a game 10 s after a
+  game from another collection could delete the first torrent's tracked 0-byte
+  placeholders (all four collections overlay one root), reintroducing the
+  "100% but ZIP missing" loop. Cleanup now keeps the union of all enabled
+  collections' file lists.
+- **Interrupted downloads resume after restart**: the download manager now
+  adopts torrents auto-resumed from librqbit's session persistence (handle +
+  file selection), and merges instead of replaces the selection when the
+  session already manages a torrent. Previously a download in flight at
+  shutdown kept downloading invisibly and the next download silently
+  deselected it.
+- **Uninstall → re-download stuck at 100%**: uninstalling deletes the game
+  ZIP, but librqbit's fastresume bitfield still claimed its pieces existed,
+  so a re-download instantly reported 100% with no file on disk. Uninstall
+  now drops the torrent from the session (removing its fastresume state) and
+  re-adds any still-selected files; the next download re-derives piece state
+  from disk.
+- **Startup failures show an error dialog** instead of a silent crash
+  (unresolvable data dir, unreadable/uninstallable database).
+- **LP games launch from unextracted ZIPs**: launch-time auto-extraction only
+  looked for the EN ZIP location; it now also checks the language-pack dir.
+- **Cancelling a download keeps the shared EN GameData** when another
+  language variant of the game is still downloading.
 - **macOS: DOSBox launch EBADF** - Tauri 2 GUI builds hit `posix_spawn` EBADF when
   redirecting DOSBox stdio to log files. On macOS stdio is now nulled and a no-op
   `pre_exec` forces fork+exec; other platforms keep per-game DOSBox log files.
