@@ -20,7 +20,7 @@ use super::TorrentIndex;
 /// The prefix tells the Win32 API to skip path normalization and the
 /// MAX_PATH (260) check, allowing paths up to 32 767 characters. librqbit
 /// passes the output folder verbatim to the file writer, so prefixing it
-/// here is enough — every file it later opens inherits the long-path mode.
+/// here is enough - every file it later opens inherits the long-path mode.
 #[cfg(target_os = "windows")]
 fn to_long_path(p: &Path) -> String {
     // \\?\ disables path normalization, so we must hand it backslash-only paths.
@@ -46,14 +46,14 @@ fn to_long_path(p: &Path) -> String {
 }
 
 /// Remove 0-byte zip files in `root` that are NOT part of the current torrent
-/// — i.e. true orphans from a previous run or unrelated user files.
+/// - i.e. true orphans from a previous run or unrelated user files.
 ///
 /// `keep_paths` must contain the **full set** of the torrent's file paths
 /// (forward-slashed, as produced by `TorrentIndex::from_file`), not just the
 /// user's current selection. librqbit's `init()` creates a 0-byte placeholder
 /// for **every** file declared by the torrent, regardless of `only_files`.
 /// With fastresume's piece-cache (v0.6.4+), pieces shared between files get
-/// marked "had" once any selected file's pieces arrive — and librqbit will
+/// marked "had" once any selected file's pieces arrive - and librqbit will
 /// then refuse to re-download those pieces even if some of their target files
 /// were deleted. Deleting a tracked placeholder therefore puts librqbit's
 /// in-memory state at odds with disk: `file_progress` reports 100% complete
@@ -61,8 +61,8 @@ fn to_long_path(p: &Path) -> String {
 /// that never resolves (observed v0.6.6 with Dominium 762/762 bytes "100%"
 /// but the zip never on disk).
 ///
-/// To make the match work on Windows — where `WalkDir` yields backslash-
-/// separated paths — we normalize each on-disk entry's string form to forward
+/// To make the match work on Windows - where `WalkDir` yields backslash-
+/// separated paths - we normalize each on-disk entry's string form to forward
 /// slashes before comparing.
 fn cleanup_placeholder_files(root: &Path, keep_paths: &[String]) -> std::io::Result<()> {
     let mut removed = 0;
@@ -84,7 +84,7 @@ fn cleanup_placeholder_files(root: &Path, keep_paths: &[String]) -> std::io::Res
         }
         // Forward-slash form of the absolute path on disk. `keep_paths`
         // entries are torrent-relative ("eXoDOS/Content/.../Foo.zip"), so a
-        // suffix match is enough — and it is slash-direction-agnostic now.
+        // suffix match is enough - and it is slash-direction-agnostic now.
         let path_fwd = path.to_string_lossy().replace('\\', "/");
         let in_torrent = keep_paths.iter().any(|sp| path_fwd.ends_with(sp));
         if in_torrent {
@@ -118,7 +118,7 @@ pub struct DownloadProgress {
     pub total_bytes: u64,
     pub progress: f64,
     pub finished: bool,
-    /// Set by the command layer after checking DB — true once extracted and marked installed.
+    /// Set by the command layer after checking DB - true once extracted and marked installed.
     #[serde(default)]
     pub installed: bool,
     /// Optional error/status message from the command layer.
@@ -126,7 +126,7 @@ pub struct DownloadProgress {
     pub error: Option<String>,
     /// Torrent lifecycle state from librqbit. During the `initializing` phase
     /// librqbit hashes the entire torrent's existing on-disk content before
-    /// any peer pieces are requested — on Windows with thousands of placeholder
+    /// any peer pieces are requested - on Windows with thousands of placeholder
     /// files this can take several minutes, and per-file `progress` will stay
     /// at 0 the whole time. The frontend uses this to show a meaningful
     /// "Validating…" status instead of a frozen 0%.
@@ -175,7 +175,7 @@ impl DownloadManager {
     /// `persistence_dir` is where fastresume bitfields, per-torrent .torrent
     /// copies and session.json live. Pre-seeding `<info_hash>.bitv` files in
     /// here before this call lets librqbit skip its initial checksum pass on
-    /// fresh installs — see `setup::seed_fastresume_bitvs`.
+    /// fresh installs - see `setup::seed_fastresume_bitvs`.
     pub async fn create_session(
         session_dir: &Path,
         persistence_dir: &Path,
@@ -191,7 +191,7 @@ impl DownloadManager {
                 // have-pieces bitfield to `<persistence_dir>/<info_hash>.bitv`.
                 // On subsequent adds (or after we plant an empty bitfield for a
                 // fresh install) librqbit skips the initial_check pass entirely
-                // — turning a 5-10 minute Windows wait into seconds.
+                // - turning a 5-10 minute Windows wait into seconds.
                 fastresume: true,
                 persistence: Some(SessionPersistenceConfig::Json {
                     folder: Some(persistence_dir.to_path_buf()),
@@ -288,12 +288,12 @@ impl DownloadManager {
         let mut handle_guard = self.handle.write().await;
 
         if let Some(ref handle) = *handle_guard {
-            // Torrent already running — just update file selection
+            // Torrent already running - just update file selection
             let selected = self.selected_files.read().await;
             self.update_files_retrying(handle, &selected).await?;
             log::info!("Updated file selection, added: {:?}", file_indices);
         } else {
-            // First download — add torrent to session now
+            // First download - add torrent to session now
             let selected = self.selected_files.read().await.clone();
             // Explicitly set output_folder to torrent_root so downloads land in data_dir,
             // not in the session's default output folder (which is app_data_dir).
@@ -346,7 +346,7 @@ impl DownloadManager {
                     (h, true)
                 }
                 AddTorrentResponse::ListOnly(_) => {
-                    log::error!("Torrent add: response=ListOnly (unexpected — file selection ignored)");
+                    log::error!("Torrent add: response=ListOnly (unexpected - file selection ignored)");
                     return Err(anyhow::anyhow!("Torrent added in list-only mode"));
                 }
             };
@@ -380,7 +380,7 @@ impl DownloadManager {
                 while start.elapsed() < Duration::from_secs(60) {
                     let s = stats_handle.stats();
                     // The Display impl gives us state + progress + (when live)
-                    // download/upload speeds — the most diagnostic-dense
+                    // download/upload speeds - the most diagnostic-dense
                     // single line we can emit. Augment with the per-file
                     // breakdown so we can tell partial progress apart.
                     let per_file: Vec<String> = watched_files.iter().map(|(idx, name, size)| {
@@ -408,7 +408,7 @@ impl DownloadManager {
             // file declared by the torrent, so all 14k+ slots exist as 0-byte
             // sparse files immediately after add. With fastresume enabled
             // (v0.6.4+), pieces shared between files get marked "have" once
-            // any selected file's pieces arrive — and librqbit then refuses
+            // any selected file's pieces arrive - and librqbit then refuses
             // to re-download those pieces, even if some target files were
             // deleted. Deleting a tracked placeholder therefore makes
             // librqbit's in-memory state lie about disk state, leaving the
@@ -529,7 +529,7 @@ impl DownloadManager {
 
     /// Remove a file from the active selection, telling librqbit to stop prioritising it.
     /// Holds the write lock across the session update to keep selected_files and the
-    /// torrent session in sync — no other caller can observe a partially-updated state.
+    /// torrent session in sync - no other caller can observe a partially-updated state.
     pub async fn deselect_file(&self, file_index: usize) {
         let mut selected = self.selected_files.write().await;
         selected.remove(&file_index);

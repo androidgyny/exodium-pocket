@@ -5,7 +5,7 @@ const mockInvoke = vi.mocked(invoke);
 
 // The downloads store uses module-level signals that persist for the lifetime of
 // the cached module. Tests avoid state bleed by using a unique gameId per test
-// (999, 100, 101, …). Do NOT reuse an ID across tests in this file — a second
+// (999, 100, 101, …). Do NOT reuse an ID across tests in this file - a second
 // call to startGameDownload for the same ID will see leftover state from the
 // first test.
 
@@ -87,7 +87,7 @@ describe("downloads state machine", () => {
   });
 
   it("transitions to Installed! when installed=true and clears after 3s", async () => {
-    // getGames is called by fetchGames after install — return an empty list
+    // getGames is called by fetchGames after install - return an empty list
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "download_game") return Promise.resolve("ok");
       if (cmd === "get_download_progress")
@@ -113,7 +113,7 @@ describe("downloads state machine", () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "download_game") return Promise.resolve("ok");
       if (cmd === "get_download_progress")
-        return Promise.resolve(makeProgress({ error: "Download incomplete — right-click to uninstall and retry" }));
+        return Promise.resolve(makeProgress({ error: "Download incomplete - right-click to uninstall and retry" }));
       return Promise.resolve(null);
     });
 

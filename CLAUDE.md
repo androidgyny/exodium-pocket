@@ -1,4 +1,4 @@
-# Exodium — Project Guide for Claude
+# Exodium - Project Guide for Claude
 
 This file is the handover document for future Claude sessions working on **Exodium**, a cross-platform eXoDOS game launcher. Read it first before touching the code.
 
@@ -18,7 +18,7 @@ Exodium replaces the Windows-only LaunchBox frontend that ships with the [eXoDOS
 |---|---|
 | Shell | Tauri v2 (custom window, `decorations: false`) |
 | Frontend | SolidJS + TypeScript + Vite |
-| UI components | Ark UI headless (`@ark-ui/solid`) — Select, Progress, Dialog, Tooltip |
+| UI components | Ark UI headless (`@ark-ui/solid`) - Select, Progress, Dialog, Tooltip |
 | Backend | Rust |
 | DB | SQLite via `rusqlite` (WAL mode) |
 | Torrent | `librqbit` with selective file downloads |
@@ -78,7 +78,7 @@ exodium/
 ## Key architectural decisions (don't re-litigate these)
 
 ### 1. Shortcode is the universal game key
-The `application_path` in LaunchBox XML looks like `eXo\eXoDOS\!dos\SQ5\dosbox.conf` — the `SQ5` segment is the **shortcode**. It keys:
+The `application_path` in LaunchBox XML looks like `eXo\eXoDOS\!dos\SQ5\dosbox.conf` - the `SQ5` segment is the **shortcode**. It keys:
 - Thumbnails: `thumbnails/eXoDOS/SQ5.jpg`
 - Language variant merging (EN/DE/FR/PL/... rows with the same shortcode are one game)
 - Save backup directories: `!save/<shortcode>/`
@@ -115,7 +115,7 @@ On uninstall, the entire game directory is moved to `!save/<shortcode>/` via `st
 Videos and animations for LP games live in the main eXoDOS torrent's GameData folder. `download_game` in `games.rs` auto-fetches the matching EN GameData entry when installing an LP variant. `get_game_variants` dynamically subtracts the EN GameData size from the displayed download size if it's already on disk.
 
 ### 7. Bundled metadata instead of downloading
-The 4.9 GB of LaunchBox XML + images from the torrent is replaced with ~4.2 MB of gzipped XMLs in `metadata/` and a shortcode-keyed thumbnail set in `thumbnails/`. These ship with the app binary. The regenerate script parses XML per `<Game>` block (NOT across block boundaries — a previous bug mapped SQ5 to Bloxit's image).
+The 4.9 GB of LaunchBox XML + images from the torrent is replaced with ~4.2 MB of gzipped XMLs in `metadata/` and a shortcode-keyed thumbnail set in `thumbnails/`. These ship with the app binary. The regenerate script parses XML per `<Game>` block (NOT across block boundaries - a previous bug mapped SQ5 to Bloxit's image).
 
 ### 8. Tauri permissions must be explicit
 `core:default` does **NOT** include window drag/resize. `src-tauri/capabilities/default.json` must list:
@@ -128,7 +128,7 @@ The 4.9 GB of LaunchBox XML + images from the torrent is replaced with ~4.2 MB o
 ```bash
 pnpm install
 
-# First time on a new machine — downloads DOSBox Staging + thumbnails:
+# First time on a new machine - downloads DOSBox Staging + thumbnails:
 # Prerequisites: aria2c  (brew install aria2 / apt install aria2)
 #                Pillow   (pip3 install Pillow)
 pnpm run init-dev           # interactive: prompts for language pack downloads
@@ -140,7 +140,7 @@ pnpm run init-dev --force   # regenerate thumbnails even if already present
 pnpm tauri dev
 ```
 
-`init-dev` chains `get-dosbox` + thumbnail generation. Each step is idempotent — already-downloaded files are skipped. When run interactively without pack flags it prompts whether to download LP metadata. `XODOSMetadata.zip` is only used for thumbnails — the game catalogue comes from the bundled `.xml.gz` files. Downloaded ZIPs are cached under `~/.exodium-dev/` (override with `XDO_DEV_DATA=/your/path`).
+`init-dev` chains `get-dosbox` + thumbnail generation. Each step is idempotent - already-downloaded files are skipped. When run interactively without pack flags it prompts whether to download LP metadata. `XODOSMetadata.zip` is only used for thumbnails - the game catalogue comes from the bundled `.xml.gz` files. Downloaded ZIPs are cached under `~/.exodium-dev/` (override with `XDO_DEV_DATA=/your/path`).
 
 To download only the DOSBox binary (without thumbnails):
 ```bash
@@ -150,7 +150,7 @@ pnpm run get-dosbox
 **Factory reset** (nukes the SQLite DB + extracted games but keeps the torrent data):
 Use the "Factory Reset" button on the setup screen, or call the `factory_reset` command.
 
-**Rebuilding thumbnails**: `scripts/gen_thumbnails.py` — takes `XODOSMetadata.zip`, `metadata/MS-DOS.xml.gz`, and an output dir. Called automatically by `init-dev.sh`.
+**Rebuilding thumbnails**: `scripts/gen_thumbnails.py` - takes `XODOSMetadata.zip`, `metadata/MS-DOS.xml.gz`, and an output dir. Called automatically by `init-dev.sh`.
 
 ## Current state (as of 2026-04-11)
 
@@ -162,20 +162,20 @@ Use the "Factory Reset" button on the setup screen, or call the `factory_reset` 
 - 3-state language badges (blue/amber/green)
 - Download with live progress, synced across EN/DE cards via `stores/downloads.ts`
 - Launch via `dosbox` command from extracted game dir
-- LP games with commented-out autoexec (e.g. Das Amt) now launch correctly — `find_lp_launch` locates the real launcher via .bat / .com / .exe inspection
-- "Download incomplete" false positive fixed — games whose bytes were received as a torrent piece side-effect of a neighboring download now correctly trigger file assembly instead of showing an error
+- LP games with commented-out autoexec (e.g. Das Amt) now launch correctly - `find_lp_launch` locates the real launcher via .bat / .com / .exe inspection
+- "Download incomplete" false positive fixed - games whose bytes were received as a torrent piece side-effect of a neighboring download now correctly trigger file assembly instead of showing an error
 - Uninstall with save-game backup to `!save/<shortcode>/`
 - Restore saves on reinstall
 - Auto-download of shared EN GameData when installing LP variants
 - "My Games" tab: Favorites shelf + Installed shelf; populated immediately on download start
 - Shortcode-keyed thumbnails (including PL via title backfill)
 - Custom window with drag/resize/min/max/close
-- Game detail side panel (`GameDetailPanel.tsx`) — download, launch, uninstall, language picker
+- Game detail side panel (`GameDetailPanel.tsx`) - download, launch, uninstall, language picker
 - Jump bar: populated from backend `get_section_keys` for all sort modes (A–Z, genre, year, rating); clicking an unloaded letter triggers `fetchAllGames()` then scrolls
 - Test suite: `pnpm test` / `pnpm run test:all` (vitest for frontend, `cargo test` for Rust)
 
 ### Notes on collection selection
-`Intro.tsx` contains UI for per-collection selection but is **not currently wired into App.tsx** — it is dead code. `Setup.tsx` always enables all available collections. If per-collection opt-in is reinstated, the key invariant is: `setConfig("collections", ...)` must be called and awaited **before** `initDownloadManager()`.
+`Intro.tsx` contains UI for per-collection selection but is **not currently wired into App.tsx** - it is dead code. `Setup.tsx` always enables all available collections. If per-collection opt-in is reinstated, the key invariant is: `setConfig("collections", ...)` must be called and awaited **before** `initDownloadManager()`.
 
 ### 9. Bundled DOSBox Staging (zero-dependency launch)
 
@@ -186,9 +186,9 @@ DOSBox Staging ships as a Tauri `externalBin` in `src-tauri/binaries/`. Platform
 2. Dev mode: first `dosbox-staging-*` found in `resource_dir/binaries/`
 3. Fallback: `dosbox-staging` on system PATH
 
-`metadata/dosbox.txt` maps game titles to eXoDOS emulator variants (`ece4230`, `staging0.81.1`, etc.). `generate_db.rs` reads this file and stores the variant slug in `games.dosbox_variant`. Currently all variants map to DOSBox Staging — ECE builds have no cross-platform release and trigger a log warning. The `dosbox_variant` field is kept in the DB for future per-game emulator selection (e.g. when additional emulators are bundled).
+`metadata/dosbox.txt` maps game titles to eXoDOS emulator variants (`ece4230`, `staging0.81.1`, etc.). `generate_db.rs` reads this file and stores the variant slug in `games.dosbox_variant`. Currently all variants map to DOSBox Staging - ECE builds have no cross-platform release and trigger a log warning. The `dosbox_variant` field is kept in the DB for future per-game emulator selection (e.g. when additional emulators are bundled).
 
-Variant distribution: ~63% classic `dosbox`, ~27% ECE4230, ~9% Staging — all handled by DOSBox Staging.
+Variant distribution: ~63% classic `dosbox`, ~27% ECE4230, ~9% Staging - all handled by DOSBox Staging.
 
 ### 10. Update-check manifest
 
@@ -196,7 +196,7 @@ Variant distribution: ~63% classic `dosbox`, ~27% ECE4230, ~9% Staging — all h
 
 In dev, `check_for_updates` reads the local `manifest.json`. In production it will HTTP-fetch from a hosted URL (stub is in `updates.rs`, marked TODO). When eXoDOS releases a new torrent: update the bundled `.torrent` file, re-run `pnpm run init-dev`, update `manifest.json` with the new infohash, and push the new thumbnail pack to the release host.
 
-Thumbnail packs for production are hosted separately (GitHub Releases or similar). `manifest.json` contains the URL, sha256, and size so the setup flow can download and verify them. This is not yet implemented in the UI — just the backend command and schema exist.
+Thumbnail packs for production are hosted separately (GitHub Releases or similar). `manifest.json` contains the URL, sha256, and size so the setup flow can download and verify them. This is not yet implemented in the UI - just the backend command and schema exist.
 
 ## Conventions
 
@@ -204,4 +204,4 @@ Thumbnail packs for production are hosted separately (GitHub Releases or similar
 - **SolidJS**: use `createSignal` + derived getters, not `createMemo` unless the computation is expensive. Stores for cross-component state.
 - **Don't add comments to untouched code.** Only comment genuinely non-obvious logic in code you're changing.
 - **Small, focused edits.** Don't refactor beyond the ask. The codebase has been iterated on heavily and most choices are deliberate.
-- **When in doubt about a design decision, check this file first** — most recurring questions are answered above.
+- **When in doubt about a design decision, check this file first** - most recurring questions are answered above.

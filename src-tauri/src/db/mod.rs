@@ -105,15 +105,15 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     //   - title_thumbnail_key() (the hash function itself), or
     //   - title_canonical() (LP↔EN propagation rule)
     // Bump history:
-    //   v1 — initial content-addressed (title.trim().lowercase().whitespace-collapse)
-    //   v2 — stripped-alnum hash + basic article drop
-    //   v3 — marketing-modifier drop + British/American spelling folds
-    //   v4 — stop-word prepositions + standalone "1"/"i" dropped
+    //   v1 - initial content-addressed (title.trim().lowercase().whitespace-collapse)
+    //   v2 - stripped-alnum hash + basic article drop
+    //   v3 - marketing-modifier drop + British/American spelling folds
+    //   v4 - stop-word prepositions + standalone "1"/"i" dropped
     //
     // Without this check, existing users keep their old thumbnail_key values
-    // and the new canonical matcher never runs against them — bundled files
+    // and the new canonical matcher never runs against them - bundled files
     // use current hashes, DB rows use old hashes, every card 404s.
-    //   v5 — shortcode-based propagation added to propagate_lp_thumbnail_keys
+    //   v5 - shortcode-based propagation added to propagate_lp_thumbnail_keys
     const CURRENT_HASH_VERSION: &str = "5";
     let stored_version: Option<String> =
         queries::get_config(conn, "thumbnail_hash_version").ok().flatten();
@@ -144,7 +144,7 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     // Backfill manual_path from bundled XML for DBs that were built before the
     // ManualPath field was added. Runs once: checks if ANY row has a non-NULL
     // manual_path; if zero, reads all bundled .xml.gz files and updates matching
-    // rows by title. Idempotent — subsequent calls find rows populated and skip.
+    // rows by title. Idempotent - subsequent calls find rows populated and skip.
     populate_manual_paths(conn)?;
 
     Ok(())
@@ -266,12 +266,12 @@ fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
     }
 }
 
-/// SHA-256(alnum-only lowercase title)[:16] — must match the Python and
+/// SHA-256(alnum-only lowercase title)[:16] - must match the Python and
 /// generate_db.rs binary implementations exactly, or filename lookup misses.
 ///
 /// The normalization is deliberately aggressive: lowercase, then keep only
 /// ASCII alphanumerics. This means "3-K Trivia" and "3K Trivia" and
-/// "3, K. Trivia!" all hash to the same filename — punctuation variants
+/// "3, K. Trivia!" all hash to the same filename - punctuation variants
 /// across XML / zip / image filenames merge automatically.
 /// Lowercase + strip to ASCII alphanumeric only. Shared by the thumbnail hash
 /// and the metadata image-file matcher in `commands::setup`.
@@ -315,11 +315,11 @@ fn title_canonical(title: &str) -> String {
         ("viii", "8"), ("ix", "9"),
     ];
 
-    // Tokens to drop entirely — they're noise when matching LP↔EN titles:
+    // Tokens to drop entirely - they're noise when matching LP↔EN titles:
     //   - articles: "the", "a", "an" (LaunchBox's ", The" suffix convention)
     //   - stop-word prepositions/conjunctions that LP packs include or omit
     //       inconsistently: "in", "of", "and", "to", "for", "on"
-    //   - "first in series" markers — LP packs often add "1"/"i" where EN
+    //   - "first in series" markers - LP packs often add "1"/"i" where EN
     //       has no number (the first game's sequel is "2" but the first
     //       itself is unnumbered). Standalone "1" and "i" drops, higher
     //       numbers stay (they distinguish "Larry 2" from "Larry 3").
@@ -329,7 +329,7 @@ fn title_canonical(title: &str) -> String {
     //       "limited", "talkie", "sci", "remake"
     //   - British/American spelling noise is folded below (not dropped)
     //
-    // Dropping these is deliberately aggressive — we accept the occasional
+    // Dropping these is deliberately aggressive - we accept the occasional
     // false positive (e.g. two unrelated games whose canonical forms collide
     // because all differentiating words were stopwords) in exchange for
     // catching the bulk of LP title drift. Game titles distinctive enough to
@@ -344,7 +344,7 @@ fn title_canonical(title: &str) -> String {
         "limited", "talkie", "sci", "remake", "classic", "classics",
     ];
 
-    // Cross-spelling token substitutions (bidirectional — whichever variant
+    // Cross-spelling token substitutions (bidirectional - whichever variant
     // appears gets folded into the other so both hash the same).
     const SPELLING_FOLDS: &[(&str, &str)] = &[
         ("judgement", "judgment"),
@@ -387,7 +387,7 @@ fn title_canonical(title: &str) -> String {
 ///
 /// Idempotent: running twice makes no further changes.
 pub fn propagate_lp_thumbnail_keys(conn: &Connection) -> DbResult<()> {
-    // Pass 1: shortcode-based — most reliable, catches cases like
+    // Pass 1: shortcode-based - most reliable, catches cases like
     // "Space Quest V - The Next Mutation" (DE) ↔ "Space Quest V: Roger Wilco
     // The Next Mutation" (EN) where the titles diverge too much for canonical
     // matching but the shortcode (SQ5) is shared.
@@ -410,7 +410,7 @@ pub fn propagate_lp_thumbnail_keys(conn: &Connection) -> DbResult<()> {
         [],
     )? as usize;
 
-    // Pass 2: canonical-title matching — catches LP games with divergent
+    // Pass 2: canonical-title matching - catches LP games with divergent
     // shortcodes but recognizably-same titles.
     // Build canonical→thumbnail_key map from EN games with a hash.
     let mut en_map: std::collections::HashMap<String, String> =

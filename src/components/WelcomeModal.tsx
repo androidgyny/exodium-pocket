@@ -33,7 +33,7 @@ export function WelcomeModal(props: Props) {
   });
 
   const handleContinue = async () => {
-    // Record the user's choice first — even if the download fails to start,
+    // Record the user's choice first - even if the download fails to start,
     // the user made a decision and shouldn't be prompted again.
     await setConfig("welcome_seen", "1");
     const packId = selected();
@@ -48,7 +48,7 @@ export function WelcomeModal(props: Props) {
     props.onClose();
   };
 
-  // Only mark as seen if the user explicitly made a choice — don't write
+  // Only mark as seen if the user explicitly made a choice - don't write
   // welcome_seen if the modal couldn't load packs (network issue).
   const canProceed = () => !loading() && !error();
 
@@ -99,7 +99,7 @@ export function WelcomeModal(props: Props) {
                         />
                         <span class="welcome-pack-label">
                           {pack.display_name}
-                          <span class="welcome-pack-size"> — ~{formatBytes(pack.size_bytes)}</span>
+                          <span class="welcome-pack-size"> - ~{formatBytes(pack.size_bytes)}</span>
                         </span>
                         <Show when={isFuture()}>
                           <span class="welcome-pack-future">Coming soon</span>

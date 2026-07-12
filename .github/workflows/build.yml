@@ -123,7 +123,7 @@ jobs:
           draft: true
           generate_release_notes: true
           # Recursive globs because upload-artifact@v4 preserves the common-prefix
-          # directory hierarchy — Linux has bundle/deb + bundle/appimage, and
+          # directory hierarchy - Linux has bundle/deb + bundle/appimage, and
           # Windows has bundle/msi + bundle/nsis, so files end up nested.
           files: |
             artifacts/**/*.dmg

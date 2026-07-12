@@ -143,7 +143,7 @@ export function Setup(props: SetupProps) {
             <button class="setup-mode-btn" onClick={() => { setPhase("import"); setError(""); }}>
               <span class="setup-mode-icon"><IconImport /></span>
               <span class="setup-mode-title">Import eXoDOS Installation</span>
-              <span class="setup-mode-desc">Use your existing eXoDOS collection — nothing will be modified</span>
+              <span class="setup-mode-desc">Use your existing eXoDOS collection - nothing will be modified</span>
             </button>
           </div>
         </Show>
@@ -177,7 +177,7 @@ export function Setup(props: SetupProps) {
 
         {/* ── Import eXoDOS ── */}
         <Show when={phase() === "import"}>
-          <p class="setup-subtitle">Select your eXoDOS folder. Exodium will only read from it — your files are never modified.</p>
+          <p class="setup-subtitle">Select your eXoDOS folder. Exodium will only read from it - your files are never modified.</p>
           <div class="setup-step">
             <label>eXoDOS folder</label>
             <div class="path-picker">

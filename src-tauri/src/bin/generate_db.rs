@@ -70,7 +70,7 @@ fn normalize_title(title: &str) -> String {
 /// and the lib implementation in src-tauri/src/db/mod.rs::title_thumbnail_key.
 ///
 /// The stripped-alnum rule means "3-K Trivia", "3K Trivia", and "3 k trivia"
-/// all hash to the same filename — punctuation and spacing drift across XML
+/// all hash to the same filename - punctuation and spacing drift across XML
 /// vs zip vs image filenames no longer breaks lookup.
 fn thumbnail_key(title: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -405,7 +405,7 @@ fn main() {
     {
         let tx = conn.unchecked_transaction().unwrap();
 
-        // Pass 1: EN games — hash own title.
+        // Pass 1: EN games - hash own title.
         let en_titles: Vec<(i64, String)> = {
             let mut stmt = tx
                 .prepare("SELECT id, title FROM games WHERE language = 'EN'")
@@ -425,7 +425,7 @@ fn main() {
         }
         println!("  thumbnail_key pass 1 (EN own-title): {} games", en_titles.len());
 
-        // Pass 2: LP variants — copy EN's hash where shortcode matches.
+        // Pass 2: LP variants - copy EN's hash where shortcode matches.
         let pass2 = tx
             .execute(
                 "UPDATE games
@@ -444,7 +444,7 @@ fn main() {
             .unwrap_or(0);
         println!("  thumbnail_key pass 2 (LP shared with EN): {} games", pass2);
 
-        // Pass 3: LP-exclusive — hash own title.
+        // Pass 3: LP-exclusive - hash own title.
         let residual: Vec<(i64, String)> = {
             let mut stmt = tx
                 .prepare("SELECT id, title FROM games WHERE thumbnail_key IS NULL")

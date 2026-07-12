@@ -1,4 +1,4 @@
-/// Playability smoke tests — run with:
+/// Playability smoke tests - run with:
 ///
 ///   cargo test playability -- --ignored --nocapture
 ///
@@ -8,7 +8,7 @@
 /// For each installed game the test:
 ///   1. Builds the DOSBox command that `launch_game` would use.
 ///   2. Spawns the process.
-///   3. Waits 5 s — if still alive → "started".
+///   3. Waits 5 s - if still alive → "started".
 ///      If it exited before the window with a non-zero code → "immediate_crash".
 ///   4. Kills the process.
 ///   5. Appends results to playability_report.json next to the DB.
@@ -106,7 +106,7 @@ fn find_dosbox() -> PathBuf {
 
 /// Resolve the dosbox.conf path for a game.
 ///
-/// This is a simplified version of the path resolution in `launch_game` — it
+/// This is a simplified version of the path resolution in `launch_game` - it
 /// covers the common EN and LP-fallback cases but does not handle language-dir
 /// conf variants or the macOS shader override. Changes to `launch_game`'s path
 /// logic will not automatically be reflected here.
@@ -170,7 +170,7 @@ fn playability_check_installed_games() {
     let conn = match open_db(&data_dir) {
         Some(c) => c,
         None => {
-            eprintln!("[playability] No database found at {}/exodium.db — skipping.", data_dir.display());
+            eprintln!("[playability] No database found at {}/exodium.db - skipping.", data_dir.display());
             return;
         }
     };
@@ -180,7 +180,7 @@ fn playability_check_installed_games() {
 
     let games = get_installed_games(&conn);
     if games.is_empty() {
-        eprintln!("[playability] No installed games found — skipping.");
+        eprintln!("[playability] No installed games found - skipping.");
         return;
     }
 
@@ -194,7 +194,7 @@ fn playability_check_installed_games() {
         let conf = match resolve_conf(game, &data_dir) {
             Some(c) => c,
             None => {
-                eprintln!("  [SKIP  ] {} — no conf found", game.title);
+                eprintln!("  [SKIP  ] {} - no conf found", game.title);
                 reports.push(GameReport {
                     id: game.id,
                     title: game.title.clone(),
@@ -215,7 +215,7 @@ fn playability_check_installed_games() {
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("  [ERROR ] {} — spawn failed: {}", game.title, e);
+                eprintln!("  [ERROR ] {} - spawn failed: {}", game.title, e);
                 reports.push(GameReport {
                     id: game.id,
                     title: game.title.clone(),
@@ -239,7 +239,7 @@ fn playability_check_installed_games() {
                 }
                 Ok(None) => {
                     if elapsed >= Duration::from_secs(5) {
-                        // Still running after 5 s — DOSBox opened successfully
+                        // Still running after 5 s - DOSBox opened successfully
                         let _ = child.kill();
                         break PlayResult::Started;
                     }

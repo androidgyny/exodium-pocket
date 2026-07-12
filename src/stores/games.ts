@@ -84,7 +84,7 @@ export async function fetchMoreGames() {
   }
 }
 
-/// Load all games at once — used by jumpToSection when the target section isn't rendered yet.
+/// Load all games at once - used by jumpToSection when the target section isn't rendered yet.
 export async function fetchAllGames() {
   if (loading()) { return; }
   setLoading(true);

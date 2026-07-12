@@ -267,7 +267,7 @@ pub async fn install_content_pack(
         );
     }
 
-    // Clone handles for the spawned task — return immediately so the UI stays responsive.
+    // Clone handles for the spawned task - return immediately so the UI stays responsive.
     let jobs_arc = pack_state.0.clone();
     let collection_clone = collection.clone();
     let pack_id_clone = pack_id.clone();
@@ -433,7 +433,7 @@ async fn do_install_torrent(
         })?
         .index;
 
-    // Queue selective download (idempotent — safe to call even if already selected).
+    // Queue selective download (idempotent - safe to call even if already selected).
     manager
         .download_files(vec![file_index])
         .await
@@ -591,7 +591,7 @@ async fn do_install(
 
         downloaded += chunk.len() as u64;
 
-        // Update progress (not every chunk — throttle to avoid lock contention).
+        // Update progress (not every chunk - throttle to avoid lock contention).
         if downloaded % (256 * 1024) < chunk.len() as u64 || downloaded >= content_length {
             let mut jmap = jobs.write().await;
             if let Some(job) = jmap.get_mut(key) {
@@ -615,7 +615,7 @@ async fn do_install(
     if !pack_info.sha256.starts_with("TODO") && hash != pack_info.sha256 {
         let _ = std::fs::remove_file(&tmp_file);
         return Err(format!(
-            "Checksum mismatch — expected {}, got {}. Download may be corrupted, please retry.",
+            "Checksum mismatch - expected {}, got {}. Download may be corrupted, please retry.",
             pack_info.sha256, hash
         ));
     }
@@ -740,7 +740,7 @@ pub async fn uninstall_content_pack(
         (data_dir, install_dir)
     };
 
-    // Filesystem removal can be slow for large packs — run off the command handler thread.
+    // Filesystem removal can be slow for large packs - run off the command handler thread.
     if install_dir.exists() {
         let dir = install_dir.clone();
         tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&dir))
@@ -775,7 +775,7 @@ pub async fn cancel_content_pack_install(
 
 /// Called once at startup. Uninstalls any content pack whose recorded
 /// installed version is lower than the current manifest's version for that
-/// pack — used to flush out e.g. shortcode-keyed v1 poster packs left over
+/// pack - used to flush out e.g. shortcode-keyed v1 poster packs left over
 /// from a previous Exodium release. Logs a list of what was removed; fails
 /// open (keeps going) if the manifest or install dir can't be read.
 pub fn cleanup_stale_content_packs(conn: &rusqlite::Connection, data_dir: &Path) {

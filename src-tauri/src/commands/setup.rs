@@ -9,7 +9,7 @@ use crate::db::normalize_alnum;
 
 /// Cached Tauri resource_dir(), set once during app setup. Needed because
 /// sync helpers (bundled_metadata_dir, bundled_torrent_path) are called from
-/// contexts that don't carry an AppHandle — and without this cache they'd
+/// contexts that don't carry an AppHandle - and without this cache they'd
 /// have to be plumbed everywhere.
 pub(crate) static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -55,7 +55,7 @@ pub struct CollectionDef {
     pub configs_zip: Option<&'static str>,
     /// The folder name the torrent creates inside the data dir (always "eXoDOS").
     /// All four collections (eXoDOS, GLP, PLP, SLP) share the same output folder via
-    /// the overlay model — their torrents all have the internal name "eXoDOS" and write
+    /// the overlay model - their torrents all have the internal name "eXoDOS" and write
     /// to <data_dir>/eXoDOS/ without any per-collection subdirectory.
     pub inner_folder: &'static str,
     /// Path from <inner_folder> to the individual game directories.
@@ -98,7 +98,7 @@ pub fn get_available_collections() -> Vec<CollectionInfo> {
 
 /// Return the directory where Exodium writes its log file. Served from the
 /// `LOG_DIR` cache populated in `lib.rs::run` to avoid re-resolving via
-/// `app.path().app_log_dir()` at command time — that round-trip was observed
+/// `app.path().app_log_dir()` at command time - that round-trip was observed
 /// failing silently on shipped Windows builds while the setup-time call
 /// succeeded.
 #[tauri::command]
@@ -117,7 +117,7 @@ pub fn get_log_dir(app: AppHandle) -> Result<String, String> {
 
 /// Open the log folder in the user's file explorer. Bypasses the frontend's
 /// `getLogDir() + openPath()` two-step which was observed leaving the UI
-/// "Resolving…" forever in shipped Windows builds — by doing both lookup
+/// "Resolving…" forever in shipped Windows builds - by doing both lookup
 /// and open server-side, the UI just calls one command and either succeeds
 /// or sees the error.
 #[tauri::command]
@@ -144,7 +144,7 @@ pub fn open_log_folder(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to open log folder {}: {e}", dir.display()))
 }
 
-/// Managed state for the download system — supports multiple torrents.
+/// Managed state for the download system - supports multiple torrents.
 pub struct TorrentState(pub RwLock<std::collections::HashMap<String, Arc<DownloadManager>>>);
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,7 +164,7 @@ pub struct TorrentInfo {
     pub metadata_size: u64,
 }
 
-/// Decide if a torrent_root looks like a fresh install — i.e. either missing
+/// Decide if a torrent_root looks like a fresh install - i.e. either missing
 /// or contains nothing that librqbit needs to validate against. We use this
 /// to gate the empty-bitfield pre-seed: if the user pointed Exodium at a
 /// directory full of existing game data, we must let librqbit do its real
@@ -173,7 +173,7 @@ pub struct TorrentInfo {
 ///
 /// Dotfiles (e.g. `.eXoDOS_configs_extracted` markers we drop into the
 /// torrent_root after extracting bundled DOSBox configs) are NOT torrent
-/// content and must be ignored — otherwise the second app launch would see
+/// content and must be ignored - otherwise the second app launch would see
 /// our own markers and refuse to seed, defeating the optimisation for users
 /// who haven't actually downloaded any games yet.
 fn torrent_root_looks_empty(torrent_root: &Path) -> bool {
@@ -196,7 +196,7 @@ fn torrent_root_looks_empty(torrent_root: &Path) -> bool {
 /// exist and (b) the data directory looks fresh.
 ///
 /// librqbit's `JsonSessionPersistenceStore::BitVFactory::load(info_hash)` reads
-/// this file directly by info_hash — it does not require an entry in
+/// this file directly by info_hash - it does not require an entry in
 /// `session.json`. With a present, all-zero bitfield, `validate_fastresume`
 /// accepts "I have 0 pieces" without iterating any pieces, and the slow
 /// `initial_check` pass is skipped entirely. Net effect: first download on a
@@ -237,12 +237,12 @@ fn seed_fastresume_bitvs(
         }
 
         // Overlay model: all collections share the same eXoDOS folder. Only
-        // seed if it looks empty — otherwise librqbit must verify what's
+        // seed if it looks empty - otherwise librqbit must verify what's
         // actually on disk.
         let torrent_root = data_path.join(col.inner_folder);
         if !torrent_root_looks_empty(&torrent_root) {
             log::info!(
-                "fastresume: skipping seed for {} — torrent_root {} non-empty, real validation needed",
+                "fastresume: skipping seed for {} - torrent_root {} non-empty, real validation needed",
                 col.id,
                 torrent_root.display()
             );
@@ -313,7 +313,7 @@ pub async fn init_download_manager(
         .map_err(|e| e.to_string())?;
 
     // Build all managers and do slow work (infohash, config extraction) WITHOUT holding
-    // the torrent_state write lock — archive.extract() on 7 000+ files blocks for seconds.
+    // the torrent_state write lock - archive.extract() on 7 000+ files blocks for seconds.
     let mut new_managers: Vec<(String, Arc<DownloadManager>)> = Vec::new();
 
     for col in COLLECTION_MAP {
@@ -367,7 +367,7 @@ pub async fn init_download_manager(
         }
     }
 
-    // Acquire write lock only for the insert — no blocking work inside.
+    // Acquire write lock only for the insert - no blocking work inside.
     let count = new_managers.len();
     {
         let mut managers = torrent_state.0.write().await;
@@ -410,7 +410,7 @@ pub async fn factory_reset(
     }
 
     // Reset user state without touching the game catalog.
-    // Games are catalog data (from the bundled DB) — clearing them would leave
+    // Games are catalog data (from the bundled DB) - clearing them would leave
     // the library empty until next restart. Only reset per-user flags and config.
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -611,7 +611,7 @@ pub fn get_poster_dir(
 /// Metadata payload for a single game.
 ///
 /// Manuals are deferred to v2 (they live inside individual game ZIPs, not
-/// XODOSMetadata.zip) so `manual_path` / `manual_kind` are always None today —
+/// XODOSMetadata.zip) so `manual_path` / `manual_kind` are always None today -
 /// kept in the struct to avoid a future breaking frontend change.
 #[derive(Debug, Serialize)]
 pub struct GameMetadata {
@@ -698,7 +698,7 @@ fn collect_matches_recursive(
         if normalize_alnum(base_stem) == target_norm {
             // Tauri's asset protocol can't serve files whose names start with
             // '.' (dots are treated as path-traversal components in the URL).
-            // Rename them on first encounter — only affects 2 games in the
+            // Rename them on first encounter - only affects 2 games in the
             // entire eXoDOS collection ("...A Personal Nightmare", ".386 Spys").
             let serve_path = if path.file_name()
                 .and_then(|n| n.to_str())
@@ -724,7 +724,7 @@ fn collect_matches_recursive(
 /// Scan the installed metadata content pack for a game's image assets.
 /// Walks `<install_dir>/Images/MS-DOS/<category>/` folders and collects every
 /// file whose (suffix-stripped, normalized) stem equals the normalized game
-/// title. Returns empty images (not an error) when the pack isn't installed —
+/// title. Returns empty images (not an error) when the pack isn't installed -
 /// the frontend renders a Media section only if something is present.
 #[tauri::command]
 pub async fn get_game_metadata(
@@ -963,7 +963,7 @@ pub fn get_default_data_dir() -> Result<String, String> {
 /// All known eXo collections.
 /// Language packs are listed BEFORE eXoDOS so their games are matched to the
 /// correct torrent before eXoDOS can claim same-title translations.
-/// To add a new collection, append a CollectionDef entry here — no other
+/// To add a new collection, append a CollectionDef entry here - no other
 /// Rust file needs to be changed for path/emulator dispatch.
 pub const COLLECTION_MAP: &[CollectionDef] = &[
     CollectionDef {
@@ -1381,7 +1381,7 @@ pub async fn setup_from_local(
         queries::set_config(&conn, "collections", &all_collections).map_err(|e| e.to_string())?;
     }
 
-    // The bundled DB already has the full game catalog — no need to re-parse the
+    // The bundled DB already has the full game catalog - no need to re-parse the
     // eXoDOS XML (XODOSMetadata.zip is 5 GB and would block for minutes).
     // Just report how many games are in the current DB.
     let count = {
@@ -1392,12 +1392,12 @@ pub async fn setup_from_local(
 
     // Init download managers for all collections (for future game downloads).
     // Session state goes in the app config dir, game files in the existing eXoDOS tree.
-    // Build managers WITHOUT holding the write lock — create_session is async and can be slow.
+    // Build managers WITHOUT holding the write lock - create_session is async and can be slow.
     let config_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let data_path = PathBuf::from(&data_dir);
     let persistence_dir = fastresume_dir(&config_dir);
 
-    // Same fastresume seed as init_download_manager — see notes there. This
+    // Same fastresume seed as init_download_manager - see notes there. This
     // path is hit by `setup_from_local`, where the data_dir often already
     // contains pre-extracted games, so the seed is a no-op except for
     // truly empty cases. That's the correct behavior.
@@ -1430,7 +1430,7 @@ pub async fn setup_from_local(
                 None => continue,
             };
             if col.lang_dir.is_none() {
-                continue; // base eXoDOS — skip
+                continue; // base eXoDOS - skip
             }
 
             let already_in_db: i64 = {
@@ -1488,7 +1488,7 @@ pub async fn setup_from_local(
         // PLP and SLP XMLs use a path format without the "!dos/<shortcode>" segment, so their
         // shortcodes (and derived dosbox_conf) come out as NULL after import.  Mirror the same
         // two-step approach as generate_db.rs: exact EN title match first.
-        // This is idempotent — rows already having values are unaffected.
+        // This is idempotent - rows already having values are unaffected.
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         let _ = conn.execute_batch(
             "-- Inherit shortcode from the matching EN game by exact title
@@ -1566,7 +1566,7 @@ pub async fn setup_from_local(
         // Passes 1 & 2 only matched titles present in the EN catalog; this covers the rest.
         //
         // ATTACH and DETACH are issued as separate calls so DETACH always runs even when an
-        // UPDATE fails — execute_batch stops at the first error, which would leave lp_static
+        // UPDATE fails - execute_batch stops at the first error, which would leave lp_static
         // attached for the lifetime of the connection if DETACH were part of the same batch.
         let static_db = metadata_dir.join("exodium.db");
         if static_db.exists() {
@@ -1632,7 +1632,7 @@ pub async fn setup_from_local(
         db::propagate_lp_thumbnail_keys(&conn).map_err(|e| e.to_string())?;
     }
 
-    // Briefly acquire write lock just to insert — no awaits inside this block.
+    // Briefly acquire write lock just to insert - no awaits inside this block.
     {
         let mut managers = torrent_state.0.write().await;
         for (id, mgr) in new_managers {
@@ -1641,7 +1641,7 @@ pub async fn setup_from_local(
     }
 
     // The user's existing eXoDOS tree already has all DOSBox configs in place.
-    // No need to extract !DOSmetadata.zip — that's only required when downloading from scratch.
+    // No need to extract !DOSmetadata.zip - that's only required when downloading from scratch.
     // (init_download_manager handles the bundled configs zip for fresh installs.)
 
     // Scan the existing eXoDOS tree to mark games that are already on disk as installed.
@@ -1664,13 +1664,13 @@ fn scan_installed_games_with_db(
 ) -> Result<usize, String> {
     // The eXoDOS torrent always creates a folder called "eXoDOS" inside data_dir.
     // Extracted game data lives at:
-    //   eXo/eXoDOS/<shortcode>/           — English (eXoDOS)
-    //   eXo/eXoDOS/!german/<shortcode>/   — German LP (GLP)
-    //   eXo/eXoDOS/!polish/<shortcode>/   — Polish LP (PLP)
-    //   eXo/eXoDOS/!spanish/<shortcode>/  — Spanish LP (SLP)
+    //   eXo/eXoDOS/<shortcode>/           - English (eXoDOS)
+    //   eXo/eXoDOS/!german/<shortcode>/   - German LP (GLP)
+    //   eXo/eXoDOS/!polish/<shortcode>/   - Polish LP (PLP)
+    //   eXo/eXoDOS/!spanish/<shortcode>/  - Spanish LP (SLP)
     //
     // Note: eXo/eXoDOS/!dos/<shortcode>/ contains only config/script files and is
-    // ALWAYS present in any eXoDOS installation — it is NOT an indicator of game installation.
+    // ALWAYS present in any eXoDOS installation - it is NOT an indicator of game installation.
     let game_base = PathBuf::from(data_dir)
         .join("eXoDOS")
         .join("eXo")
@@ -1678,7 +1678,7 @@ fn scan_installed_games_with_db(
 
     // Reset all installed flags before the scan so that games whose extracted directory
     // was removed are correctly flipped back to "not installed".
-    // in_library is also cleared — the scan is the authoritative source for local installs.
+    // in_library is also cleared - the scan is the authoritative source for local installs.
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
         conn.execute_batch("UPDATE games SET installed = 0, in_library = 0")

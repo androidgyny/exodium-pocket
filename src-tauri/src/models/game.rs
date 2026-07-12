@@ -42,6 +42,6 @@ pub struct Game {
     /// Relative to the torrent root. Null when no manual exists.
     pub manual_path: Option<String>,
     /// ISO 8601 timestamp (UTC) of the last time the game was launched.
-    /// Used for ordering only — convert to local time if displaying to user.
+    /// Used for ordering only - convert to local time if displaying to user.
     pub last_played: Option<String>,
 }

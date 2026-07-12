@@ -28,12 +28,12 @@ export async function refreshInstalledPacks() {
           }
         }
       } catch {
-        // Collection may not have content packs — ignore
+        // Collection may not have content packs - ignore
       }
     }
     setInstalledPacks(allInstalled);
   } catch {
-    // Manifest unavailable — leave current state
+    // Manifest unavailable - leave current state
   }
 }
 

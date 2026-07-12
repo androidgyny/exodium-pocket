@@ -41,9 +41,9 @@ export function thumbnailDirForCollection(collectionId: string | null | undefine
  * "eXoDOS_GLP:posters" but the installed pack is keyed "eXoDOS:posters".
  *
  * Resolution order:
- *   1. Tier 1 — poster dir available (runtime-downloaded HD box art)
- *   2. Tier 0 — preview dir available (bundled low-quality JPEG)
- *   3. null   — no thumbnail at all (has_thumbnail = false)
+ *   1. Tier 1 - poster dir available (runtime-downloaded HD box art)
+ *   2. Tier 0 - preview dir available (bundled low-quality JPEG)
+ *   3. null   - no thumbnail at all (has_thumbnail = false)
  */
 export function bestThumbnailPath(
   collection: string | null | undefined,
@@ -55,7 +55,7 @@ export function bestThumbnailPath(
 
 /** Return every available thumbnail path for a game, poster (Tier 1) first,
  *  preview (Tier 0) second. GameCard renders the first and swaps to the next
- *  on `<img onError>` — this is the robust way to handle a *stale* poster pack
+ *  on `<img onError>` - this is the robust way to handle a *stale* poster pack
  *  (left over from a previous Exodium version with shortcode-keyed files)
  *  where the pack dir exists on disk but the specific hash-keyed file inside
  *  doesn't. Without the fallback, the browser 404s and the tile goes blank. */

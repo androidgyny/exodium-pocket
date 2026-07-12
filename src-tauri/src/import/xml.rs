@@ -15,7 +15,7 @@ struct LaunchBoxGames {
 }
 
 /// Raw XML representation of a LaunchBox <Game> element.
-/// Only the fields we care about — everything else is silently ignored.
+/// Only the fields we care about - everything else is silently ignored.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct XmlGame {
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn extract_language_code_uppercased() {
         // The language code value is uppercased regardless of the casing in the XML.
-        // Note: the "Language:" tag itself must be capital-L — strip_prefix is case-sensitive.
+        // Note: the "Language:" tag itself must be capital-L - strip_prefix is case-sensitive.
         assert_eq!(extract_language(&Some("Language: pl".to_string())), "PL");
     }
 
