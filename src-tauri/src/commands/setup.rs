@@ -1471,6 +1471,7 @@ pub async fn setup_from_local(
         let all_collections = COLLECTION_MAP.iter().map(|c| c.id).collect::<Vec<_>>().join(",");
         queries::set_config(&conn, "collections", &all_collections).map_err(|e| e.to_string())?;
     }
+    crate::allow_asset_dir(&app, &PathBuf::from(&data_dir));
 
     // The bundled DB already has the full game catalog - no need to re-parse the
     // eXoDOS XML (XODOSMetadata.zip is 5 GB and would block for minutes).

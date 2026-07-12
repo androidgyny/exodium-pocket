@@ -222,6 +222,21 @@ fi
 
   chmod +x "$OUT_BIN"
   echo "Installed: $OUT_BIN"
+
+  # GPL compliance: ship DOSBox Staging's license text alongside the bundled
+  # binary. Prefer the copy inside the release archive; fall back to the
+  # upstream repo at the same version tag.
+  LICENSE_DEST="$REPO_ROOT/src-tauri/resources/dosbox-bin/LICENSE-dosbox-staging.txt"
+  mkdir -p "$(dirname "$LICENSE_DEST")"
+  LICENSE_SRC="$(find "$TMP_DIR" -maxdepth 4 -type f \( -name "LICENSE" -o -name "COPYING" \) 2>/dev/null | head -1)"
+  if [[ -n "$LICENSE_SRC" ]]; then
+    cp "$LICENSE_SRC" "$LICENSE_DEST"
+    echo "Staged DOSBox Staging license: $LICENSE_DEST"
+  elif [[ ! -f "$LICENSE_DEST" ]]; then
+    curl -fsSL "https://raw.githubusercontent.com/dosbox-staging/dosbox-staging/v$VERSION/LICENSE" -o "$LICENSE_DEST" \
+      && echo "Downloaded DOSBox Staging license: $LICENSE_DEST" \
+      || echo "Warning: could not stage DOSBox Staging LICENSE (GPL compliance)"
+  fi
 fi
 
 # macOS: strip quarantine and re-sign with an ad-hoc signature.

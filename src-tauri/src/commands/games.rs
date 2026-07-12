@@ -162,9 +162,24 @@ pub fn get_config(state: State<DbState>, key: String) -> Result<Option<String>, 
 }
 
 #[tauri::command]
-pub fn set_config(state: State<DbState>, key: String, value: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    queries::set_config(&conn, &key, &value).map_err(|e| e.to_string())
+pub fn set_config(
+    app: tauri::AppHandle,
+    state: State<DbState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        queries::set_config(&conn, &key, &value).map_err(|e| e.to_string())?;
+    }
+    // The static asset-protocol scope only covers $RESOURCE/$APPDATA; the
+    // user-chosen game dir (thumbnails, screenshots, manuals served via the
+    // asset protocol) is granted at runtime - here on change, and at startup
+    // in lib.rs for the stored value.
+    if key == "data_dir" {
+        crate::allow_asset_dir(&app, std::path::Path::new(&value));
+    }
+    Ok(())
 }
 
 /// Queue a game for download via torrent.
@@ -183,6 +198,31 @@ pub async fn download_game(
 
     if game.installed {
         return Ok(format!("{} is already installed", game.title));
+    }
+
+    // Disk-space preflight: refusing upfront beats a multi-GB torrent (plus
+    // ~equal-sized extraction) failing halfway with a partial install.
+    if let Some(size) = game.download_size {
+        let data_dir = {
+            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+            queries::get_config(&conn, "data_dir").ok().flatten()
+        };
+        if let Some(dir) = data_dir {
+            // download ZIP + extracted contents + safety margin
+            let needed = (size as u64).saturating_mul(2) + 500 * 1024 * 1024;
+            if let Ok(free) = fs4::available_space(std::path::Path::new(&dir)) {
+                if free < needed {
+                    let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
+                    return Err(format!(
+                        "Not enough disk space for {}: needs about {:.1} GB free \
+                         (download + extraction), but only {:.1} GB is available.",
+                        game.title,
+                        gib(needed),
+                        gib(free)
+                    ));
+                }
+            }
+        }
     }
 
     // Mark as in library immediately

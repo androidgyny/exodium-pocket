@@ -62,6 +62,17 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Grant the asset protocol access to a directory at runtime. The static
+/// scope in tauri.conf.json is limited to $RESOURCE/$APPDATA; the
+/// user-chosen game data dir (can be anywhere, incl. external drives) is
+/// added here instead of shipping a blanket "**" allow.
+pub fn allow_asset_dir(app: &tauri::AppHandle, dir: &Path) {
+    use tauri::Manager;
+    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
+        log::warn!("Failed to extend asset scope to {}: {}", dir.display(), e);
+    }
+}
+
 /// Empty in-memory DB used when the real one can't be opened, so the app
 /// can still reach the event loop and show the startup-error dialog without
 /// commands panicking on missing state.
@@ -256,6 +267,15 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // A second instance would contend on the SQLite DB and corrupt the
+        // torrent session; focus the existing window instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -363,6 +383,8 @@ pub fn run() {
             // Clean up stale content-pack download artifacts from interrupted installs.
             if let Ok(Some(user_data_dir)) = db::queries::get_config(&conn, "data_dir") {
                 let user_data_path = std::path::Path::new(&user_data_dir);
+                // Asset protocol must reach game media in the user-chosen dir.
+                allow_asset_dir(app.handle(), user_data_path);
                 commands::content_packs::cleanup_stale_downloads(user_data_path);
                 // Remove content packs whose installed version is lower than the
                 // current manifest (e.g. v0.2.x shortcode-keyed posters after the
