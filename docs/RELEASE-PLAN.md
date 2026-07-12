@@ -2,10 +2,18 @@
 
 *Generated 2026-07-12 from a 7-agent deep audit (backend, frontend/UX, release engineering, eXoDOS feature parity, tests, uncommitted-diff review, completeness critic). All findings below cite verified code evidence unless marked "likely".*
 
-> **Status 2026-07-12:** Phase 0 and Phase 1 are DONE (incl. an adversarial
-> review pass; fixes landed for its findings - see CHANGELOG). Still open from
-> Phase 1: one manual end-to-end test of download → uninstall → re-download
-> with a live torrent. Next up: Phase 2 (MIDI) and Phase 5 (CI tests).
+> **Status 2026-07-12:** Phases 0, 1 are DONE (incl. an adversarial review
+> pass; fixes landed for its findings - see CHANGELOG). Phase 2 core is DONE
+> (MT-32/soundfont download gate + ECE→Staging key translation, unit-tested);
+> Phase 5 core is DONE (ci.yml test job on push/PR, clippy clean, import
+> smoke tests, RPM upload).
+>
+> Still open: (a) manual live-torrent test of download → uninstall →
+> re-download; (b) the MIDI parity spot-test matrix (launch 1× MT-32, 1× GM,
+> tandy, pcjr, CGA, GUS, voodoo game and listen); (c) Phase 2 deferred items -
+> glshader/fullscreen override behavior (deliberate design, revisit only on
+> user reports) and the blanket backslash→slash rewrite (works today, narrow
+> it only with test coverage); (d) Phases 3 (UX) and 4 (hardening/legal).
 
 ## Verdict
 
