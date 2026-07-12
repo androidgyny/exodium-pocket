@@ -371,6 +371,14 @@ pub async fn init_download_manager(
     // in any one manager must keep the union of every torrent's file list.
     set_union_cleanup_keep_paths(&new_managers);
 
+    // Adopt torrents the session auto-resumed from persistence, so downloads
+    // interrupted by an app restart report progress and finish extraction.
+    for (id, mgr) in &new_managers {
+        if mgr.hydrate_from_session().await {
+            log::info!("{}: adopted persisted torrent from session", id);
+        }
+    }
+
     // Acquire write lock only for the insert - no blocking work inside.
     let count = new_managers.len();
     {
@@ -1436,6 +1444,11 @@ pub async fn setup_from_local(
         }
     }
     set_union_cleanup_keep_paths(&new_managers);
+    for (id, mgr) in &new_managers {
+        if mgr.hydrate_from_session().await {
+            log::info!("{}: adopted persisted torrent from session", id);
+        }
+    }
 
     // Backfill any LP collections that are absent from the DB.
     // This happens when the DB was originally built from XODOSMetadata.zip (EN only) by the

@@ -151,6 +151,11 @@ pub struct DownloadManagerStatus {
 ///
 /// The torrent is only added to the session on first download request,
 /// avoiding the creation of 14,000+ placeholder files at startup.
+///
+/// Lock-order convention: `handle` before `selected_files`, always. Mixed
+/// order deadlocks - tokio's write-preferring RwLock blocks new readers
+/// while a writer waits, so two tasks holding one lock each and waiting on
+/// the other freeze every download.
 pub struct DownloadManager {
     session: Arc<Session>,
     handle: RwLock<Option<Arc<ManagedTorrent>>>,
@@ -158,6 +163,9 @@ pub struct DownloadManager {
     torrent_bytes: Arc<Vec<u8>>,
     selected_files: RwLock<HashSet<usize>>,
     data_dir: PathBuf,
+    /// Hex SHA1 info-hash of this manager's torrent, for finding it among
+    /// the session's persisted (auto-resumed) torrents.
+    info_hash_hex: Option<String>,
     /// Torrent-relative paths that placeholder cleanup must never delete.
     /// All four eXoDOS torrents overlay into the same root, so this must be
     /// the UNION of every enabled collection's file list (set after all
@@ -220,6 +228,7 @@ impl DownloadManager {
         let torrent_bytes = Arc::new(std::fs::read(torrent_path)?);
         let torrent_index = TorrentIndex::from_file(torrent_path)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let info_hash_hex = TorrentIndex::infohash(torrent_path).ok();
 
         log::info!(
             "Download manager initialized: {} files in torrent, data dir: {}",
@@ -234,8 +243,47 @@ impl DownloadManager {
             torrent_bytes,
             selected_files: RwLock::new(HashSet::new()),
             data_dir: data_dir.to_path_buf(),
+            info_hash_hex,
             cleanup_keep_paths: std::sync::RwLock::new(None),
         })
+    }
+
+    /// Adopt this manager's torrent if the session auto-resumed it from JSON
+    /// persistence. Without this, a download in flight at last shutdown keeps
+    /// downloading inside librqbit after restart, but the manager reports no
+    /// progress (handle = None) and the next add_torrent would apply a fresh
+    /// selection that silently deselects the resumed files. Returns true when
+    /// a session torrent was adopted.
+    pub async fn hydrate_from_session(&self) -> bool {
+        if self.handle.read().await.is_some() {
+            return true;
+        }
+        let Some(ref my_hash) = self.info_hash_hex else {
+            return false;
+        };
+        let found = self.session.with_torrents(|iter| {
+            for (_, t) in iter {
+                if t.info_hash().as_string().eq_ignore_ascii_case(my_hash) {
+                    return Some(Arc::clone(t));
+                }
+            }
+            None
+        });
+        let Some(handle) = found else {
+            return false;
+        };
+        let resumed = handle.only_files().unwrap_or_default();
+        let mut handle_guard = self.handle.write().await;
+        {
+            let mut selected = self.selected_files.write().await;
+            selected.extend(resumed.iter().copied());
+        }
+        *handle_guard = Some(handle);
+        log::info!(
+            "Hydrated torrent from persisted session ({} previously selected files)",
+            resumed.len()
+        );
+        true
     }
 
     /// Set the union keep-list for placeholder cleanup (see field docs).
@@ -374,7 +422,16 @@ impl DownloadManager {
             // Retry because the handle may still be in the Initializing state when
             // AlreadyManaged is returned (session loads torrent from disk asynchronously).
             if already_managed {
-                let selected = self.selected_files.read().await;
+                // Merge librqbit's current selection first: the session may
+                // have auto-resumed files from a previous run that this
+                // manager doesn't know about - replacing the selection
+                // outright would silently deselect them mid-download.
+                let session_selection = handle.only_files().unwrap_or_default();
+                let selected = {
+                    let mut selected = self.selected_files.write().await;
+                    selected.extend(session_selection.iter().copied());
+                    selected.clone()
+                };
                 self.update_files_retrying(handle_guard.as_ref().unwrap(), &selected).await?;
             }
 
@@ -501,8 +558,9 @@ impl DownloadManager {
 
     /// Get status for all active downloads.
     pub async fn status(&self) -> DownloadManagerStatus {
-        let selected = self.selected_files.read().await;
+        // Lock order: handle before selected_files (see struct docs).
         let handle_guard = self.handle.read().await;
+        let selected = self.selected_files.read().await;
 
         let mut active_downloads = Vec::new();
 
@@ -560,11 +618,12 @@ impl DownloadManager {
     /// Holds the write lock across the session update to keep selected_files and the
     /// torrent session in sync - no other caller can observe a partially-updated state.
     pub async fn deselect_file(&self, file_index: usize) {
+        // Lock order: handle before selected_files (see struct docs).
+        let handle_guard = self.handle.read().await;
         let mut selected = self.selected_files.write().await;
         selected.remove(&file_index);
-        let handle_guard = self.handle.read().await;
         if let Some(ref handle) = *handle_guard {
-            let _ = self.session.update_only_files(handle, &*selected).await;
+            let _ = self.session.update_only_files(handle, &selected).await;
         }
     }
 
