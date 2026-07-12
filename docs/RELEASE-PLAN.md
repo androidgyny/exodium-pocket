@@ -13,14 +13,17 @@
 > Linux PDF fallback). Phase 4 code hardening is DONE (single-instance,
 > disk-space preflight, asset scope + CSP, GPL license staging).
 >
-> Still open: (a) manual live-torrent test of download → uninstall →
-> re-download; (b) MIDI parity listening matrix (MT-32/GM/tandy/pcjr/CGA/
-> GUS/voodoo); (c) **smoke-test the CSP + asset-scope change** - launch the
-> app and confirm thumbnails, screenshots, and manuals still render;
-> (d) seeding disclosure + toggle (needs a product decision on default);
-> (e) eXo approval + signing/notarization decisions; (f) Phase 2 deferred:
-> glshader override (deliberate) and backslash rewrite narrowing (needs
-> test coverage); (g) post-release: keyboard nav, restart-resume UX.
+> Seeding disclosure + Settings toggle (default on) and in-app eXoDOS
+> attribution are DONE. **Everything left is manual/user territory:**
+> (a) smoke-test the CSP + asset-scope change - launch the app and confirm
+> thumbnails, screenshots, and manuals render; (b) live-torrent test of
+> download → uninstall → re-download; (c) MIDI parity listening matrix
+> (MT-32/GM/tandy/pcjr/CGA/GUS/voodoo); (d) push + first 3-OS CI run;
+> (e) eXo approval covering the full redistribution surface;
+> (f) signing/notarization + macOS-Intel decisions; (g) release surface
+> (/releases/latest currently points at the content pack); (h) version bump
+> + tag when ready. Post-release: keyboard nav, restart-resume UX, glshader
+> override + backslash rewrite narrowing.
 
 ## Verdict
 
