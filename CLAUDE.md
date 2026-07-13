@@ -190,6 +190,20 @@ DOSBox Staging ships as a Tauri `externalBin` in `src-tauri/binaries/`. Platform
 
 Variant distribution: ~63% classic `dosbox`, ~27% ECE4230, ~9% Staging - all handled by DOSBox Staging.
 
+### 10a. LP games launch via overlay mount (don't reintroduce heuristics-first)
+
+LP (language-pack) games run the EN `dosbox.conf` VERBATIM against a
+per-launch staging dir `eXo/.exodium_lp/<lang>_<shortcode>/` whose
+`<shortcode>` entry is a symlink (junction on Windows) to the LP game dir.
+`patch_dosbox_conf` rewrites `.\eXoDOS\` mount targets to the staging dir;
+everything else - launch commands, imgmounts, multi-step autoexecs - is eXo's
+authored config and passes through untouched. `lp_autoexec_compatible`
+simulates the cd chain and verifies the launch command exists in the LP dir;
+only when the LP variant restructured the game does the generated-autoexec
+fallback (`find_lp_launch`, which itself prefers the EN autoexec's command)
+kick in. History: heuristics-first produced launch-and-exit bugs (Cobra
+Mission ES: bare root-level CM.EXE, no .bat - all heuristics missed it).
+
 ### 10. Update-check manifest
 
 `manifest.json` (tracked in git) defines the schema for detecting eXoDOS updates. Each collection entry carries the SHA1 `torrent_infohash` of the current torrent. At startup (`init_download_manager`) the app stores each collection's infohash in the `config` table under `<col_id>_infohash`. The `check_for_updates` command compares stored hashes against the manifest and returns any collections where the hash differs (= new torrent = new games available).
