@@ -30,7 +30,16 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk2OTFFQjE5QkMyN0VBQjkKUldTNTZpZThHZXVSbHJZNnBpeHF1T1NQdFJXT0ZRRFBPbmhKOWt1Y1cwMllUSG83aHlyd0NzQ1gK",
+      "endpoints": [
+        "https://github.com/tvollstaedt/exodium/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
+    "createUpdaterArtifacts": true,
     "active": true,
     "targets": "all",
     "externalBin": [

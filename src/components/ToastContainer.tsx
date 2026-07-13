@@ -16,6 +16,11 @@ function ToastRow(props: { t: Toast }) {
       <div class="toast-body">
         <div class="toast-message">{props.t.message}</div>
         {props.t.detail ? <div class="toast-detail">{props.t.detail}</div> : null}
+        {props.t.action ? (
+          <button class="toast-action" onClick={props.t.action.onClick}>
+            {props.t.action.label}
+          </button>
+        ) : null}
       </div>
       <button
         class="toast-dismiss"

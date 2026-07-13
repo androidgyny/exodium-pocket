@@ -278,6 +278,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Initialize the logger as early as possible so later setup steps' log
             // output is captured. `app_log_dir()` resolves to platform conventions:

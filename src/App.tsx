@@ -22,6 +22,8 @@ import {
   openLogFolder,
   checkForUpdates,
 } from "./api/tauri";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { fetchGames } from "./stores/games";
 import { loadThumbnailDir } from "./stores/thumbnails";
 import { refreshInstalledPacks } from "./stores/contentPacks";
@@ -69,6 +71,28 @@ async function notifyCatalogUpdates() {
   }
 }
 
+/** Check for a new Exodium release, download it in the background, and
+ *  offer a restart. Signature-verified against the key in tauri.conf.json;
+ *  latest.json comes from the GitHub release. No-op in dev builds. */
+async function checkForAppUpdate() {
+  if (import.meta.env.DEV) { return; }
+  try {
+    const update = await check();
+    if (!update) { return; }
+    showToast(`Update available: Exodium ${update.version}`, "info", {
+      detail: "Downloading in the background…",
+    });
+    await update.downloadAndInstall();
+    showToast(`Exodium ${update.version} is ready`, "success", {
+      durationMs: 0,
+      action: { label: "Restart now", onClick: () => void relaunch() },
+    });
+  } catch (e) {
+    // Offline or no release published yet - never bother the user.
+    console.warn("[updater] check failed:", e);
+  }
+}
+
 function App() {
   const [phase, setPhase] = createSignal<AppPhase>("loading");
   const [showSettings, setShowSettings] = createSignal(false);
@@ -102,6 +126,7 @@ function App() {
         loadThumbnailDir();
         refreshInstalledPacks();
         notifyCatalogUpdates();
+        checkForAppUpdate();
       } else {
         setPhase("setup");
       }

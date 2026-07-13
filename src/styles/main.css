@@ -3105,6 +3105,22 @@ body {
   word-break: break-word;
 }
 
+.toast-action {
+  margin-top: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: var(--accent-hover);
+}
+
 .toast-dismiss {
   flex-shrink: 0;
   background: none;
