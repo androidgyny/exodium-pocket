@@ -59,10 +59,10 @@ jobs:
             libssl-dev \
             libglib2.0-dev
 
-      - name: Stub DOSBox sidecar
-        # tauri-build validates that the externalBin file exists at compile
-        # time; tests never execute it, so an empty stub beats downloading
-        # the real 30 MB build on every CI run.
+      - name: Stub DOSBox sidecar + resource dirs
+        # tauri-build validates that the externalBin file and every bundle
+        # resource path exist at compile time; tests never execute DOSBox,
+        # so empty stubs beat downloading the real 30 MB build per CI run.
         shell: bash
         run: |
           mkdir -p src-tauri/binaries
@@ -70,6 +70,9 @@ jobs:
           suffix=""
           if [[ "$triple" == *windows* ]]; then suffix=".exe"; fi
           touch "src-tauri/binaries/dosbox-staging-${triple}${suffix}"
+          mkdir -p src-tauri/resources/dosbox-bin src-tauri/resources/dosbox-glshaders
+          touch src-tauri/resources/dosbox-bin/.placeholder
+          touch src-tauri/resources/dosbox-glshaders/.placeholder
 
       - name: Install frontend dependencies
         run: pnpm install
