@@ -801,13 +801,191 @@ pub async fn uninstall_game(
     Ok(format!("Uninstalled: {}", game.title))
 }
 
+/// Create a directory link (symlink on Unix, junction on Windows - junctions
+/// need no admin rights or developer mode).
+#[cfg(unix)]
+fn link_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+#[cfg(windows)]
+fn link_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    junction::create(src, dst)
+}
+
+/// Build the per-launch overlay root for an LP game: a staging dir whose
+/// `<shortcode>` entry links to the LP game dir, so the EN config's autoexec
+/// ("mount c .\eXoDOS\", "cd <shortcode>", launch) runs unmodified against
+/// the LP files. Any other eXoDOS-root entries the autoexec references
+/// (shared CD-image folders etc.) get pass-through links to the real tree.
+/// Rebuilt from scratch on every launch; contains only links, no data.
+fn build_lp_overlay(
+    working_dir: &std::path::Path,
+    game_folder: &str,
+    shortcode: &str,
+    lang_dir: &str,
+    lp_game_dir: &std::path::Path,
+    en_conf: &str,
+) -> Result<PathBuf, String> {
+    let staging = working_dir
+        .join(".exodium_lp")
+        .join(format!("{}_{}", lang_dir.trim_start_matches('!'), shortcode));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)
+            .map_err(|e| format!("clearing {}: {}", staging.display(), e))?;
+    }
+    std::fs::create_dir_all(&staging).map_err(|e| format!("creating {}: {}", staging.display(), e))?;
+    link_dir(lp_game_dir, &staging.join(shortcode))
+        .map_err(|e| format!("linking {}: {}", shortcode, e))?;
+
+    // Pass-through links for other referenced root entries.
+    let real_root = working_dir.join(game_folder);
+    let needle = format!("{}\\", game_folder);
+    let autoexec = en_conf.split("[autoexec]").nth(1).unwrap_or("");
+    for (idx, _) in autoexec.match_indices(&needle) {
+        let rest = &autoexec[idx + needle.len()..];
+        let entry: String = rest
+            .chars()
+            .take_while(|c| !"\\/\" \t\r\n".contains(*c))
+            .collect();
+        if entry.is_empty() || entry.eq_ignore_ascii_case(shortcode) {
+            continue;
+        }
+        let dst = staging.join(&entry);
+        let src = real_root.join(&entry);
+        if !dst.exists() && src.exists() {
+            if let Err(e) = link_dir(&src, &dst) {
+                log::warn!("LP overlay: pass-through link {} failed: {}", entry, e);
+            }
+        }
+    }
+    Ok(staging)
+}
+
+/// Can the EN autoexec run against the LP dir via the overlay? Simulates the
+/// cd chain (a root-level `cd <shortcode>` lands in the LP game dir) and
+/// requires the launch command's program to exist at the resulting location.
+/// LP variants occasionally restructure the game (renamed executable,
+/// different subdirs) - those fall back to the generated-autoexec strategy.
+fn lp_autoexec_compatible(
+    en_conf: &str,
+    shortcode: &str,
+    lp_game_dir: &std::path::Path,
+    real_root: &std::path::Path,
+) -> bool {
+    let Some(autoexec) = en_conf.split("[autoexec]").nth(1) else {
+        return false;
+    };
+    // cwd: None = mount root (the overlay staging dir).
+    let mut cwd: Option<PathBuf> = None;
+    for line in autoexec.lines() {
+        let t = line.trim();
+        let t = t.strip_prefix('@').unwrap_or(t).trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let lower = t.to_ascii_lowercase();
+
+        if lower == "cd" || lower == "cd." || lower == "cd.." {
+            continue;
+        }
+        let cd_target = if let Some(r) = lower.strip_prefix("cd ") {
+            Some(r)
+        } else if let Some(r) = lower.strip_prefix("cd\\") {
+            // "cd\FOO" is an absolute path from the mount root.
+            cwd = None;
+            Some(r)
+        } else {
+            None
+        };
+        if let Some(target) = cd_target {
+            let target = target.trim().trim_matches('"');
+            if target.is_empty() || target == "\\" || target == "/" || target == ".." {
+                cwd = None;
+                continue;
+            }
+            let next = match &cwd {
+                None => {
+                    if target.eq_ignore_ascii_case(shortcode) {
+                        lp_game_dir.to_path_buf()
+                    } else {
+                        // Root-level cd into a non-game entry resolves
+                        // through a pass-through link to the real tree.
+                        real_root.join(target)
+                    }
+                }
+                Some(dir) => dir.join(target),
+            };
+            if !next.exists() {
+                log::info!(
+                    "LP launch: EN autoexec cd target '{}' missing under LP layout",
+                    target
+                );
+                return false;
+            }
+            cwd = Some(next);
+            continue;
+        }
+
+        // Housekeeping lines that never launch anything.
+        let is_drive_switch = lower.len() == 2
+            && lower.as_bytes()[1] == b':'
+            && lower.as_bytes()[0].is_ascii_alphabetic();
+        if is_drive_switch
+            || ["mount ", "imgmount ", "echo ", "rem ", "set ", "config "]
+                .iter()
+                .any(|p| lower.starts_with(p))
+            || ["cls", "exit", "pause", "echo", "echo."].contains(&lower.as_str())
+        {
+            continue;
+        }
+
+        // First real command = the launch line. Verify its program exists at
+        // the simulated cwd; unrecognizable forms (boot images, drive-letter
+        // paths) are trusted - the EN config knows better than any heuristic.
+        let base = t
+            .strip_prefix("call ")
+            .or_else(|| t.strip_prefix("CALL "))
+            .or_else(|| t.strip_prefix("loadfix "))
+            .unwrap_or(t);
+        let base = base.split_whitespace().next().unwrap_or(base);
+        if base.contains(':') || base.contains('\\') || base.contains('/') {
+            return true;
+        }
+        let dir = match &cwd {
+            Some(d) => d.clone(),
+            None => return true, // command at mount root - rare, trust it
+        };
+        let base_lower = base.to_ascii_lowercase();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                let stem = name.rsplitn(2, '.').last().unwrap_or(&name);
+                if stem == base_lower || name == base_lower {
+                    return true;
+                }
+            }
+        }
+        log::info!(
+            "LP launch: EN launch command '{}' not present in {} - falling back",
+            base,
+            dir.display()
+        );
+        return false;
+    }
+    // No launch command at all (fully commented autoexec): the overlay still
+    // works - the caller appends a find_lp_launch command.
+    true
+}
+
 /// Patch a DOSBox config file: convert Windows-style relative paths to absolute Linux paths.
 /// The eXoDOS configs use `.\eXoDOS\game\` which doesn't work on Linux.
 ///
 /// For LP games, `lp_info` provides the shortcode, language dir, game_folder (the second
 /// component of game_prefix, e.g. "eXoDOS"), and the resolved LP game directory path.
-/// The EN autoexec's mount paths are redirected to the LP location.  If the redirected
-/// path doesn't exist (different directory structure), falls back to a generated autoexec.
+/// The EN config runs VERBATIM against an overlay mount whose `<shortcode>` entry links
+/// to the LP game dir - preserving eXo's authored launch commands, imgmounts, and
+/// utilities. Only when the LP variant's layout is incompatible with the EN autoexec
+/// does it fall back to a generated autoexec.
 fn patch_dosbox_conf(
     conf_path: &std::path::Path,
     working_dir: &std::path::Path,
@@ -819,29 +997,36 @@ fn patch_dosbox_conf(
     let abs_prefix = format!("{}/", working_dir.to_string_lossy());
 
     let patched = if let Some((shortcode, lang_dir, game_folder, game_dir)) = lp_info {
-        // Strategy 1: Redirect EN mount paths to LP location (preserves CD mounts, etc.)
-        let en_path = format!("{}\\{}", game_folder, shortcode);
-        let lp_path = format!("{}\\{}\\{}", game_folder, lang_dir, shortcode);
-        let redirected = content.replace(&en_path, &lp_path);
-
-        // Check if the redirected mount path exists AND internal dirs match
-        let redirected_dir = working_dir.join(format!("{}/{}/{}", game_folder, lang_dir, shortcode));
-        let autoexec_compatible = redirected_dir.exists() && {
-            // Verify that any `cd` targets in the autoexec exist in the redirected dir
-            let autoexec = content.split("[autoexec]").nth(1).unwrap_or("");
-            autoexec.lines().all(|line| {
-                let trimmed = line.trim().to_lowercase();
-                if let Some(dir) = trimmed.strip_prefix("cd ").or_else(|| trimmed.strip_prefix("cd\\")) {
-                    let dir = dir.trim();
-                    dir.is_empty() || dir == "\\" || dir == "/" || redirected_dir.join(dir).exists()
-                } else {
-                    true
-                }
-            })
+        // Strategy 1: overlay mount. The EN autoexec is ground truth authored
+        // by eXo; the only real difference for an LP install is WHERE the
+        // game files live. Point every eXoDOS-root reference at a staging dir
+        // whose <shortcode> entry links to the LP game dir and run the config
+        // as written. This also shadows an installed EN variant of the same
+        // game - the link always wins.
+        let real_root = working_dir.join(game_folder);
+        let overlay = if game_dir.exists()
+            && lp_autoexec_compatible(&content, shortcode, game_dir, &real_root)
+        {
+            build_lp_overlay(working_dir, game_folder, shortcode, lang_dir, game_dir, &content)
+                .map_err(|e| log::warn!("LP overlay build failed for {}: {}", shortcode, e))
+                .ok()
+        } else {
+            None
         };
-        if autoexec_compatible {
-            log::info!("LP launch: using redirected EN config for {}", shortcode);
-            let mut result = redirected
+
+        if let Some(staging) = overlay {
+            log::info!(
+                "LP launch: overlay mount for {} ({} -> {})",
+                shortcode,
+                staging.display(),
+                game_dir.display()
+            );
+            let staging_fwd = staging.to_string_lossy().replace('\\', "/");
+            let mut result = content
+                // Route eXoDOS-root references through the overlay first...
+                .replace(&format!(".\\{}\\", game_folder), &format!("{}/", staging_fwd))
+                .replace(&format!(".\\{}", game_folder), &staging_fwd)
+                // ...then the usual absolute-path + slash rewriting for the rest.
                 .replace(".\\", &abs_prefix)
                 .replace('\\', "/");
 
@@ -856,6 +1041,9 @@ fn patch_dosbox_conf(
                         result.truncate(trimmed.len() - "exit".len());
                         result.push('\n');
                     }
+                    // The generated command runs from the mount root; enter the
+                    // game dir (via the overlay link) first.
+                    result.push_str(&format!("cd {}\n", shortcode));
                     if !subdir.is_empty() {
                         result.push_str(&format!("cd {}\n", subdir));
                     }
@@ -2020,15 +2208,16 @@ mod tests {
     }
 
     #[test]
-    fn patch_dosbox_conf_lp_mount_redirect() {
+    fn patch_dosbox_conf_lp_overlay_direct_mount() {
+        // EN conf mounts the game dir directly: mount target must be routed
+        // through the overlay staging dir whose link points at the LP dir.
         let tmp = tempfile::tempdir().unwrap();
         let working_dir = tmp.path();
-
-        // Create the LP redirect dir so the compatibility check passes
         let lp_dir = working_dir.join("eXoDOS/!german/SQ5");
         fs::create_dir_all(&lp_dir).unwrap();
+        fs::write(lp_dir.join("SQ5.BAT"), b"").unwrap();
 
-        let conf_content = "[autoexec]\n@mount c eXoDOS\\SQ5\nc:\nSQ5.bat\nexit\n";
+        let conf_content = "[autoexec]\n@mount c .\\eXoDOS\\SQ5\nc:\nSQ5.bat\nexit\n";
         let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);
 
         let patched_path = patch_dosbox_conf(
@@ -2040,8 +2229,84 @@ mod tests {
         let patched = fs::read_to_string(&patched_path).unwrap();
 
         assert!(
-            patched.contains("eXoDOS/!german/SQ5"),
-            "LP path redirect expected in patched config: {}",
+            patched.contains(".exodium_lp/german_SQ5"),
+            "mount should be routed through the overlay: {}",
+            patched
+        );
+        assert!(patched.contains("SQ5.bat"), "launch command must survive: {}", patched);
+        // The overlay link resolves to the LP dir.
+        let linked = working_dir.join(".exodium_lp/german_SQ5/SQ5");
+        assert!(linked.join("SQ5.BAT").exists(), "overlay link should reach LP files");
+    }
+
+    #[test]
+    fn patch_dosbox_conf_lp_overlay_root_mount_cd() {
+        // Cobra Mission (ES) shape: EN conf mounts the eXoDOS root and cd's
+        // into the game dir; the LP dir holds a bare root-level EXE.
+        let tmp = tempfile::tempdir().unwrap();
+        let working_dir = tmp.path();
+        fs::create_dir_all(working_dir.join("eXoDOS")).unwrap();
+        let lp_dir = working_dir.join("eXoDOS/!spanish/cobmiss");
+        fs::create_dir_all(&lp_dir).unwrap();
+        fs::write(lp_dir.join("CM.EXE"), b"").unwrap();
+
+        let conf_content =
+            "[autoexec]\n@mount c .\\eXoDOS\\\nc:\ncls\ncd cobmiss\n@cm\nexit\n";
+        let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);
+
+        let patched_path = patch_dosbox_conf(
+            &conf_path,
+            working_dir,
+            Some(("cobmiss", "!spanish", "eXoDOS", &lp_dir)),
+        )
+        .unwrap();
+        let patched = fs::read_to_string(&patched_path).unwrap();
+
+        assert!(
+            patched.contains(".exodium_lp/spanish_cobmiss"),
+            "root mount should be routed through the overlay: {}",
+            patched
+        );
+        // The authored launch sequence survives verbatim.
+        assert!(patched.contains("cd cobmiss"), "{}", patched);
+        assert!(patched.contains("@cm"), "{}", patched);
+        // And the overlay resolves cd cobmiss -> LP files.
+        let linked = working_dir.join(".exodium_lp/spanish_cobmiss/cobmiss");
+        assert!(linked.join("CM.EXE").exists(), "overlay link should reach LP files");
+    }
+
+    #[test]
+    fn patch_dosbox_conf_lp_falls_back_when_exe_renamed() {
+        // LP variant renamed the executable: the EN launch command can't be
+        // validated, so the generated-autoexec fallback must kick in and
+        // find the actual root-level EXE.
+        let tmp = tempfile::tempdir().unwrap();
+        let working_dir = tmp.path();
+        fs::create_dir_all(working_dir.join("eXoDOS")).unwrap();
+        let lp_dir = working_dir.join("eXoDOS/!spanish/cobmiss");
+        fs::create_dir_all(&lp_dir).unwrap();
+        fs::write(lp_dir.join("JUEGO.EXE"), b"").unwrap();
+
+        let conf_content =
+            "[autoexec]\n@mount c .\\eXoDOS\\\nc:\ncd cobmiss\n@cm\nexit\n";
+        let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);
+
+        let patched_path = patch_dosbox_conf(
+            &conf_path,
+            working_dir,
+            Some(("cobmiss", "!spanish", "eXoDOS", &lp_dir)),
+        )
+        .unwrap();
+        let patched = fs::read_to_string(&patched_path).unwrap();
+
+        assert!(
+            patched.to_ascii_lowercase().contains("juego.exe"),
+            "fallback should launch the real executable: {}",
+            patched
+        );
+        assert!(
+            patched.contains("!spanish/cobmiss"),
+            "fallback mounts the LP dir directly: {}",
             patched
         );
     }

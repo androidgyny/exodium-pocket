@@ -40,6 +40,17 @@
 
 ### Fixed
 
+- **LP games launch via overlay mount** - the durable fix for the class of
+  bugs where language-pack games flashed and exited (Cobra Mission ES et
+  al.). Instead of guessing a launch command from directory contents, the
+  EN config's autoexec now runs VERBATIM against a per-launch staging dir
+  (`eXo/.exodium_lp/<lang>_<code>/`) whose `<code>` entry is a
+  symlink/junction to the LP game dir. eXo's authored launch commands,
+  CD imgmounts, and multi-step autoexecs all survive; an installed EN
+  variant of the same game is shadowed correctly. A compatibility check
+  (cd-chain simulation + launch-command verification) falls back to the
+  old generated-autoexec heuristics only when the LP variant genuinely
+  restructured the game.
 - **Download stall feedback**: a download with no peers no longer sits at
   "0%" forever - after 15 s without progress the card shows "Looking for
   peers…", after 90 s an actionable stall warning. The premature
