@@ -301,13 +301,19 @@ pub async fn download_game(
         if !mt32_dir.exists() && game_requests_midi(&main_mgr.torrent_root(), game.dosbox_conf.as_deref())
         {
             if let Some(util) = main_mgr.index().find_by_suffix("util/util.zip") {
-                if !main_mgr.is_file_selected(util.index).await {
-                    let _ = main_mgr.download_files(vec![util.index]).await;
+                let util_index = util.index;
+                let util_size = util.size;
+                if !main_mgr.is_file_selected(util_index).await {
+                    let _ = main_mgr.download_files(vec![util_index]).await;
                     log::info!(
                         "Also downloading util.zip ({:.0} MB, one-time: MT-32 ROMs + SoundCanvas soundfont for MIDI music)",
-                        util.size as f64 / 1e6
+                        util_size as f64 / 1e6
                     );
                 }
+                // Always (re)arm the watcher - it also covers the case where
+                // util.zip finished in a previous run but extraction never
+                // happened (nobody was polling when it completed).
+                spawn_mt32_extraction_watcher(std::sync::Arc::clone(main_mgr), util_index);
             }
         }
     }
@@ -417,44 +423,6 @@ pub async fn get_download_progress(
                                 Err(e) => log::error!("Failed to extract DOSBox configs: {}", e),
                             }
                         });
-                    }
-                }
-            }
-        }
-    }
-
-    // Extract the MT-32 ROMs + soundfont once util.zip lands (see
-    // game_requests_midi / extract_mt32_from_util_zip). Gate on eXo/mt32
-    // itself so this runs exactly once.
-    if let Some(ref main_mgr) = main_mgr_opt {
-        let mt32_dir = main_mgr.torrent_root().join("eXo/mt32");
-        if !mt32_dir.exists() {
-            if let Some(util) = main_mgr.index().find_by_suffix("util/util.zip") {
-                if main_mgr.is_file_selected(util.index).await
-                    && main_mgr.is_file_complete(util.index).await
-                {
-                    if let Some(zip_path) = main_mgr.file_output_path(util.index) {
-                        // Lock file: polling arrives every second and the
-                        // extraction takes a few - without it we'd spawn
-                        // overlapping extractions.
-                        let lock = zip_path.with_extension("mt32_extracted");
-                        if zip_path.exists() && !lock.exists() {
-                            let _ = std::fs::write(&lock, "");
-                            let torrent_root = main_mgr.torrent_root();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                match extract_mt32_from_util_zip(&zip_path, &torrent_root) {
-                                    Ok(n) => log::info!(
-                                        "Extracted {} MT-32/soundfont files from util.zip",
-                                        n
-                                    ),
-                                    Err(e) => {
-                                        // Allow a retry on the next poll.
-                                        let _ = std::fs::remove_file(&lock);
-                                        log::error!("Failed to extract mt32 from util.zip: {}", e)
-                                    }
-                                }
-                            });
-                        }
                     }
                 }
             }
@@ -877,43 +845,100 @@ fn game_requests_midi(torrent_root: &std::path::Path, dosbox_conf: Option<&str>)
         || lower.contains("[fluidsynth]")
 }
 
-/// Extract only the mt32 subtree (ROMs + SoundCanvas soundfont, ~30 MB) from
-/// util.zip into `<torrent_root>/eXo/` - the rest of the 630 MB archive is
-/// Windows-only emulator builds Exodium doesn't use. The archive path prefix
-/// varies, so entries are matched on a path segment named "mt32".
+/// Extract the mt32 subtree (MT-32/CM32L ROMs incl. rev0, SoundCanvas +
+/// AWE64 soundfonts, ~54 MB) from util.zip into `<torrent_root>/eXo/mt32/`.
+///
+/// util.zip is a matryoshka: the payload sits in a nested EXTDOS.zip whose
+/// top-level `mt32/` dir is what the game configs reference as `.\mt32\`.
+/// The inner zip (467 MB uncompressed) is staged to a temp file rather than
+/// RAM; the rest of it (Windows emulator builds) is never extracted.
 fn extract_mt32_from_util_zip(
     util_zip: &std::path::Path,
     torrent_root: &std::path::Path,
 ) -> Result<usize, String> {
     let file = std::fs::File::open(util_zip).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    let dest_root = torrent_root.join("eXo");
-    let mut extracted = 0usize;
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = entry.name().replace('\\', "/");
-        // Find the "mt32" path segment; keep everything from there on.
-        let Some(pos) = name
-            .to_ascii_lowercase()
-            .split('/')
-            .position(|seg| seg == "mt32")
-        else {
-            continue;
-        };
-        let suffix: Vec<&str> = name.split('/').skip(pos).collect();
-        let rel = suffix.join("/");
-        if rel.is_empty() || entry.is_dir() {
-            continue;
-        }
-        let out_path = dest_root.join(&rel);
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let mut out = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-        extracted += 1;
+    let mut outer = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+
+    let tmp_path = util_zip.with_extension("extdos_tmp");
+    {
+        let mut inner_entry = outer
+            .by_name("EXTDOS.zip")
+            .map_err(|e| format!("EXTDOS.zip not found inside util.zip: {}", e))?;
+        let mut tmp = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut inner_entry, &mut tmp).map_err(|e| e.to_string())?;
     }
-    Ok(extracted)
+
+    let result = (|| {
+        let tmp = std::fs::File::open(&tmp_path).map_err(|e| e.to_string())?;
+        let mut inner = zip::ZipArchive::new(tmp).map_err(|e| e.to_string())?;
+        let dest_root = torrent_root.join("eXo");
+        let mut extracted = 0usize;
+        for i in 0..inner.len() {
+            let mut entry = inner.by_index(i).map_err(|e| e.to_string())?;
+            let name = entry.name().replace('\\', "/");
+            if !name.to_ascii_lowercase().starts_with("mt32/")
+                || name.contains("..")
+                || entry.is_dir()
+            {
+                continue;
+            }
+            let out_path = dest_root.join(&name);
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut out = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            extracted += 1;
+        }
+        if extracted == 0 {
+            return Err("no mt32/ entries found in EXTDOS.zip".to_string());
+        }
+        Ok(extracted)
+    })();
+
+    let _ = std::fs::remove_file(&tmp_path);
+    result
+}
+
+/// Watch util.zip until it finishes downloading, then extract the mt32
+/// payload. Runs as its own task because the frontend only polls progress
+/// while a GAME download is active - util.zip (~630 MB) routinely finishes
+/// long after the 8 MB game that triggered it, with nobody left polling.
+fn spawn_mt32_extraction_watcher(mgr: std::sync::Arc<crate::torrent::manager::DownloadManager>, util_index: usize) {
+    tauri::async_runtime::spawn(async move {
+        let torrent_root = mgr.torrent_root();
+        let mt32_dir = torrent_root.join("eXo/mt32");
+        // Generous ceiling: 6 h at 10 s per check for slow swarms.
+        for _ in 0..2160 {
+            if mt32_dir.exists() {
+                return; // someone else finished the job
+            }
+            if mgr.is_file_complete(util_index).await {
+                let Some(zip_path) = mgr.file_output_path(util_index) else {
+                    return;
+                };
+                let lock = zip_path.with_extension("mt32_extracted");
+                if !zip_path.exists() || lock.exists() {
+                    return;
+                }
+                let _ = std::fs::write(&lock, "");
+                let root = torrent_root.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    match extract_mt32_from_util_zip(&zip_path, &root) {
+                        Ok(n) => log::info!("Extracted {} MT-32/soundfont files from util.zip", n),
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&lock);
+                            log::error!("Failed to extract mt32 from util.zip: {}", e);
+                        }
+                    }
+                })
+                .await;
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+        log::warn!("mt32 extraction watcher timed out waiting for util.zip");
+    });
 }
 
 /// Create a directory link (symlink on Unix, junction on Windows - junctions
