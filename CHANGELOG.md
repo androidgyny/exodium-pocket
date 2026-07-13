@@ -75,6 +75,10 @@
   (`[midi] mt32.romdir`, `fluid.soundfont`) that DOSBox Staging ignores -
   launch-time patching now translates them into Staging's `[mt32]` /
   `[fluidsynth]` sections (Staging-authored configs pass through unchanged).
+  Correction during field testing: the ROMs actually live in
+  `eXo/util/util.zip` (~630 MB), not `!DOSmetadata.zip` - the download is
+  now fetched once, only when a game whose config requests MIDI is
+  installed, and only the ~30 MB `mt32/` subtree is extracted.
 - **38 games downloaded the wrong ZIP** (`find_game_files`): the torrent file
   matcher used an unanchored suffix match, so short titles matched longer ones -
   _Tetris_ fetched _Atomic Tetris_, _Pac-Man_ fetched _Ms. Pac-Man_, _Gods_
