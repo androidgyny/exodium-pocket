@@ -2396,8 +2396,10 @@ mod tests {
 
         // Backslash replaced with forward slash
         assert!(!patched.contains('\\'), "no backslashes should remain: {}", patched);
-        // Relative .\ prefix replaced with absolute working dir
-        let abs_prefix = format!("{}/", working_dir.to_string_lossy());
+        // Relative .\ prefix replaced with absolute working dir. On Windows
+        // the working dir itself contains backslashes, which the patcher
+        // normalizes to forward slashes - normalize the expectation too.
+        let abs_prefix = format!("{}/", working_dir.to_string_lossy()).replace('\\', "/");
         assert!(patched.contains(&abs_prefix), "absolute path prefix expected: {}", patched);
     }
 
