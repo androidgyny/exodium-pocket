@@ -186,7 +186,7 @@ DOSBox Staging ships as a Tauri `externalBin` in `src-tauri/binaries/`. Platform
 2. Dev mode: first `dosbox-staging-*` found in `resource_dir/binaries/`
 3. Fallback: `dosbox-staging` on system PATH
 
-`metadata/dosbox.txt` maps game titles to eXoDOS emulator variants (`ece4230`, `staging0.81.1`, etc.). `generate_db.rs` reads this file and stores the variant slug in `games.dosbox_variant`. Currently all variants map to DOSBox Staging - ECE builds have no cross-platform release and trigger a log warning. The `dosbox_variant` field is kept in the DB for future per-game emulator selection (e.g. when additional emulators are bundled).
+`metadata/dosbox.txt` maps game titles to eXoDOS emulator variants (`ece4230`, `staging0.81.1`, etc.). `generate_db.rs` reads this file and stores the variant slug in `games.dosbox_variant`. On WINDOWS, ece* variants run eXo's actual DOSBox ECE build, extracted on demand from the torrent's util.zip (nested EXTDOS.zip -> eXo/emulators/dosbox/ece4230/); the launch-time MIDI translation and glshader override are skipped for ECE (it understands the original keys natively). On macOS/Linux everything runs under DOSBox Staging (ECE has no cross-platform build) and the game detail panel shows an "experience may vary" note for ece-variant games.
 
 Variant distribution: ~63% classic `dosbox`, ~27% ECE4230, ~9% Staging - all handled by DOSBox Staging.
 

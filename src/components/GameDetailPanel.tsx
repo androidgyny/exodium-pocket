@@ -19,6 +19,9 @@ interface Props {
   onDownloadStart?: (gameId: number) => void;
 }
 
+const isWindows = typeof navigator !== "undefined"
+  && /Win/i.test(navigator.platform || navigator.userAgent || "");
+
 export function GameDetailPanel(props: Props) {
   const [variants, setVariants] = createSignal<Game[]>([]);
   const [status, setStatus] = createSignal("");
@@ -236,6 +239,16 @@ export function GameDetailPanel(props: Props) {
             {/* Status message */}
             <Show when={currentStatus()}>
               <div class="game-detail-status">{currentStatus()}</div>
+            </Show>
+
+            {/* Emulator note: ECE-tuned games run under DOSBox Staging on
+                non-Windows platforms (ECE ships Windows binaries only). */}
+            <Show when={!isWindows && props.game?.dosbox_variant?.startsWith("ece")}>
+              <div class="game-detail-note">
+                This game is tuned for DOSBox ECE, which only exists on
+                Windows. Exodium runs it with DOSBox Staging - the experience
+                may vary slightly.
+              </div>
             </Show>
 
             {/* Single-language action */}

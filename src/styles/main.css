@@ -2261,6 +2261,17 @@ body {
 .game-detail-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 2px; }
 .game-detail-scroll::-webkit-scrollbar-track { background: transparent; }
 
+.game-detail-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--border-radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+
 .game-detail-status {
   font-size: 11px;
   color: var(--accent-hover);

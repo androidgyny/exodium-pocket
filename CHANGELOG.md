@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Auto-update**: Exodium checks GitHub releases at startup, downloads new
+  versions in the background (signature-verified), and offers a one-click
+  restart. Powered by tauri-plugin-updater; CI publishes a signed
+  `latest.json` with every release.
+- **DOSBox ECE on Windows**: games tuned for DOSBox ECE (~2,400) now run
+  eXo's actual ECE build, extracted on demand from the collection's
+  util.zip. On macOS/Linux they keep running under DOSBox Staging, with an
+  "experience may vary" note in the game detail panel.
 - **Toast notification system** (`stores/toasts.ts`, `ToastContainer.tsx`): download,
   uninstall, launch, and content-pack errors now surface as toasts instead of being
   silent or confined to inline status text. Includes a catalog-update notice on startup.

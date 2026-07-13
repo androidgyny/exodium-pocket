@@ -298,8 +298,18 @@ pub async fn download_game(
         // requests MIDI is downloaded - ~1/3 of the catalog does; the rest
         // never pays the download.
         let mt32_dir = main_mgr.torrent_root().join("eXo/mt32");
-        if !mt32_dir.exists() && game_requests_midi(&main_mgr.torrent_root(), game.dosbox_conf.as_deref())
-        {
+        let needs_midi_assets = !mt32_dir.exists()
+            && game_requests_midi(&main_mgr.torrent_root(), game.dosbox_conf.as_deref());
+        let needs_ece = cfg!(windows)
+            && game
+                .dosbox_variant
+                .as_deref()
+                .is_some_and(|v| v.starts_with("ece"))
+            && !main_mgr
+                .torrent_root()
+                .join("eXo/emulators/dosbox/ece4230")
+                .exists();
+        if needs_midi_assets || needs_ece {
             if let Some(util) = main_mgr.index().find_by_suffix("util/util.zip") {
                 let util_index = util.index;
                 let util_size = util.size;
@@ -872,11 +882,19 @@ fn extract_mt32_from_util_zip(
         let tmp = std::fs::File::open(&tmp_path).map_err(|e| e.to_string())?;
         let mut inner = zip::ZipArchive::new(tmp).map_err(|e| e.to_string())?;
         let dest_root = torrent_root.join("eXo");
+        // mt32/ everywhere; on Windows also eXo's DOSBox ECE builds so
+        // ECE-variant games run their intended emulator.
+        let mut prefixes: Vec<&str> = vec!["mt32/"];
+        if cfg!(windows) {
+            prefixes.push("emulators/dosbox/ece4230/");
+            prefixes.push("emulators/dosbox/ece4460/");
+        }
         let mut extracted = 0usize;
         for i in 0..inner.len() {
             let mut entry = inner.by_index(i).map_err(|e| e.to_string())?;
             let name = entry.name().replace('\\', "/");
-            if !name.to_ascii_lowercase().starts_with("mt32/")
+            let lower = name.to_ascii_lowercase();
+            if !prefixes.iter().any(|p| lower.starts_with(p))
                 || name.contains("..")
                 || entry.is_dir()
             {
@@ -908,9 +926,10 @@ fn spawn_mt32_extraction_watcher(mgr: std::sync::Arc<crate::torrent::manager::Do
     tauri::async_runtime::spawn(async move {
         let torrent_root = mgr.torrent_root();
         let mt32_dir = torrent_root.join("eXo/mt32");
+        let ece_dir = torrent_root.join("eXo/emulators/dosbox/ece4230");
         // Generous ceiling: 6 h at 10 s per check for slow swarms.
         for _ in 0..2160 {
-            if mt32_dir.exists() {
+            if mt32_dir.exists() && (!cfg!(windows) || ece_dir.exists()) {
                 return; // someone else finished the job
             }
             if mgr.is_file_complete(util_index).await {
@@ -1130,6 +1149,9 @@ fn patch_dosbox_conf(
     conf_path: &std::path::Path,
     working_dir: &std::path::Path,
     lp_info: Option<(&str, &str, &str, &std::path::Path)>, // (shortcode, lang_dir, game_folder, lp_game_dir)
+    // false when launching under DOSBox ECE, which understands the original
+    // ECE [midi] keys natively - translating them would break its MIDI.
+    translate_for_staging: bool,
 ) -> Result<PathBuf, String> {
     let content = std::fs::read_to_string(conf_path)
         .map_err(|e| format!("Failed to read {}: {}", conf_path.display(), e))?;
@@ -1228,7 +1250,11 @@ fn patch_dosbox_conf(
             .replace('\\', "/")
     };
 
-    let patched = translate_midi_for_staging(&patched);
+    let patched = if translate_for_staging {
+        translate_midi_for_staging(&patched)
+    } else {
+        patched
+    };
 
     let patched_path = working_dir.join(".exodium_launch.conf");
     std::fs::write(&patched_path, &patched)
@@ -2026,30 +2052,53 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
         (shortcode, ld, game_folder, dir)
     });
 
+    // Engine selection: on Windows, ECE-variant games run eXo's actual
+    // DOSBox ECE build (extracted from util.zip's EXTDOS.zip into
+    // eXo/emulators/dosbox/<variant>/). Everywhere else - and until the
+    // build is on disk - DOSBox Staging is the best-effort fallback.
+    let mut ece_bin: Option<PathBuf> = None;
+    if let Some(ref variant) = game.dosbox_variant {
+        if variant.starts_with("ece") {
+            if cfg!(windows) {
+                let base = main_torrent_root.join("eXo/emulators/dosbox");
+                ece_bin = [
+                    base.join(variant).join("DOSBox.exe"),
+                    base.join("ece4230").join("DOSBox.exe"),
+                ]
+                .into_iter()
+                .find(|p| p.exists());
+                if ece_bin.is_none() {
+                    log::info!(
+                        "ECE build not on disk yet for '{}' - using Staging (fetched with util.zip on next MIDI/ECE download)",
+                        game.title
+                    );
+                }
+            } else {
+                log::info!(
+                    "Game '{}' is tuned for DOSBox ECE '{}' (Windows-only build). \
+                     Running under DOSBox Staging - experience may vary.",
+                    game.title, variant
+                );
+            }
+        }
+    }
+    let use_ece = ece_bin.is_some();
+
     let patched_conf = patch_dosbox_conf(
         &game_conf,
         &working_dir,
         lp_info.as_ref().map(|(sc, ld, gf, dir)| (*sc, *ld, *gf, dir.as_path())),
+        // ECE understands its native [midi] keys - only translate for Staging.
+        !use_ece,
     )?;
 
     log::info!(
-        "Launching: {} with config {} (patched: {})",
+        "Launching: {} with config {} (patched: {}, engine: {})",
         game.title,
         game_conf.display(),
-        patched_conf.display()
+        patched_conf.display(),
+        if use_ece { "DOSBox ECE" } else { "DOSBox Staging" }
     );
-
-    // Log variant for diagnostics; all variants currently map to DOSBox Staging.
-    // ECE builds have no cross-platform release - Staging is used as best-effort.
-    if let Some(ref variant) = game.dosbox_variant {
-        if variant.starts_with("ece") {
-            log::warn!(
-                "Game '{}' uses ECE variant '{}' which has no cross-platform build. \
-                 Using DOSBox Staging - gameplay accuracy may differ.",
-                game.title, variant
-            );
-        }
-    }
 
     // Linux/Windows need shaders for DOSBox to start at all. macOS only needs
     // them if CRT auto is enabled (otherwise `output = texture` sidesteps the
@@ -2062,7 +2111,7 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
         ensure_dosbox_shaders(&app);
     }
 
-    let dosbox_bin = resolve_dosbox(&app);
+    let dosbox_bin = ece_bin.unwrap_or_else(|| resolve_dosbox(&app));
     let mut cmd = Command::new(&dosbox_bin);
     cmd.current_dir(&working_dir)
         .arg("-conf")
@@ -2102,9 +2151,14 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
     {
         let glshader_val = if crt_auto_enabled { "crt-auto" } else { "sharp" };
         let fullscreen_val = if fullscreen_enabled { "true" } else { "false" };
-        let frag = format!(
-            "[sdl]\nfullscreen = {fullscreen_val}\n[render]\nglshader = {glshader_val}\n"
-        );
+        // glshader is Staging-specific; under ECE only fullscreen applies.
+        let frag = if use_ece {
+            format!("[sdl]\nfullscreen = {fullscreen_val}\n")
+        } else {
+            format!(
+                "[sdl]\nfullscreen = {fullscreen_val}\n[render]\nglshader = {glshader_val}\n"
+            )
+        };
         let conf_path = std::path::Path::new(&data_dir).join("exodium_global_overrides.conf");
         std::fs::write(&conf_path, &frag)
             .map_err(|e| format!("Failed to write global override conf: {e}"))?;
@@ -2337,7 +2391,7 @@ mod tests {
         let conf_content = "[sdl]\nfullscreen=false\n[autoexec]\n@mount c .\\eXoDOS\\SQ5\nc:\nSQ5.bat\nexit\n";
         let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);
 
-        let patched_path = patch_dosbox_conf(&conf_path, working_dir, None).unwrap();
+        let patched_path = patch_dosbox_conf(&conf_path, working_dir, None, true).unwrap();
         let patched = fs::read_to_string(&patched_path).unwrap();
 
         // Backslash replaced with forward slash
@@ -2364,6 +2418,7 @@ mod tests {
             &conf_path,
             working_dir,
             Some(("SQ5", "!german", "eXoDOS", &lp_dir)),
+            true,
         )
         .unwrap();
         let patched = fs::read_to_string(&patched_path).unwrap();
@@ -2398,6 +2453,7 @@ mod tests {
             &conf_path,
             working_dir,
             Some(("cobmiss", "!spanish", "eXoDOS", &lp_dir)),
+            true,
         )
         .unwrap();
         let patched = fs::read_to_string(&patched_path).unwrap();
@@ -2435,6 +2491,7 @@ mod tests {
             &conf_path,
             working_dir,
             Some(("cobmiss", "!spanish", "eXoDOS", &lp_dir)),
+            true,
         )
         .unwrap();
         let patched = fs::read_to_string(&patched_path).unwrap();
