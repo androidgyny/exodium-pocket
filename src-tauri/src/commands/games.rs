@@ -849,7 +849,7 @@ fn patch_dosbox_conf(
             // append one found by inspecting the LP game directory.
             if !autoexec_has_launch_cmd(&result) {
                 log::info!("LP launch: autoexec has no launch cmd, appending find_lp_launch for {}", shortcode);
-                if let Some((subdir, cmd)) = find_lp_launch(game_dir) {
+                if let Some((subdir, cmd)) = find_lp_launch(game_dir, Some(&content)) {
                     // Strip any trailing `exit` so our appended commands aren't skipped.
                     let trimmed = result.trim_end();
                     if trimmed.to_ascii_lowercase().ends_with("exit") {
@@ -883,7 +883,7 @@ fn patch_dosbox_conf(
             patched.push_str("c:\n");
 
             // Find the game subdirectory and launch command
-            if let Some((subdir, cmd)) = find_lp_launch(game_dir) {
+            if let Some((subdir, cmd)) = find_lp_launch(game_dir, Some(&content)) {
                 if !subdir.is_empty() {
                     patched.push_str(&format!("cd {}\n", subdir));
                 }
@@ -1005,10 +1005,67 @@ fn translate_midi_for_staging(conf: &str) -> String {
 }
 
 /// Find the launch command for an LP game by inspecting its directory.
-/// Parses run.bat to extract the actual game executable, since run.bat itself
-/// is a LaunchBox-specific menu script not suitable for DOSBox autoexec.
+/// Prefers the launch command named by the EN config's autoexec (when given),
+/// then parses run.bat to extract the actual game executable, since run.bat
+/// itself is a LaunchBox-specific menu script not suitable for DOSBox autoexec.
 /// Returns (subdir, command) if found.
-fn find_lp_launch(game_dir: &std::path::Path) -> Option<(String, String)> {
+fn find_lp_launch(game_dir: &std::path::Path, en_conf: Option<&str>) -> Option<(String, String)> {
+    // Strategy 0: the EN autoexec names the real launcher ("cd cobmiss" then
+    // "@cm") - by far the strongest signal, and the only one that works for
+    // games with a bare root-level EXE and no .bat (e.g. Cobra Mission ES:
+    // CM.EXE + INSTALL.EXE, nothing else runnable). Use the first
+    // non-housekeeping command if the referenced program exists in the LP dir.
+    if let Some(autoexec) = en_conf.and_then(|c| c.split("[autoexec]").nth(1)) {
+        for line in autoexec.lines() {
+            let t = line.trim();
+            let t = t.strip_prefix('@').unwrap_or(t).trim();
+            let t = t
+                .strip_prefix("call ")
+                .or_else(|| t.strip_prefix("CALL "))
+                .unwrap_or(t)
+                .trim();
+            if t.is_empty() {
+                continue;
+            }
+            let lower = t.to_ascii_lowercase();
+            let is_drive_switch = lower.len() == 2
+                && lower.as_bytes()[1] == b':'
+                && lower.as_bytes()[0].is_ascii_alphabetic();
+            let is_housekeeping = is_drive_switch
+                || lower.starts_with('#')
+                || ["mount ", "imgmount ", "echo ", "rem ", "cd ", "cd\\", "set "]
+                    .iter()
+                    .any(|p| lower.starts_with(p))
+                || ["cls", "cd", "exit", "pause", "echo", "echo."]
+                    .contains(&lower.as_str());
+            if is_housekeeping {
+                continue;
+            }
+            let base = t.split_whitespace().next().unwrap_or(t);
+            let base_lower = base.to_ascii_lowercase();
+            if let Ok(entries) = std::fs::read_dir(game_dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name_lower = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                    let runnable = name_lower.ends_with(".exe")
+                        || name_lower.ends_with(".com")
+                        || name_lower.ends_with(".bat");
+                    let stem = name_lower.rsplitn(2, '.').last().unwrap_or(&name_lower);
+                    if runnable && (stem == base_lower || name_lower == base_lower) {
+                        log::info!(
+                            "LP launch: using EN autoexec command '{}' (found {})",
+                            t,
+                            entry.file_name().to_string_lossy()
+                        );
+                        return Some((String::new(), t.to_string()));
+                    }
+                }
+            }
+            // Only the FIRST real command is the launch line; later lines
+            // (cleanup, exit chains) must not be mistaken for it.
+            break;
+        }
+    }
+
     let mut search_dirs: Vec<(String, std::path::PathBuf)> =
         vec![("".to_string(), game_dir.to_path_buf())];
 
@@ -1133,13 +1190,20 @@ fn find_lp_launch(game_dir: &std::path::Path) -> Option<(String, String)> {
         }
     }
 
-    // Strategy 4: Look for a .exe in subdirectories (skip utilities and installers)
+    // Strategy 4: Look for a .exe in subdirectories, then the game dir root
+    // (skip utilities and installers). Subdirs first to keep the historical
+    // preference; the root pass catches games like Cobra Mission ES whose
+    // only executable sits at the top level.
     const SKIP_EXE_STEMS: &[&str] = &[
         "install", "setup", "uninst", "config", "cdtest", "showtext",
         // DOS/4GW and protected-mode extenders - not the game itself
         "rtm", "dos4gw", "dpmi", "cwsdpmi",
     ];
-    for (subdir, dir) in search_dirs.iter().filter(|(s, _)| !s.is_empty()) {
+    let subdirs_then_root = search_dirs
+        .iter()
+        .filter(|(s, _)| !s.is_empty())
+        .chain(search_dirs.iter().filter(|(s, _)| s.is_empty()));
+    for (subdir, dir) in subdirs_then_root {
         let dir_stem = dir
             .file_name()
             .map(|n| n.to_string_lossy().to_lowercase())
@@ -1995,7 +2059,7 @@ mod tests {
         let run_bat = "@call sq5.exe\n";
         fs::write(game_dir.join("run.bat"), run_bat).unwrap();
 
-        let result = find_lp_launch(game_dir);
+        let result = find_lp_launch(game_dir, None);
         assert!(result.is_some(), "run.bat parsing should find a launch command");
         let (subdir, cmd) = result.unwrap();
         assert_eq!(subdir, "", "game is in root of game_dir");
@@ -2010,7 +2074,7 @@ mod tests {
         // No run.bat, but a .com file exists
         fs::write(game_dir.join("game.com"), b"").unwrap();
 
-        let result = find_lp_launch(game_dir);
+        let result = find_lp_launch(game_dir, None);
         assert!(result.is_some(), ".com file should be found as fallback");
         let (_, cmd) = result.unwrap();
         assert!(cmd.to_lowercase().ends_with(".com"));
@@ -2019,6 +2083,50 @@ mod tests {
     #[test]
     fn find_lp_launch_returns_none_for_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(find_lp_launch(tmp.path()).is_none());
+        assert!(find_lp_launch(tmp.path(), None).is_none());
+    }
+
+    #[test]
+    fn find_lp_launch_uses_en_autoexec_command() {
+        // Regression: Cobra Mission (ES) - bare root-level CM.EXE plus
+        // INSTALL.EXE, no .bat. The EN autoexec names the launcher.
+        let tmp = tempfile::tempdir().unwrap();
+        let game_dir = tmp.path();
+        fs::write(game_dir.join("CM.EXE"), b"").unwrap();
+        fs::write(game_dir.join("INSTALL.EXE"), b"").unwrap();
+        fs::write(game_dir.join("DAT.VOL"), b"").unwrap();
+
+        let en_conf = "[sdl]\nfullscreen=false\n[autoexec]\n\
+                       @mount c .\\eXoDOS\\\nc:\ncls\ncd cobmiss\n@cm\nexit\n";
+        let (subdir, cmd) = find_lp_launch(game_dir, Some(en_conf)).unwrap();
+        assert_eq!(subdir, "");
+        assert_eq!(cmd, "cm");
+    }
+
+    #[test]
+    fn find_lp_launch_falls_back_to_root_exe() {
+        // No EN hint, no .bat/.com: the root-level EXE must still be found
+        // (installers are skipped).
+        let tmp = tempfile::tempdir().unwrap();
+        let game_dir = tmp.path();
+        fs::write(game_dir.join("CM.EXE"), b"").unwrap();
+        fs::write(game_dir.join("INSTALL.EXE"), b"").unwrap();
+
+        let (subdir, cmd) = find_lp_launch(game_dir, None).unwrap();
+        assert_eq!(subdir, "");
+        assert_eq!(cmd.to_ascii_lowercase(), "cm.exe");
+    }
+
+    #[test]
+    fn find_lp_launch_en_hint_ignores_missing_program() {
+        // EN autoexec references a program the LP dir doesn't have -
+        // must fall through to the heuristics, not return a broken command.
+        let tmp = tempfile::tempdir().unwrap();
+        let game_dir = tmp.path();
+        fs::write(game_dir.join("game.com"), b"").unwrap();
+
+        let en_conf = "[autoexec]\nmount c .\\eXoDOS\\\nc:\ncd foo\n@other\nexit\n";
+        let (_, cmd) = find_lp_launch(game_dir, Some(en_conf)).unwrap();
+        assert_eq!(cmd.to_ascii_lowercase(), "game.com");
     }
 }
