@@ -168,7 +168,7 @@ export function GameCard(props: GameCardProps) {
           </div>
           <div class="game-card-action-bar">
             <Show when={status()}>
-              <span class="card-action-label action-downloading">{status()}</span>
+              <span class="card-action-label action-downloading fade-swap">{status()}</span>
             </Show>
             <Show when={!status()}>
               <Show when={isDownloading()}>

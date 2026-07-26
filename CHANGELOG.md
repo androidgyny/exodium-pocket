@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Native right-click menu suppressed** in production builds (the webview's
+  Reload/Inspect menu doesn't belong in a launcher); the game cards' custom
+  context menu is unaffected.
+- **Uninstalling is a proper state**: all action buttons are replaced by an
+  "Uninstalling…" label (detail panel, per-variant rows) with a subtle fade
+  between states; sibling variant actions are disabled meanwhile.
+
 ## 0.8.0 - 2026-07-26
 
 ### Fixed (third adversarial review pass - 17 confirmed findings)

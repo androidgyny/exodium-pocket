@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show } from "solid-js";
+import { createSignal, onMount, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Dialog } from "@ark-ui/solid/dialog";
@@ -87,6 +87,18 @@ function App() {
     const sep = dir.includes("\\") ? "\\" : "/";
     return dir.replace(/[/\\]$/, "") + sep + "eXoDOS";
   };
+
+  onMount(() => {
+    // Suppress the webview's native right-click menu app-wide (Inspect,
+    // Reload, ... don't belong in a launcher). Component-level custom menus
+    // (GameCard) hook the same event and render their own UI, unaffected.
+    // Kept enabled in dev so Inspect Element stays reachable.
+    if (!import.meta.env.DEV) {
+      const suppress = (e: MouseEvent) => e.preventDefault();
+      document.addEventListener("contextmenu", suppress);
+      onCleanup(() => document.removeEventListener("contextmenu", suppress));
+    }
+  });
 
   onMount(async () => {
     try {

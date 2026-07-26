@@ -3116,6 +3116,38 @@ body {
   word-break: break-word;
 }
 
+/* State-swap fade: applied to containers whose contents get replaced by a
+   different state (action row <-> "Uninstalling" label). Solid remounts the
+   subtree, so an entry animation reads as a crossfade. */
+.fade-swap {
+  animation: fade-swap-in 180ms ease-out;
+}
+
+@keyframes fade-swap-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-swap { animation: none; }
+}
+
+.btn-uninstalling {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.lang-uninstalling {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .update-pill {
   display: inline-flex;
   align-items: center;

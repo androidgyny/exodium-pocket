@@ -34,6 +34,7 @@ export function GameDetailPanel(props: Props) {
   const [manualOpen, setManualOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [launchingId, setLaunchingId] = createSignal<number | null>(null);
+  const [uninstallingId, setUninstallingId] = createSignal<number | null>(null);
   let launchTimer: number | undefined;
   onCleanup(() => { if (launchTimer) { clearTimeout(launchTimer); } });
 
@@ -196,15 +197,21 @@ export function GameDetailPanel(props: Props) {
   };
 
   const handleUninstall = async (gameId: number) => {
+    if (uninstallingId() != null) { return; }
     // Capture shortcode + title now - props.game may change before the async callback runs.
     const shortcode = props.game?.shortcode;
     const title = variants().find((v) => v.id === gameId)?.title ?? props.game?.title;
-    await performUninstall(gameId, setStatus, async () => {
-      if (shortcode) {
-        const v = await getGameVariants(shortcode).catch(() => []);
-        setVariants(v);
-      }
-    }, title);
+    setUninstallingId(gameId);
+    try {
+      await performUninstall(gameId, setStatus, async () => {
+        if (shortcode) {
+          const v = await getGameVariants(shortcode).catch(() => []);
+          setVariants(v);
+        }
+      }, title);
+    } finally {
+      setUninstallingId(null);
+    }
   };
 
   const ratingStars = (rating: number | null) => {
@@ -217,11 +224,11 @@ export function GameDetailPanel(props: Props) {
 
   // Shared "Play" button - same disabled+spinner UX whether it's the main
   // single-language action or one row of the multi-language variant list.
-  const PlayButton = (p: { id: number; class: string }) => (
+  const PlayButton = (p: { id: number; class: string; disabled?: boolean }) => (
     <button
       class={p.class}
       onClick={() => handleLaunch(p.id)}
-      disabled={launchingId() === p.id}
+      disabled={p.disabled || launchingId() === p.id}
     >
       <Show when={launchingId() === p.id} fallback={<>▶ Play</>}>
         <span class="btn-spinner" /> Starting…
@@ -291,7 +298,14 @@ export function GameDetailPanel(props: Props) {
 
             {/* Single-language action */}
             <Show when={!isMultiLang()}>
-              <div class="game-detail-actions">
+              <Show when={uninstallingId() == null} fallback={
+                <div class="game-detail-actions fade-swap">
+                  <div class="game-detail-btn btn-uninstalling">
+                    <span class="btn-spinner" /> Uninstalling…
+                  </div>
+                </div>
+              }>
+              <div class="game-detail-actions fade-swap">
                 <Show when={isInstalled()}>
                   <PlayButton id={props.game!.id!} class="game-detail-btn btn-play" />
                 </Show>
@@ -350,6 +364,7 @@ export function GameDetailPanel(props: Props) {
                   </button>
                 </Show>
               </div>
+              </Show>
             </Show>
 
             {/* Multi-language variant list */}
@@ -369,17 +384,20 @@ export function GameDetailPanel(props: Props) {
                           {variant.language}
                         </span>
                         <span class="game-detail-lang-title">{variant.title}</span>
-                        <Show when={vDl()?.downloading}>
+                        <Show when={uninstallingId() === vId()}>
+                          <span class="lang-uninstalling fade-swap"><span class="btn-spinner" /> Uninstalling…</span>
+                        </Show>
+                        <Show when={uninstallingId() !== vId() && vDl()?.downloading}>
                           <div class="game-detail-lang-progress">
                             <AutoProgress value={vDl()?.progress ?? 0} class="mini" />
                           </div>
                           <button class="lang-picker-btn action-cancel" onClick={() => cancelGameDownload(vId()!)}>✕</button>
                         </Show>
-                        <Show when={!vDl()?.downloading && variant.installed}>
-                          <PlayButton id={vId()!} class="lang-picker-btn action-play" />
-                          <button class="lang-picker-btn action-uninstall" onClick={() => handleUninstall(vId()!)}>✕</button>
+                        <Show when={uninstallingId() !== vId() && !vDl()?.downloading && variant.installed}>
+                          <PlayButton id={vId()!} class="lang-picker-btn action-play" disabled={uninstallingId() != null} />
+                          <button class="lang-picker-btn action-uninstall" disabled={uninstallingId() != null} onClick={() => handleUninstall(vId()!)}>✕</button>
                         </Show>
-                        <Show when={!vDl()?.downloading && !variant.installed}>
+                        <Show when={uninstallingId() !== vId() && !vDl()?.downloading && !variant.installed}>
                           <button
                             class="lang-picker-btn action-download"
                             onClick={() => { if (variant.game_torrent_index != null) { handleDownload(vId()!, variant.title); } }}
