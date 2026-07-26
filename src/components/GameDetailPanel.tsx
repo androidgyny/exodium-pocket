@@ -91,8 +91,10 @@ export function GameDetailPanel(props: Props) {
   // Register once for the lifetime of the component - the handler reads props.onClose()
   // reactively through the Proxy so it always calls the current callback.
   onMount(() => {
-    window.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => window.removeEventListener("keydown", handleKeyDown));
+    // Capture phase: the overlay-open guard must read the signals BEFORE
+    // Ark's document-level handler closes the overlay in the same keypress.
+    window.addEventListener("keydown", handleKeyDown, true);
+    onCleanup(() => window.removeEventListener("keydown", handleKeyDown, true));
   });
 
   const thumbSrc = () => {

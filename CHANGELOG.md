@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Fixed (second adversarial review pass - 19 confirmed findings)
+
+- **Linux deb/rpm installs no longer offered un-installable updates** - the
+  tauri updater is AppImage-only on Linux; the update pill is now suppressed
+  for package-manager installs.
+- **Windows update flow asks before closing**: installing an update on
+  Windows closes the app immediately (NSIS has no staged restart), so the
+  pill now gets explicit confirmation first.
+- **Support-file extraction is atomic**: staged to a temp dir and moved into
+  place with renames, guarded by a process-wide lock, temp files cleaned on
+  every path - a mid-extraction kill can no longer leave a silent
+  half-extracted eXo/mt32 that every gate treats as complete forever.
+- **Extraction watcher gains a disk-size fallback** - librqbit's per-file
+  stat can stall short of total for fully-written files, and after a restart
+  without session state the stats path never fires at all.
+- **Cancelled downloads can't clobber retries**: a stale download_game
+  promise from a cancelled attempt no longer overwrites a newer attempt's
+  state with false errors.
+- **Browse list fetches are epoch-guarded** - a slow background refresh can
+  no longer drop an appended page or overwrite newer filter results.
+- **Disk-space preflight credits bytes already on disk** - it was blocking
+  exactly the resume/re-download recovery flows it should allow.
+- **latest.json generation fails the release** if any platform's signed
+  updater bundle is missing, instead of silently stranding that platform.
+- Booter (`boot disk.img`) LP games no longer fall back to a generated
+  autoexec; per-game CRT shader overrides skip DOSBox ECE; the asset
+  protocol grant is narrowed to the eXoDOS media subtree; session eviction
+  compares paths case-insensitively with proper boundaries on Windows/macOS;
+  update check also runs after first-run setup; empty-state flash on cold
+  start fixed; Escape guard made ordering-independent (capture phase).
+
 ## 0.7.2 - 2026-07-26
 
 ### Changed

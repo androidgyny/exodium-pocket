@@ -1,7 +1,12 @@
 import { createSignal } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { showToast } from "./toasts";
+
+const isWindows = typeof navigator !== "undefined"
+  && /Win/i.test(navigator.platform || navigator.userAgent || "");
 
 export type UpdateStatus = "available" | "downloading" | "ready";
 
@@ -21,6 +26,10 @@ let pendingUpdate: Update | null = null;
 export async function checkForAppUpdate() {
   if (import.meta.env.DEV) { return; }
   try {
+    // Tauri's updater only handles AppImage on Linux - offering the pill to
+    // deb/rpm installs would download an update that can't be applied.
+    const supported = await invoke<boolean>("update_check_supported").catch(() => true);
+    if (!supported) { return; }
     const update = await check();
     if (!update) { return; }
     pendingUpdate = update;
@@ -40,6 +49,15 @@ export async function startUpdate() {
   const update = pendingUpdate;
   const state = updateState();
   if (!update || state?.status !== "available") { return; }
+  // On Windows the NSIS installer closes the app as part of install - there
+  // is no staged "restart when ready" step. Get explicit consent first.
+  if (isWindows) {
+    const ok = await ask(
+      `Exodium will close now to install version ${update.version}. Any running downloads will resume on next start.\n\nInstall the update now?`,
+      { title: "Install update", kind: "info" },
+    ).catch(() => false);
+    if (!ok) { return; }
+  }
   setUpdateState({ version: update.version, status: "downloading" });
   try {
     await update.downloadAndInstall();

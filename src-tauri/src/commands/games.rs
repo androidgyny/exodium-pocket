@@ -182,6 +182,18 @@ pub fn set_config(
     Ok(())
 }
 
+/// Can this install apply updates via the tauri updater? Linux deb/rpm
+/// installs cannot (AppImage-only there) - the frontend suppresses the
+/// update pill for them instead of offering a download that can't install.
+#[tauri::command]
+pub fn update_check_supported() -> bool {
+    if cfg!(target_os = "linux") {
+        std::env::var("APPIMAGE").is_ok()
+    } else {
+        true
+    }
+}
+
 /// Toggle seeding (uploading to the swarm). Persists the choice and applies
 /// it live to the shared torrent session.
 #[tauri::command]
@@ -221,31 +233,6 @@ pub async fn download_game(
         return Ok(format!("{} is already installed", game.title));
     }
 
-    // Disk-space preflight: refusing upfront beats a multi-GB torrent (plus
-    // ~equal-sized extraction) failing halfway with a partial install.
-    if let Some(size) = game.download_size {
-        let data_dir = {
-            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-            queries::get_config(&conn, "data_dir").ok().flatten()
-        };
-        if let Some(dir) = data_dir {
-            // download ZIP + extracted contents + safety margin
-            let needed = (size as u64).saturating_mul(2) + 500 * 1024 * 1024;
-            if let Ok(free) = fs4::available_space(std::path::Path::new(&dir)) {
-                if free < needed {
-                    let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
-                    return Err(format!(
-                        "Not enough disk space for {}: needs about {:.1} GB free \
-                         (download + extraction), but only {:.1} GB is available.",
-                        game.title,
-                        gib(needed),
-                        gib(free)
-                    ));
-                }
-            }
-        }
-    }
-
     // Mark as in library immediately
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -269,6 +256,40 @@ pub async fn download_game(
         let main_mgr = guard.get("eXoDOS").cloned();
         (manager, main_mgr)
     };
+
+    // Disk-space preflight: refusing upfront beats a multi-GB torrent (plus
+    // ~equal-sized extraction) failing halfway with a partial install. Bytes
+    // already on disk (resume, re-download after uninstall backup) are
+    // credited - the naive 2x check blocked exactly those recovery flows.
+    if let Some(size) = game.download_size {
+        let data_dir = {
+            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+            queries::get_config(&conn, "data_dir").ok().flatten()
+        };
+        if let Some(dir) = data_dir {
+            let on_disk = manager
+                .file_output_path(game_idx)
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let needed = (size as u64)
+                .saturating_mul(2)
+                .saturating_sub(on_disk.saturating_mul(2))
+                + 500 * 1024 * 1024;
+            if let Ok(free) = fs4::available_space(std::path::Path::new(&dir)) {
+                if free < needed {
+                    let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
+                    return Err(format!(
+                        "Not enough disk space for {}: needs about {:.1} GB free \
+                         (download + extraction), but only {:.1} GB is available.",
+                        game.title,
+                        gib(needed),
+                        gib(free)
+                    ));
+                }
+            }
+        }
+    }
 
     let mut files = vec![game_idx];
     if let Some(gd_idx) = game.gamedata_torrent_index {
@@ -855,6 +876,12 @@ fn game_requests_midi(torrent_root: &std::path::Path, dosbox_conf: Option<&str>)
         || lower.contains("[fluidsynth]")
 }
 
+/// Serializes support-file extraction process-wide. A plain lock FILE was
+/// racy: the startup rearm and a download-click watcher could both pass the
+/// exists() check before either wrote it.
+static EXTRACTION_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Extract the mt32 subtree (MT-32/CM32L ROMs incl. rev0, SoundCanvas +
 /// AWE64 soundfonts, ~54 MB) from util.zip into `<torrent_root>/eXo/mt32/`.
 ///
@@ -862,26 +889,45 @@ fn game_requests_midi(torrent_root: &std::path::Path, dosbox_conf: Option<&str>)
 /// top-level `mt32/` dir is what the game configs reference as `.\mt32\`.
 /// The inner zip (467 MB uncompressed) is staged to a temp file rather than
 /// RAM; the rest of it (Windows emulator builds) is never extracted.
+///
+/// Everything is written to a staging dir first and moved into place with
+/// atomic renames - the completion gates test directory EXISTENCE, so a
+/// half-written eXo/mt32 from a mid-extraction kill would otherwise read as
+/// "done" forever (silent no-music).
 fn extract_mt32_from_util_zip(
     util_zip: &std::path::Path,
     torrent_root: &std::path::Path,
 ) -> Result<usize, String> {
-    let file = std::fs::File::open(util_zip).map_err(|e| e.to_string())?;
-    let mut outer = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-
-    let tmp_path = util_zip.with_extension("extdos_tmp");
-    {
-        let mut inner_entry = outer
-            .by_name("EXTDOS.zip")
-            .map_err(|e| format!("EXTDOS.zip not found inside util.zip: {}", e))?;
-        let mut tmp = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
-        std::io::copy(&mut inner_entry, &mut tmp).map_err(|e| e.to_string())?;
+    if EXTRACTION_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("extraction already running".to_string());
     }
+    let result = do_extract_support_files(util_zip, torrent_root);
+    EXTRACTION_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    result
+}
+
+fn do_extract_support_files(
+    util_zip: &std::path::Path,
+    torrent_root: &std::path::Path,
+) -> Result<usize, String> {
+    // Unique temp names so a leftover from a killed run can't collide.
+    let pid = std::process::id();
+    let tmp_path = util_zip.with_extension(format!("extdos_tmp_{pid}"));
+    let staging_root = torrent_root.join("eXo").join(format!(".support_staging_{pid}"));
 
     let result = (|| {
+        let file = std::fs::File::open(util_zip).map_err(|e| e.to_string())?;
+        let mut outer = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        {
+            let mut inner_entry = outer
+                .by_name("EXTDOS.zip")
+                .map_err(|e| format!("EXTDOS.zip not found inside util.zip: {}", e))?;
+            let mut tmp = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut inner_entry, &mut tmp).map_err(|e| e.to_string())?;
+        }
+
         let tmp = std::fs::File::open(&tmp_path).map_err(|e| e.to_string())?;
         let mut inner = zip::ZipArchive::new(tmp).map_err(|e| e.to_string())?;
-        let dest_root = torrent_root.join("eXo");
         // mt32/ everywhere; on Windows also eXo's DOSBox ECE builds so
         // ECE-variant games run their intended emulator.
         let mut prefixes: Vec<&str> = vec!["mt32/"];
@@ -900,7 +946,7 @@ fn extract_mt32_from_util_zip(
             {
                 continue;
             }
-            let out_path = dest_root.join(&name);
+            let out_path = staging_root.join(&name);
             if let Some(parent) = out_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
@@ -911,10 +957,39 @@ fn extract_mt32_from_util_zip(
         if extracted == 0 {
             return Err("no mt32/ entries found in EXTDOS.zip".to_string());
         }
+
+        // Move each fully-staged subtree into place. rename is atomic on the
+        // same filesystem; a pre-existing (possibly partial, from an older
+        // build) destination is replaced.
+        let dest_root = torrent_root.join("eXo");
+        let mut targets = vec!["mt32".to_string()];
+        if cfg!(windows) {
+            for v in ["ece4230", "ece4460"] {
+                if staging_root.join("emulators/dosbox").join(v).exists() {
+                    targets.push(format!("emulators/dosbox/{v}"));
+                }
+            }
+        }
+        for rel in targets {
+            let src = staging_root.join(&rel);
+            if !src.exists() {
+                continue;
+            }
+            let dst = dest_root.join(&rel);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            if dst.exists() {
+                std::fs::remove_dir_all(&dst).map_err(|e| e.to_string())?;
+            }
+            std::fs::rename(&src, &dst)
+                .map_err(|e| format!("moving {} into place: {}", rel, e))?;
+        }
         Ok(extracted)
     })();
 
     let _ = std::fs::remove_file(&tmp_path);
+    let _ = std::fs::remove_dir_all(&staging_root);
     result
 }
 
@@ -937,21 +1012,12 @@ pub(crate) async fn rearm_support_extraction(
     };
     let util_index = util.index;
     let selected = mgr.is_file_selected(util_index).await;
-    let zip_path = mgr.file_output_path(util_index);
-    let on_disk = zip_path
-        .as_deref()
+    let on_disk = mgr
+        .file_output_path(util_index)
         .and_then(|p| std::fs::metadata(p).ok())
         .is_some_and(|m| m.len() > 0);
     if !selected && !on_disk {
         return; // support files were never requested - nothing to resume
-    }
-    // A watcher killed between writing its lock file and finishing leaves a
-    // stale lock; assets still missing proves it never completed.
-    if let Some(p) = zip_path {
-        let lock = p.with_extension("mt32_extracted");
-        if lock.exists() {
-            let _ = std::fs::remove_file(&lock);
-        }
     }
     log::info!(
         "Re-arming support-file extraction watcher (util.zip {})",
@@ -969,32 +1035,52 @@ fn spawn_mt32_extraction_watcher(mgr: std::sync::Arc<crate::torrent::manager::Do
         let torrent_root = mgr.torrent_root();
         let mt32_dir = torrent_root.join("eXo/mt32");
         let ece_dir = torrent_root.join("eXo/emulators/dosbox/ece4230");
+        let expected_size = mgr.index().files.get(util_index).map(|f| f.size).unwrap_or(0);
+        let mut failures = 0u32;
         // Generous ceiling: 6 h at 10 s per check for slow swarms.
         for _ in 0..2160 {
             if mt32_dir.exists() && (!cfg!(windows) || ece_dir.exists()) {
                 return; // someone else finished the job
             }
-            if mgr.is_file_complete(util_index).await {
-                let Some(zip_path) = mgr.file_output_path(util_index) else {
-                    return;
-                };
-                let lock = zip_path.with_extension("mt32_extracted");
-                if !zip_path.exists() || lock.exists() {
-                    return;
-                }
-                let _ = std::fs::write(&lock, "");
+            let Some(zip_path) = mgr.file_output_path(util_index) else {
+                return;
+            };
+            // Stats-based completion PLUS a disk-size fallback: librqbit's
+            // per-file stat is known to stall short of total for files fully
+            // on disk (see the identical fallback in get_download_progress),
+            // and after a restart without session state the handle is None
+            // and stats-based completion would never fire at all.
+            let stats_complete = mgr.is_file_complete(util_index).await;
+            let disk_complete = expected_size > 0
+                && std::fs::metadata(&zip_path).is_ok_and(|m| m.len() >= expected_size);
+            if stats_complete || disk_complete {
                 let root = torrent_root.clone();
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    match extract_mt32_from_util_zip(&zip_path, &root) {
-                        Ok(n) => log::info!("Extracted {} MT-32/soundfont files from util.zip", n),
-                        Err(e) => {
-                            let _ = std::fs::remove_file(&lock);
-                            log::error!("Failed to extract mt32 from util.zip: {}", e);
-                        }
-                    }
+                let zp = zip_path.clone();
+                let outcome = tauri::async_runtime::spawn_blocking(move || {
+                    extract_mt32_from_util_zip(&zp, &root)
                 })
                 .await;
-                return;
+                match outcome {
+                    Ok(Ok(n)) => {
+                        log::info!("Extracted {} MT-32/soundfont files from util.zip", n);
+                        return;
+                    }
+                    Ok(Err(e)) if e == "extraction already running" => return,
+                    Ok(Err(e)) => {
+                        failures += 1;
+                        log::error!(
+                            "Failed to extract support files from util.zip (attempt {}): {}",
+                            failures, e
+                        );
+                        if failures >= 3 {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Extraction task panicked: {}", e);
+                        return;
+                    }
+                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
@@ -1143,12 +1229,21 @@ fn lp_autoexec_compatible(
         // First real command = the launch line. Verify its program exists at
         // the simulated cwd; unrecognizable forms (boot images, drive-letter
         // paths) are trusted - the EN config knows better than any heuristic.
+        // Booter games launch via `boot disk.img` - the image path was
+        // already handled by the path-rewriting, trust the line as-is.
+        if lower == "boot" || lower.starts_with("boot ") {
+            return true;
+        }
         let base = t
             .strip_prefix("call ")
             .or_else(|| t.strip_prefix("CALL "))
             .or_else(|| t.strip_prefix("loadfix "))
             .unwrap_or(t);
-        let base = base.split_whitespace().next().unwrap_or(base);
+        // Skip option tokens ("loadfix -32 game.exe") before picking the program.
+        let base = base
+            .split_whitespace()
+            .find(|tok| !tok.starts_with('-'))
+            .unwrap_or(base);
         if base.contains(':') || base.contains('\\') || base.contains('/') {
             return true;
         }
@@ -2221,7 +2316,8 @@ pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<
                 frag.push_str(&format!("[sdl]\nfullscreen = {}\n", fs));
             }
             if let Some(gs) = per_game_config.get("glshader") {
-                if gs != "default" {
+                // glshader is Staging-specific - ECE would log unknown-key noise.
+                if gs != "default" && !use_ece {
                     frag.push_str(&format!("[render]\nglshader = {}\n", gs));
                 }
             }

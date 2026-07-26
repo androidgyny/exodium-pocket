@@ -4,6 +4,7 @@ import {
   games, loading, error, hasMore, totalGames,
   fetchGames, fetchMoreGames, fetchAllGames,
   searchQuery,
+  hasFetched,
   genreFilter, setGenreFilter,
   sortBy, setSortBy,
   collectionFilter, setCollectionFilter,
@@ -470,7 +471,7 @@ export function Library() {
           <div class="error">{error()}</div>
         </Show>
 
-        <Show when={!loading() && !error() && games().length === 0}>
+        <Show when={hasFetched() && !loading() && !error() && games().length === 0}>
           <div class="lib-empty">
             <div class="lib-empty-icon">🔍</div>
             <div class="lib-empty-text">

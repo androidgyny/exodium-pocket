@@ -38,6 +38,13 @@ const [hasMore, setHasMore] = createSignal(true);
 
 const PER_PAGE = 100;
 
+// Monotonic epoch: every list mutation bumps it before awaiting and discards
+// its response if another fetch started meanwhile - a slow refreshLoadedGames
+// response must not overwrite a newer filter result or drop an appended page.
+let fetchEpoch = 0;
+const [hasFetched, setHasFetched] = createSignal(false);
+export { hasFetched };
+
 export {
   games, totalGames, loading, error, hasMore,
   searchQuery, setSearchQuery,
@@ -48,6 +55,7 @@ export {
 
 /// Fetch the first page (resets the list).
 export async function fetchGames() {
+  const epoch = ++fetchEpoch;
   setLoading(true);
   setError(null);
   setCurrentPage(1);
@@ -55,13 +63,15 @@ export async function fetchGames() {
     const result: GameList = await getGames(
       1, PER_PAGE, searchQuery(), genreFilter(), sortBy(), collectionFilter()
     );
+    if (epoch !== fetchEpoch) { return; }
     setGames(result.games);
     setTotalGames(result.total);
     setHasMore(result.games.length < result.total);
   } catch (e) {
     setError(e instanceof Error ? e.message : String(e));
   } finally {
-    setLoading(false);
+    setHasFetched(true);
+    if (epoch === fetchEpoch) { setLoading(false); }
   }
 }
 
@@ -79,10 +89,12 @@ export async function refreshLoadedGames() {
     // duplicate rows. The next library change will refresh again.
     return;
   }
+  const epoch = ++fetchEpoch;
   try {
     const result: GameList = await getGames(
       1, Math.max(count, PER_PAGE), searchQuery(), genreFilter(), sortBy(), collectionFilter()
     );
+    if (epoch !== fetchEpoch) { return; }
     setGames(result.games);
     setTotalGames(result.total);
     setHasMore(result.games.length < result.total);
@@ -95,33 +107,37 @@ export async function refreshLoadedGames() {
 /// Fetch the next page and append to existing list.
 export async function fetchMoreGames() {
   if (loading() || !hasMore()) return;
+  const epoch = ++fetchEpoch;
   setLoading(true);
   const nextPage = currentPage() + 1;
   try {
     const result: GameList = await getGames(
       nextPage, PER_PAGE, searchQuery(), genreFilter(), sortBy(), collectionFilter()
     );
+    if (epoch !== fetchEpoch) { return; }
     setGames((prev) => [...prev, ...result.games]);
     setCurrentPage(nextPage);
     setHasMore(games().length < result.total);
   } catch (e) {
     setError(e instanceof Error ? e.message : String(e));
   } finally {
-    setLoading(false);
+    if (epoch === fetchEpoch) { setLoading(false); }
   }
 }
 
 /// Load all games at once - used by jumpToSection when the target section isn't rendered yet.
 export async function fetchAllGames() {
   if (loading()) { return; }
+  const epoch = ++fetchEpoch;
   setLoading(true);
   try {
     const result: GameList = await getGames(1, totalGames() || 9999, searchQuery(), genreFilter(), sortBy(), collectionFilter());
+    if (epoch !== fetchEpoch) { return; }
     setGames(result.games);
     setHasMore(false);
   } catch (e) {
     setError(e instanceof Error ? e.message : String(e));
   } finally {
-    setLoading(false);
+    if (epoch === fetchEpoch) { setLoading(false); }
   }
 }

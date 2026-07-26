@@ -119,6 +119,7 @@ function App() {
     loadThumbnailDir();
     refreshInstalledPacks();
     fetchGames();
+    checkForAppUpdate();
 
     // Show the welcome modal if the user hasn't seen it yet.
     const welcomeSeen = await getConfig("welcome_seen");

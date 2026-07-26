@@ -446,8 +446,21 @@ async fn evict_mismatched_session_torrents(
     };
 
     // Normalize for comparison: strip Windows \\?\ long-path prefix, unify
-    // slashes (output folders are written with to_long_path on Windows).
-    let normalize = |p: &str| p.trim_start_matches(r"\\?\").replace('\\', "/");
+    // slashes (output folders are written with to_long_path on Windows),
+    // trim trailing separators, and case-fold on case-insensitive platforms
+    // (C:\Games vs c:\games must not read as a mismatch).
+    let normalize = |p: &str| {
+        let s = p
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string();
+        if cfg!(any(windows, target_os = "macos")) {
+            s.to_ascii_lowercase()
+        } else {
+            s
+        }
+    };
     let data_norm = normalize(&data_path.to_string_lossy());
 
     for entry in torrents.values() {
@@ -457,7 +470,10 @@ async fn evict_mismatched_session_torrents(
         ) else {
             continue;
         };
-        if normalize(folder).starts_with(&data_norm) {
+        let folder_norm = normalize(folder);
+        // Explicit path boundary: "/data/eXoDOS-old" must not pass a
+        // "/data/eXoDOS" prefix check.
+        if folder_norm == data_norm || folder_norm.starts_with(&format!("{}/", data_norm)) {
             continue;
         }
         let stale_id = session.with_torrents(|iter| {

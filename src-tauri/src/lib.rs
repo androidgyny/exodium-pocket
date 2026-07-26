@@ -24,6 +24,7 @@ use commands::{
     get_setup_status, get_thumbnail_dir, get_torrent_info, init_download_manager,
     init_log_dir, init_resource_dir, install_content_pack, launch_game, list_content_packs,
     open_log_folder, scan_installed_games, set_config, set_seeding_enabled, setup_from_local, setup_import,
+    update_check_supported,
     setup_start, toggle_favorite, uninstall_content_pack, uninstall_game, validate_exodos_dir,
     ContentPackState, DbState, TorrentState,
 };
@@ -62,14 +63,16 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Grant the asset protocol access to a directory at runtime. The static
-/// scope in tauri.conf.json is limited to $RESOURCE/$APPDATA; the
-/// user-chosen game data dir (can be anywhere, incl. external drives) is
-/// added here instead of shipping a blanket "**" allow.
-pub fn allow_asset_dir(app: &tauri::AppHandle, dir: &Path) {
+/// Grant the asset protocol access to the game-media subtree of the
+/// user-chosen data dir at runtime. The static scope in tauri.conf.json is
+/// limited to $RESOURCE/$APPDATA; game media (thumbnails, screenshots,
+/// manuals) all live under <data_dir>/eXoDOS - granting the data dir itself
+/// (often $HOME) would expose far more than the app serves.
+pub fn allow_asset_dir(app: &tauri::AppHandle, data_dir: &Path) {
     use tauri::Manager;
-    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
-        log::warn!("Failed to extend asset scope to {}: {}", dir.display(), e);
+    let media_root = data_dir.join("eXoDOS");
+    if let Err(e) = app.asset_protocol_scope().allow_directory(&media_root, true) {
+        log::warn!("Failed to extend asset scope to {}: {}", media_root.display(), e);
     }
 }
 
@@ -431,6 +434,7 @@ pub fn run() {
             get_config,
             set_config,
             set_seeding_enabled,
+            update_check_supported,
             get_torrent_info,
             setup_start,
             get_setup_status,

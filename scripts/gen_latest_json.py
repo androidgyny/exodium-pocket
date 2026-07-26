@@ -40,19 +40,25 @@ def entry(suffix: str):
     return None
 
 
+expected = {
+    "darwin-aarch64": lambda: entry(".app.tar.gz"),
+    "linux-x86_64": lambda: entry(".AppImage"),
+    "windows-x86_64": lambda: entry("-setup.exe") or entry(".msi"),
+}
 platforms = {}
-mac = entry(".app.tar.gz")
-if mac:
-    platforms["darwin-aarch64"] = mac
-lin = entry(".AppImage")
-if lin:
-    platforms["linux-x86_64"] = lin
-win = entry("-setup.exe") or entry(".msi")
-if win:
-    platforms["windows-x86_64"] = win
+missing = []
+for key, probe in expected.items():
+    e = probe()
+    if e:
+        platforms[key] = e
+    else:
+        missing.append(key)
 
-if not platforms:
-    sys.exit("no signed updater bundles found - is TAURI_SIGNING_PRIVATE_KEY set?")
+# A silently absent platform would strand those users on their current
+# version forever with no signal anywhere - fail the release job instead.
+if missing:
+    sys.exit(f"missing signed updater bundle(s) for: {', '.join(missing)} - "
+             "is TAURI_SIGNING_PRIVATE_KEY set and did all build legs succeed?")
 
 json.dump(
     {

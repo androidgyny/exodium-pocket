@@ -29,6 +29,10 @@ const stuckSince: Record<number, number> = {};
 // yet, validation pass, first-ever torrent add), so the didn't-start verdict
 // must not fire until the command has actually resolved.
 const commandPending: Record<number, boolean> = {};
+// Monotonic attempt counter per game: a cancelled attempt's still-resolving
+// download_game promise (or orphaned interval tick) must not clobber the
+// state of a NEWER attempt for the same game.
+const attempts: Record<number, number> = {};
 // Stall detection: timestamp + value of the last observed progress increase.
 const lastProgressAt: Record<number, number> = {};
 const lastProgressVal: Record<number, number> = {};
@@ -50,6 +54,8 @@ export function getDownloadState(gameId: number): DownloadState | undefined {
 }
 
 export function startGameDownload(gameId: number, title?: string) {
+  const attempt = (attempts[gameId] ?? 0) + 1;
+  attempts[gameId] = attempt;
   maxProgress[gameId] = 0;
   commandPending[gameId] = true;
   lastProgressVal[gameId] = -1;
@@ -61,6 +67,10 @@ export function startGameDownload(gameId: number, title?: string) {
   }));
 
   const interval = setInterval(async () => {
+    if (attempts[gameId] !== attempt) {
+      clearInterval(interval);
+      return;
+    }
     try {
       const p = await getDownloadProgress(gameId);
       if (!p) {
@@ -224,8 +234,10 @@ export function startGameDownload(gameId: number, title?: string) {
 
   // Fire download command
   downloadGame(gameId).then(() => {
+    if (attempts[gameId] !== attempt) { return; }
     commandPending[gameId] = false;
   }).catch((e) => {
+    if (attempts[gameId] !== attempt) { return; }
     clearInterval(interval);
     delete intervals[gameId];
     delete stuckSince[gameId];
@@ -245,6 +257,7 @@ export function startGameDownload(gameId: number, title?: string) {
 }
 
 export async function cancelGameDownload(gameId: number) {
+  attempts[gameId] = (attempts[gameId] ?? 0) + 1; // invalidate in-flight handlers
   clearInterval(intervals[gameId]);
   delete intervals[gameId];
   delete stuckSince[gameId];
