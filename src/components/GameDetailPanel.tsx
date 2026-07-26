@@ -210,8 +210,15 @@ export function GameDetailPanel(props: Props) {
     const shortcode = props.game?.shortcode;
     const title = variants().find((v) => v.id === gameId)?.title ?? props.game?.title;
     setUninstallingId(gameId);
+    // The action row renders the "Uninstalling" state itself now - swallow
+    // performUninstall's identical status text (it also feeds GameCard,
+    // which has no action row) so the panel doesn't show it twice.
+    const statusSink = (msg: string) => {
+      if (msg === "Uninstalling...") { return; }
+      setStatus(msg);
+    };
     try {
-      await performUninstall(gameId, setStatus, async () => {
+      await performUninstall(gameId, statusSink, async () => {
         if (shortcode) {
           const v = await getGameVariants(shortcode).catch(() => []);
           setVariants(v);
