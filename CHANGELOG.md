@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 - 2026-07-26
 
 ### Fixed (third adversarial review pass - 17 confirmed findings)
 
