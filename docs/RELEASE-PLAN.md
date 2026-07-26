@@ -13,6 +13,17 @@
 > Linux PDF fallback). Phase 4 code hardening is DONE (single-instance,
 > disk-space preflight, asset scope + CSP, GPL license staging).
 >
+> **RELEASED**: v0.7.1-v0.7.3 are public; v0.7.3 is the full "latest"
+> release with auto-update live (consent pill), DOSBox ECE on Windows,
+> librqbit 9.0.0-rc.0, and fixes from two adversarial review passes plus
+> three rounds of Windows field testing (install, LP junction overlay,
+> uninstall/re-download, auto-update chain all verified in the field).
+> Remaining before announcing: v0.7.3 Windows re-test of the
+> uninstall->re-download flow with the Defender exclusion set, ECE engine
+> log-line verification, one Linux VM smoke test, macOS notarization
+> decision, and cleanup of stale pre-0.7 releases/drafts.
+>
+> Older status (superseded):
 > Seeding disclosure + Settings toggle (default on) and in-app eXoDOS
 > attribution are DONE. **Everything left is manual/user territory:**
 > (a) smoke-test the CSP + asset-scope change - launch the app and confirm
