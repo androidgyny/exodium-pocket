@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Uninstall is idempotent**: half-states (incomplete download, failed
+  extraction) can be cleaned up instead of erroring with "not installed".
+- **Detail panel no longer flickers** on install/uninstall completions -
+  media state resets only when the displayed game actually changes.
+
 ## 0.7.3 - 2026-07-26
 
 ### Fixed

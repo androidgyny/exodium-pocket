@@ -37,9 +37,16 @@ export function GameDetailPanel(props: Props) {
   let launchTimer: number | undefined;
   onCleanup(() => { if (launchTimer) { clearTimeout(launchTimer); } });
 
+  // Reset media state only when the DISPLAYED GAME changes - background
+  // library refreshes (install/uninstall completing) replace the game object
+  // with a fresh one for the same id, and resetting on those made the cover
+  // image and media strip flicker on every state change.
+  let lastGameId: number | null | undefined = undefined;
   createEffect(() => {
     const g = props.game;
-    if (!g) { return; }
+    if (!g) { lastGameId = null; return; }
+    if (g.id === lastGameId) { return; }
+    lastGameId = g.id;
     setImgError(false);
     setStatus("");
     setVariants([]);

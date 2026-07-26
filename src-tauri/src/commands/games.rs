@@ -700,7 +700,14 @@ pub async fn uninstall_game(
     };
 
     if !game.installed && !game.in_library {
-        return Err(format!("{} is not installed", game.title));
+        // Idempotent cleanup: the UI legitimately offers Uninstall for
+        // half-states (incomplete download, failed extraction) where the
+        // flags are already clear but files may exist on disk. Proceed and
+        // clean whatever is there instead of erroring.
+        log::info!(
+            "uninstall_game: {} not marked installed - cleaning up leftovers anyway",
+            game.title
+        );
     }
 
     let shortcode = game.shortcode.as_deref()
