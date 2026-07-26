@@ -163,8 +163,8 @@ pub struct ContentPackStatus {
 }
 
 #[tauri::command]
-pub fn list_content_packs(
-    db_state: State<DbState>,
+pub async fn list_content_packs(
+    db_state: State<'_, DbState>,
     collection: String,
 ) -> Result<Vec<ContentPackStatus>, String> {
     let manifest = load_manifest()?;

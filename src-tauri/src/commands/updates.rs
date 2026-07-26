@@ -106,7 +106,7 @@ pub(crate) fn load_manifest() -> Result<Manifest, String> {
 /// Compare the locally stored torrent infohashes against the manifest.
 /// Returns a list of collections that have a newer version available.
 #[tauri::command]
-pub fn check_for_updates(db_state: State<'_, DbState>) -> Result<UpdateInfo, String> {
+pub async fn check_for_updates(db_state: State<'_, DbState>) -> Result<UpdateInfo, String> {
     let manifest = load_manifest()?;
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
 

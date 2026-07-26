@@ -214,6 +214,12 @@ Thumbnail packs for production are hosted separately (GitHub Releases or similar
 
 ## Conventions
 
+- **Every Tauri command that touches the DB, filesystem, or network MUST be
+  `async fn`.** Non-async commands execute on the NATIVE MAIN THREAD - a
+  sync command waiting on the DbState mutex (or extracting a ZIP, walking a
+  dir, parsing a torrent) freezes all input while the webview keeps
+  painting. This shipped as a systemic bug through v0.8.0 (launch_game did
+  zip extraction on main). Only pure in-memory getters may stay sync.
 - **Tauri invoke args are camelCase in JS**, snake_case in Rust. `getGames(page, perPage)` → `invoke("get_games", { page, perPage })`. This is in memory as `feedback_tauri_args`.
 - **SolidJS**: use `createSignal` + derived getters, not `createMemo` unless the computation is expensive. Stores for cross-component state.
 - **Don't add comments to untouched code.** Only comment genuinely non-obvious logic in code you're changing.

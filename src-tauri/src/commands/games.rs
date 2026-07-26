@@ -65,8 +65,8 @@ pub struct GameList {
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn get_games(
-    state: State<DbState>,
+pub async fn get_games(
+    state: State<'_, DbState>,
     page: Option<usize>,
     per_page: Option<usize>,
     query: Option<String>,
@@ -98,15 +98,15 @@ pub fn get_games(
 }
 
 #[tauri::command]
-pub fn get_genres(state: State<DbState>, collection: Option<String>) -> Result<Vec<String>, String> {
+pub async fn get_genres(state: State<'_, DbState>, collection: Option<String>) -> Result<Vec<String>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let collection = collection.unwrap_or_default();
     queries::get_genres(&conn, &collection).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_section_keys(
-    state: State<DbState>,
+pub async fn get_section_keys(
+    state: State<'_, DbState>,
     sort_by: Option<String>,
     query: Option<String>,
     genre: Option<String>,
@@ -131,40 +131,40 @@ pub fn get_section_keys(
 }
 
 #[tauri::command]
-pub fn get_game_variants(state: State<'_, DbState>, shortcode: String) -> Result<Vec<Game>, String> {
+pub async fn get_game_variants(state: State<'_, DbState>, shortcode: String) -> Result<Vec<Game>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     queries::fetch_game_variants(&conn, &shortcode).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_installed_games(state: State<DbState>) -> Result<Vec<Game>, String> {
+pub async fn get_installed_games(state: State<'_, DbState>) -> Result<Vec<Game>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     queries::fetch_installed_games(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn toggle_favorite(state: State<DbState>, id: i64) -> Result<bool, String> {
+pub async fn toggle_favorite(state: State<'_, DbState>, id: i64) -> Result<bool, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     queries::toggle_favorite(&conn, id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_game(state: State<DbState>, id: i64) -> Result<Option<Game>, String> {
+pub async fn get_game(state: State<'_, DbState>, id: i64) -> Result<Option<Game>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     queries::fetch_game_by_id(&conn, id).map_err(|e| e.to_string())
 }
 
 
 #[tauri::command]
-pub fn get_config(state: State<DbState>, key: String) -> Result<Option<String>, String> {
+pub async fn get_config(state: State<'_, DbState>, key: String) -> Result<Option<String>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     queries::get_config(&conn, &key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn set_config(
+pub async fn set_config(
     app: tauri::AppHandle,
-    state: State<DbState>,
+    state: State<'_, DbState>,
     key: String,
     value: String,
 ) -> Result<(), String> {
@@ -2001,7 +2001,7 @@ pub struct GameSettings {
 }
 
 #[tauri::command]
-pub fn get_game_settings(state: State<DbState>, id: i64) -> Result<GameSettings, String> {
+pub async fn get_game_settings(state: State<'_, DbState>, id: i64) -> Result<GameSettings, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let cfg = queries::get_all_game_config(&conn, id).map_err(|e| e.to_string())?;
     Ok(GameSettings {
@@ -2013,8 +2013,8 @@ pub fn get_game_settings(state: State<DbState>, id: i64) -> Result<GameSettings,
 }
 
 #[tauri::command]
-pub fn set_game_settings(
-    state: State<DbState>,
+pub async fn set_game_settings(
+    state: State<'_, DbState>,
     id: i64,
     glshader: Option<String>,
     fullscreen: Option<String>,
@@ -2043,14 +2043,14 @@ pub fn set_game_settings(
 }
 
 #[tauri::command]
-pub fn get_recently_played(state: State<DbState>, limit: Option<usize>) -> Result<Vec<Game>, String> {
+pub async fn get_recently_played(state: State<'_, DbState>, limit: Option<usize>) -> Result<Vec<Game>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     queries::fetch_recently_played(&conn, limit.unwrap_or(12)).map_err(|e| e.to_string())
 }
 
 /// Launch a downloaded game via DOSBox Staging.
 #[tauri::command]
-pub fn launch_game(app: AppHandle, db_state: State<DbState>, id: i64) -> Result<String, String> {
+pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) -> Result<String, String> {
     // Read everything we need from the DB and drop the lock before the heavy
     // DOSBox path resolution + process spawning below.
     let (game, data_dir, crt_auto_enabled, fullscreen_enabled, per_game_config) = {

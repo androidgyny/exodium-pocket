@@ -85,7 +85,7 @@ pub struct CollectionInfo {
 /// Return the list of all known collections (for the frontend to render
 /// collection pickers / labels without hardcoding IDs).
 #[tauri::command]
-pub fn get_available_collections() -> Vec<CollectionInfo> {
+pub async fn get_available_collections() -> Vec<CollectionInfo> {
     COLLECTION_MAP
         .iter()
         .map(|c| CollectionInfo {
@@ -102,7 +102,7 @@ pub fn get_available_collections() -> Vec<CollectionInfo> {
 /// failing silently on shipped Windows builds while the setup-time call
 /// succeeded.
 #[tauri::command]
-pub fn get_log_dir(app: AppHandle) -> Result<String, String> {
+pub async fn get_log_dir(app: AppHandle) -> Result<String, String> {
     if let Some(dir) = LOG_DIR.get() {
         return Ok(dir.to_string_lossy().into_owned());
     }
@@ -121,7 +121,7 @@ pub fn get_log_dir(app: AppHandle) -> Result<String, String> {
 /// and open server-side, the UI just calls one command and either succeeds
 /// or sees the error.
 #[tauri::command]
-pub fn open_log_folder(app: AppHandle) -> Result<(), String> {
+pub async fn open_log_folder(app: AppHandle) -> Result<(), String> {
     let dir = match LOG_DIR.get() {
         Some(d) => d.clone(),
         None => app
@@ -619,8 +619,8 @@ fn path_to_fwd_slash(p: &Path) -> String {
 /// Get the thumbnail directory path.
 /// Checks: dev project dir → data_dir/thumbnails → exe dir/thumbnails
 #[tauri::command]
-pub fn get_thumbnail_dir(
-    db_state: State<DbState>,
+pub async fn get_thumbnail_dir(
+    db_state: State<'_, DbState>,
     collection: String,
 ) -> Result<String, String> {
     // Dev: project directory
@@ -651,7 +651,7 @@ pub fn get_thumbnail_dir(
 /// /usr/lib/<pkg>/, AppImage uses <mount>/usr/lib/<pkg>/, Windows flat-installs
 /// into the install directory.
 #[tauri::command]
-pub fn get_preview_dir(collection: String) -> Result<String, String> {
+pub async fn get_preview_dir(collection: String) -> Result<String, String> {
     // Dev mode: direct from repo tree.
     let dev_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
@@ -718,8 +718,8 @@ pub fn get_preview_dir(collection: String) -> Result<String, String> {
 /// Get the Tier 1 poster content-pack directory for a collection.
 /// Returns <data_dir>/content/posters/<collection> if it exists.
 #[tauri::command]
-pub fn get_poster_dir(
-    db_state: State<DbState>,
+pub async fn get_poster_dir(
+    db_state: State<'_, DbState>,
     collection: String,
 ) -> Result<String, String> {
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -1087,7 +1087,7 @@ fn extract_manual_from_gamedata(
 /// Return the default parent directory for game storage ($HOME).
 /// The eXoDOS folder will be created inside this directory by the torrent engine.
 #[tauri::command]
-pub fn get_default_data_dir() -> Result<String, String> {
+pub async fn get_default_data_dir() -> Result<String, String> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "Cannot determine home directory".to_string())?;
@@ -1181,7 +1181,7 @@ pub fn bundled_metadata_dir() -> Result<PathBuf, String> {
 
 /// Get info about the bundled torrent without starting anything.
 #[tauri::command]
-pub fn get_torrent_info() -> Result<TorrentInfo, String> {
+pub async fn get_torrent_info() -> Result<TorrentInfo, String> {
     let torrent_path = bundled_torrent_path("eXoDOS.torrent")?;
     let index =
         TorrentIndex::from_file(&torrent_path).map_err(|e| format!("Failed to parse torrent: {}", e))?;
@@ -2020,7 +2020,7 @@ pub struct ExodosValidation {
 /// Expects the folder the user selected to BE the eXoDOS folder (e.g. ~/eXoDOS),
 /// which should contain eXo/eXoDOS/ with at least one game language subdirectory.
 #[tauri::command]
-pub fn validate_exodos_dir(path: String) -> Result<ExodosValidation, String> {
+pub async fn validate_exodos_dir(path: String) -> Result<ExodosValidation, String> {
     let root = Path::new(&path);
     let game_root = root.join("eXo/eXoDOS");
 

@@ -4,6 +4,12 @@
 
 ### Changed
 
+- **The UI can no longer be frozen by backend work**: 27 commands (game
+  launch incl. ZIP auto-extraction, game list queries, torrent parsing,
+  metadata scans, config access) executed on the native main thread and
+  froze all input while running - the full-list jump-bar fetch and busy
+  moments around install/uninstall being the visible cases. All commands
+  doing I/O now run on the async runtime; input stays responsive.
 - **Native right-click menu suppressed** in production builds (the webview's
   Reload/Inspect menu doesn't belong in a launcher); the game cards' custom
   context menu is unaffected.
