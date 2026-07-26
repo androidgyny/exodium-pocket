@@ -918,6 +918,48 @@ fn extract_mt32_from_util_zip(
     result
 }
 
+/// Re-arm the util.zip extraction watcher after an app restart. A watcher
+/// armed by a download click dies with the app; util.zip finishing in a
+/// later session would otherwise never extract (observed on Windows: 736 MB
+/// downloaded, ROMs never landed). Called from init_download_manager once
+/// the eXoDOS manager is hydrated.
+pub(crate) async fn rearm_support_extraction(
+    mgr: &std::sync::Arc<crate::torrent::manager::DownloadManager>,
+) {
+    let root = mgr.torrent_root();
+    let mt32_missing = !root.join("eXo/mt32").exists();
+    let ece_missing = cfg!(windows) && !root.join("eXo/emulators/dosbox/ece4230").exists();
+    if !mt32_missing && !ece_missing {
+        return;
+    }
+    let Some(util) = mgr.index().find_by_suffix("util/util.zip") else {
+        return;
+    };
+    let util_index = util.index;
+    let selected = mgr.is_file_selected(util_index).await;
+    let zip_path = mgr.file_output_path(util_index);
+    let on_disk = zip_path
+        .as_deref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .is_some_and(|m| m.len() > 0);
+    if !selected && !on_disk {
+        return; // support files were never requested - nothing to resume
+    }
+    // A watcher killed between writing its lock file and finishing leaves a
+    // stale lock; assets still missing proves it never completed.
+    if let Some(p) = zip_path {
+        let lock = p.with_extension("mt32_extracted");
+        if lock.exists() {
+            let _ = std::fs::remove_file(&lock);
+        }
+    }
+    log::info!(
+        "Re-arming support-file extraction watcher (util.zip {})",
+        if selected { "still selected" } else { "present on disk" }
+    );
+    spawn_mt32_extraction_watcher(std::sync::Arc::clone(mgr), util_index);
+}
+
 /// Watch util.zip until it finishes downloading, then extract the mt32
 /// payload. Runs as its own task because the frontend only polls progress
 /// while a GAME download is active - util.zip (~630 MB) routinely finishes

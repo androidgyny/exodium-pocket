@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Support-file extraction survives restarts**: the watcher that extracts
+  MT-32 ROMs / the ECE build from util.zip died with the app; if the 630 MB
+  download finished in a later session, the assets never landed (observed in
+  Windows testing). The watcher now re-arms at startup whenever util.zip is
+  selected or on disk and the assets are still missing.
+- **First-download feedback**: instead of sitting mute on "Starting
+  download..." for minutes while the collection's 14,000 placeholder files
+  are created (slow on Windows), the card now explains the one-time setup.
+- **Log rotation**: exodium.log rotates at 10 MB keeping one predecessor -
+  bounded size, and a wedged session can no longer destroy its own evidence.
+
 ## 0.7.0 - 2026-07-26
 
 ### Added

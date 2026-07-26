@@ -198,6 +198,15 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let _ = std::fs::create_dir_all(log_dir);
     let log_path = log_dir.join("exodium.log");
 
+    // Rotate once the log grows past ~10 MB: keep exactly one predecessor
+    // (exodium.log.1) so a crash/wedge can't destroy its own evidence and
+    // the log can't grow unbounded (55 MB observed in the field).
+    if let Ok(meta) = std::fs::metadata(&log_path) {
+        if meta.len() > 10 * 1024 * 1024 {
+            let _ = std::fs::rename(&log_path, log_dir.join("exodium.log.1"));
+        }
+    }
+
     let file_result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

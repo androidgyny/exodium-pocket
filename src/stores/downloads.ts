@@ -72,6 +72,22 @@ export function startGameDownload(gameId: number, title?: string) {
         // failure leaves the handle None forever).
         if (commandPending[gameId]) {
           nullPollCount[gameId] = 0;
+          // The backend can legitimately spend minutes here on the FIRST
+          // download of a collection (placeholder creation + hash check of
+          // 14k files, slow on Windows). Say so instead of sitting mute on
+          // "Starting download..." - testers read that as a hang.
+          const waited = (Date.now() - (lastProgressAt[gameId] ?? Date.now())) / 1000;
+          if (waited > 8) {
+            setDownloads((prev) => ({
+              ...prev,
+              [gameId]: {
+                status: "Preparing the collection (one-time setup, can take a few minutes)…",
+                progress: 0,
+                downloading: true,
+                title: titles[gameId],
+              },
+            }));
+          }
           return;
         }
         nullPollCount[gameId] = (nullPollCount[gameId] ?? 0) + 1;

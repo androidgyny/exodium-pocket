@@ -381,6 +381,12 @@ pub async fn init_download_manager(
         }
     }
 
+    // Resume support-file extraction (MT-32 ROMs / ECE build) if util.zip
+    // was in flight when the app last quit - its watcher died with the app.
+    if let Some((_, mgr)) = new_managers.iter().find(|(id, _)| id == "eXoDOS") {
+        crate::commands::games::rearm_support_extraction(mgr).await;
+    }
+
     // Acquire write lock only for the insert - no blocking work inside.
     let count = new_managers.len();
     {
