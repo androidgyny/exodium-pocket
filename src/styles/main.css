@@ -3116,6 +3116,38 @@ body {
   word-break: break-word;
 }
 
+.update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.update-pill:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.update-pill:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.update-pill-ready {
+  background: #2c9464;
+}
+
+.update-pill-ready:hover:not(:disabled) {
+  background: #35ab75;
+}
+
 .toast-action {
   margin-top: 8px;
   padding: 4px 12px;

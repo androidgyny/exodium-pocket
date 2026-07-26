@@ -257,16 +257,25 @@ export function GameDetailPanel(props: Props) {
                 <Show when={isInstalled()}>
                   <PlayButton id={props.game!.id!} class="game-detail-btn btn-play" />
                 </Show>
-                {/* Manual: render a placeholder while metadata is loading so the
-                    real button doesn't pop in and shift the action row. After
-                    load, swap to real button (when manual exists) or hide. */}
-                <Show when={isInstalled() && (metadataLoading() || metadata()?.manual_path)}>
+                {/* Manual: placeholder while loading; after load either the
+                    real button or an explained disabled state - silently
+                    vanishing reads as a bug ("where did my manual go?"). */}
+                <Show when={isInstalled()}>
                   <button
                     class="game-detail-btn btn-manual"
                     onClick={() => { if (metadata()?.manual_path) { setManualOpen(true); } }}
-                    disabled={metadataLoading()}
+                    disabled={metadataLoading() || !metadata()?.manual_path}
+                    title={
+                      !metadataLoading() && !metadata()?.manual_path
+                        ? "No manual available - most manuals come with the Metadata content pack (Settings → Content Packs)"
+                        : undefined
+                    }
                   >
-                    <Show when={metadataLoading()} fallback={<>⊞ Manual</>}>
+                    <Show when={metadataLoading()} fallback={
+                      <Show when={metadata()?.manual_path} fallback={<>⊞ No manual</>}>
+                        ⊞ Manual
+                      </Show>
+                    }>
                       <span class="btn-spinner" /> Manual
                     </Show>
                   </button>

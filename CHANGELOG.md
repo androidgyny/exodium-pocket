@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Updates ask first**: a new release shows an "Update" pill in the top bar
+  and a one-time toast - nothing downloads until you click it. After
+  downloading, the pill turns into "Restart to update" and stays available
+  until you're ready.
+
+### Fixed
+
+- **Factory reset clears recently-played history and per-game settings** -
+  both previously survived a reset.
+- **Manual button explains itself**: instead of silently disappearing when a
+  game has no manual, it shows a disabled "No manual" state with a hint that
+  manuals ship with the Metadata content pack.
+
 ## 0.7.1 - 2026-07-26
 
 ### Fixed

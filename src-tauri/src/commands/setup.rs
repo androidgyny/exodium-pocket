@@ -532,7 +532,8 @@ pub async fn factory_reset(
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         conn.execute_batch(
-            "UPDATE games SET in_library = 0, installed = 0, favorited = 0;
+            "UPDATE games SET in_library = 0, installed = 0, favorited = 0, last_played = NULL;
+             DELETE FROM game_config;
              DELETE FROM downloads;
              DELETE FROM images;
              DELETE FROM playlists;

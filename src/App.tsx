@@ -22,8 +22,7 @@ import {
   openLogFolder,
   checkForUpdates,
 } from "./api/tauri";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { updateState, checkForAppUpdate, startUpdate, restartToUpdate } from "./stores/updater";
 import { fetchGames } from "./stores/games";
 import { loadThumbnailDir } from "./stores/thumbnails";
 import { refreshInstalledPacks } from "./stores/contentPacks";
@@ -68,28 +67,6 @@ async function notifyCatalogUpdates() {
     sessionStorage.setItem("catalog_update_notified", "1");
   } catch (e) {
     console.warn("[updates] check_for_updates failed:", e);
-  }
-}
-
-/** Check for a new Exodium release, download it in the background, and
- *  offer a restart. Signature-verified against the key in tauri.conf.json;
- *  latest.json comes from the GitHub release. No-op in dev builds. */
-async function checkForAppUpdate() {
-  if (import.meta.env.DEV) { return; }
-  try {
-    const update = await check();
-    if (!update) { return; }
-    showToast(`Update available: Exodium ${update.version}`, "info", {
-      detail: "Downloading in the background…",
-    });
-    await update.downloadAndInstall();
-    showToast(`Exodium ${update.version} is ready`, "success", {
-      durationMs: 0,
-      action: { label: "Restart now", onClick: () => void relaunch() },
-    });
-  } catch (e) {
-    // Offline or no release published yet - never bother the user.
-    console.warn("[updater] check failed:", e);
   }
 }
 
@@ -284,6 +261,28 @@ function App() {
             <SearchBar />
           </div>
           <div class="top-bar-actions">
+            <Show when={updateState()}>
+              <button
+                class={`update-pill update-pill-${updateState()!.status}`}
+                disabled={updateState()!.status === "downloading"}
+                title={
+                  updateState()!.status === "available"
+                    ? `Download and install Exodium ${updateState()!.version}`
+                    : updateState()!.status === "ready"
+                      ? "Restart Exodium to finish updating"
+                      : "Downloading update…"
+                }
+                onClick={() =>
+                  updateState()!.status === "available" ? startUpdate()
+                  : updateState()!.status === "ready" ? restartToUpdate()
+                  : undefined
+                }
+              >
+                {updateState()!.status === "available" && `⬆ Update ${updateState()!.version}`}
+                {updateState()!.status === "downloading" && "Downloading…"}
+                {updateState()!.status === "ready" && "↻ Restart to update"}
+              </button>
+            </Show>
             <DownloadIndicator />
             <Tooltip.Root openDelay={400}>
               <Tooltip.Trigger asChild={(props) =>
