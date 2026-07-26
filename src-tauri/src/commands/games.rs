@@ -233,6 +233,9 @@ pub async fn download_game(
         return Ok(format!("{} is already installed", game.title));
     }
 
+    let op_lock = game_op_lock(id);
+    let _op_guard = op_lock.lock().await;
+
     let game_idx = game
         .game_torrent_index
         .ok_or_else(|| format!("{} has no torrent index - cannot download", game.title))?
@@ -735,6 +738,9 @@ pub async fn uninstall_game(
         );
     }
 
+    let op_lock = game_op_lock(id);
+    let _op_guard = op_lock.lock().await;
+
     let shortcode = game.shortcode.as_deref()
         .ok_or("Game has no shortcode")?
         .to_string();
@@ -895,6 +901,24 @@ pub async fn uninstall_game(
     }
 
     Ok(format!("Uninstalled: {}", game.title))
+}
+
+/// Per-game mutual exclusion for launch / uninstall / download. The old
+/// sync-command design serialized these ACCIDENTALLY by freezing the main
+/// thread; with async commands the UI stays responsive, so e.g. Uninstall
+/// mid-launch-extraction became clickable - and would rename the game dir
+/// out from under the extractor, polluting the !save backup. Real locks
+/// replace the accidental ones.
+fn game_op_lock(id: i64) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let map = LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = map.lock().expect("game-op lock map poisoned");
+    std::sync::Arc::clone(
+        map.entry(id)
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(()))),
+    )
 }
 
 /// Does this game's DOSBox config ask for MIDI music (MT-32 or General
@@ -2051,6 +2075,9 @@ pub async fn get_recently_played(state: State<'_, DbState>, limit: Option<usize>
 /// Launch a downloaded game via DOSBox Staging.
 #[tauri::command]
 pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) -> Result<String, String> {
+    // Serialize against uninstall/download of the same game (see game_op_lock).
+    let op_lock = game_op_lock(id);
+    let _op_guard = op_lock.lock().await;
     // Read everything we need from the DB and drop the lock before the heavy
     // DOSBox path resolution + process spawning below.
     let (game, data_dir, crt_auto_enabled, fullscreen_enabled, per_game_config) = {
@@ -2199,7 +2226,16 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
                     .parent()
                     .map(PathBuf::from)
                     .unwrap_or_else(|| torrent_root.join(src_game_prefix));
-                if let Err(e) = extract_game_zip(zip_path, &dest) {
+                // spawn_blocking: a multi-GB unzip must not pin a tokio
+                // worker (matches the extraction pattern in
+                // get_download_progress / uninstall).
+                let extract_result = {
+                    let (z, d) = (zip_path.clone(), dest.clone());
+                    tauri::async_runtime::spawn_blocking(move || extract_game_zip(&z, &d))
+                        .await
+                        .map_err(|e| format!("extraction task failed: {e}"))?
+                };
+                if let Err(e) = extract_result {
                     let msg = e.to_string();
                     if msg.contains("EOCD") || msg.contains("invalid Zip") || msg.contains("Invalid archive") {
                         // ZIP is a torrent stub or corrupted file - reset installed flag so the

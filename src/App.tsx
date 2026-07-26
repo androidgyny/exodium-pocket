@@ -94,7 +94,12 @@ function App() {
     // (GameCard) hook the same event and render their own UI, unaffected.
     // Kept enabled in dev so Inspect Element stays reachable.
     if (!import.meta.env.DEV) {
-      const suppress = (e: MouseEvent) => e.preventDefault();
+      const suppress = (e: MouseEvent) => {
+        // Editable fields keep the native menu - it carries cut/copy/paste.
+        const t = e.target as HTMLElement | null;
+        if (t?.closest('input, textarea, [contenteditable="true"]')) { return; }
+        e.preventDefault();
+      };
       document.addEventListener("contextmenu", suppress);
       onCleanup(() => document.removeEventListener("contextmenu", suppress));
     }

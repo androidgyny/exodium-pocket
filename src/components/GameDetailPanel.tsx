@@ -35,6 +35,14 @@ export function GameDetailPanel(props: Props) {
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [launchingId, setLaunchingId] = createSignal<number | null>(null);
   const [uninstallingId, setUninstallingId] = createSignal<number | null>(null);
+  // Is the in-flight uninstall about THIS panel's game (primary or variant)?
+  // Without the scoping, switching to another game mid-uninstall showed the
+  // "Uninstalling" label / disabled buttons on the wrong panel.
+  const uninstallingHere = () => {
+    const uid = uninstallingId();
+    if (uid == null) { return false; }
+    return uid === props.game?.id || variants().some((v) => v.id === uid);
+  };
   let launchTimer: number | undefined;
   onCleanup(() => { if (launchTimer) { clearTimeout(launchTimer); } });
 
@@ -298,7 +306,7 @@ export function GameDetailPanel(props: Props) {
 
             {/* Single-language action */}
             <Show when={!isMultiLang()}>
-              <Show when={uninstallingId() == null} fallback={
+              <Show when={!uninstallingHere()} fallback={
                 <div class="game-detail-actions fade-swap">
                   <div class="game-detail-btn btn-uninstalling">
                     <span class="btn-spinner" /> Uninstalling…
@@ -359,7 +367,11 @@ export function GameDetailPanel(props: Props) {
                   </button>
                 </Show>
                 <Show when={!isDownloading() && (isInstalled() || props.game!.in_library) && props.game!.id != null}>
-                  <button class="game-detail-btn btn-uninstall" onClick={() => handleUninstall(props.game!.id!)}>
+                  <button
+                    class="game-detail-btn btn-uninstall"
+                    disabled={launchingId() != null}
+                    onClick={() => handleUninstall(props.game!.id!)}
+                  >
                     Uninstall
                   </button>
                 </Show>
@@ -394,8 +406,8 @@ export function GameDetailPanel(props: Props) {
                           <button class="lang-picker-btn action-cancel" onClick={() => cancelGameDownload(vId()!)}>✕</button>
                         </Show>
                         <Show when={uninstallingId() !== vId() && !vDl()?.downloading && variant.installed}>
-                          <PlayButton id={vId()!} class="lang-picker-btn action-play" disabled={uninstallingId() != null} />
-                          <button class="lang-picker-btn action-uninstall" disabled={uninstallingId() != null} onClick={() => handleUninstall(vId()!)}>✕</button>
+                          <PlayButton id={vId()!} class="lang-picker-btn action-play" disabled={uninstallingHere()} />
+                          <button class="lang-picker-btn action-uninstall" disabled={uninstallingHere()} onClick={() => handleUninstall(vId()!)}>✕</button>
                         </Show>
                         <Show when={uninstallingId() !== vId() && !vDl()?.downloading && !variant.installed}>
                           <button

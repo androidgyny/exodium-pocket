@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **Launch, uninstall, and download of the same game are mutually
+  exclusive** (per-game lock): the responsive UI made it possible to click
+  Uninstall while a launch was still extracting the game - which could
+  pollute or destroy the !save backup. The old sync design only prevented
+  this by accident (the frozen UI made the click impossible).
+- **Game-launch extraction runs on a blocking thread** instead of pinning a
+  tokio worker; **right-click keeps its native menu inside text fields**
+  (cut/copy/paste); the "Uninstalling" state no longer leaks onto another
+  game's panel when switching mid-uninstall.
 - **Content-pack images were blocked** since the v0.7.x asset-scope
   narrowing granted only the games subtree - screenshots and pack media in
   <data>/content now load again (field log showed 49 asset-protocol
