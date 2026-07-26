@@ -25,6 +25,10 @@ pub struct TorrentFileEntry {
     pub path: String,
     /// File size in bytes.
     pub size: u64,
+    /// Byte offset of this file within the torrent's contiguous piece space
+    /// (cumulative size of all preceding files). Piece index of a byte =
+    /// (offset + n) / piece_length.
+    pub offset: u64,
 }
 
 /// Parsed index of all files in a torrent.
@@ -33,6 +37,8 @@ pub struct TorrentIndex {
     pub name: String,
     pub files: Vec<TorrentFileEntry>,
     pub total_size: u64,
+    /// Piece length in bytes (from the torrent's info dict).
+    pub piece_length: u64,
 }
 
 impl TorrentIndex {
@@ -42,21 +48,30 @@ impl TorrentIndex {
         let name = torrent.name.clone();
 
         let files: Vec<TorrentFileEntry> = match torrent.files {
-            Some(ref file_list) => file_list
-                .iter()
-                .enumerate()
-                .map(|(i, f)| TorrentFileEntry {
-                    index: i,
-                    path: f.path.to_string_lossy().replace('\\', "/"),
-                    size: f.length as u64,
-                })
-                .collect(),
+            Some(ref file_list) => {
+                let mut offset = 0u64;
+                file_list
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        let entry = TorrentFileEntry {
+                            index: i,
+                            path: f.path.to_string_lossy().replace('\\', "/"),
+                            size: f.length as u64,
+                            offset,
+                        };
+                        offset += f.length as u64;
+                        entry
+                    })
+                    .collect()
+            }
             None => {
                 // Single-file torrent
                 vec![TorrentFileEntry {
                     index: 0,
                     path: torrent.name.clone(),
                     size: torrent.length as u64,
+                    offset: 0,
                 }]
             }
         };
@@ -67,6 +82,7 @@ impl TorrentIndex {
             name,
             files,
             total_size,
+            piece_length: torrent.piece_length as u64,
         })
     }
 

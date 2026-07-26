@@ -162,7 +162,6 @@ function App() {
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
 
   const [seeding, setSeeding] = createSignal(true);
-
   const loadGameDefaults = async () => {
     try {
       const [shader, fs, seed] = await Promise.all([

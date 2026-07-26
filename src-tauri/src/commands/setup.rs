@@ -323,7 +323,7 @@ pub async fn init_download_manager(
             continue;
         }
         if let Ok(torrent_path) = bundled_torrent_path(col.torrent_file) {
-            match DownloadManager::new_with_session(Arc::clone(&session), &torrent_path, &data_path) {
+            match DownloadManager::new_with_session(Arc::clone(&session), &torrent_path, &data_path, &persistence_dir) {
                 Ok(mgr) => {
                     // Store the torrent infohash so the update-checker can compare later
                     match TorrentIndex::infohash(&torrent_path) {
@@ -1548,7 +1548,7 @@ pub async fn setup_from_local(
     let mut new_managers = Vec::new();
     for col in COLLECTION_MAP {
         if let Ok(col_torrent_path) = bundled_torrent_path(col.torrent_file) {
-            match DownloadManager::new_with_session(Arc::clone(&session), &col_torrent_path, &data_path) {
+            match DownloadManager::new_with_session(Arc::clone(&session), &col_torrent_path, &data_path, &persistence_dir) {
                 Ok(mgr) => new_managers.push((col.id.to_string(), Arc::new(mgr))),
                 Err(e) => log::warn!("Failed to init {} download manager: {}", col.id, e),
             }

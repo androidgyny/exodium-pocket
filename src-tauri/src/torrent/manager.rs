@@ -14,6 +14,22 @@ use walkdir::WalkDir;
 
 use super::TorrentIndex;
 
+/// Clear the ledger bits of every piece overlapping the byte range
+/// [offset, offset+size) - MSB0 order, matching librqbit's .bitv layout
+/// (bit i of the file, high-bit-first per byte, is piece i).
+fn clear_file_pieces(bytes: &mut [u8], offset: u64, size: u64, piece_len: u64) {
+    if size == 0 || piece_len == 0 {
+        return;
+    }
+    let start = offset / piece_len;
+    let end = (offset + size - 1) / piece_len;
+    for p in start..=end {
+        if let Some(b) = bytes.get_mut((p / 8) as usize) {
+            *b &= !(0x80u8 >> (p % 8));
+        }
+    }
+}
+
 /// Convert a path to its NT extended-length form on Windows (`\\?\C:\...` or
 /// `\\?\UNC\server\share\...`). On other platforms this is a no-op.
 ///
@@ -166,6 +182,9 @@ pub struct DownloadManager {
     /// Hex SHA1 info-hash of this manager's torrent, for finding it among
     /// the session's persisted (auto-resumed) torrents.
     info_hash_hex: Option<String>,
+    /// Where librqbit keeps <hash>.bitv piece-ledger files - needed for the
+    /// surgical ledger patch on uninstall.
+    persistence_dir: PathBuf,
     /// Torrent-relative paths that placeholder cleanup must never delete.
     /// All four eXoDOS torrents overlay into the same root, so this must be
     /// the UNION of every enabled collection's file list (set after all
@@ -228,6 +247,7 @@ impl DownloadManager {
         session: Arc<Session>,
         torrent_path: &Path,
         data_dir: &Path,
+        persistence_dir: &Path,
     ) -> anyhow::Result<Self> {
         let torrent_bytes = Arc::new(std::fs::read(torrent_path)?);
         let torrent_index = TorrentIndex::from_file(torrent_path)
@@ -248,6 +268,7 @@ impl DownloadManager {
             selected_files: RwLock::new(HashSet::new()),
             data_dir: data_dir.to_path_buf(),
             info_hash_hex,
+            persistence_dir: persistence_dir.to_path_buf(),
             cleanup_keep_paths: std::sync::RwLock::new(None),
         })
     }
@@ -299,8 +320,9 @@ impl DownloadManager {
 
     /// Convenience: create session + manager in one call (for single-torrent use).
     pub async fn new(torrent_path: &Path, data_dir: &Path) -> anyhow::Result<Self> {
-        let session = Self::create_session(data_dir, &fastresume_dir(data_dir)).await?;
-        Self::new_with_session(session, torrent_path, data_dir)
+        let persistence = fastresume_dir(data_dir);
+        let session = Self::create_session(data_dir, &persistence).await?;
+        Self::new_with_session(session, torrent_path, data_dir, &persistence)
     }
 
     /// Get the torrent file index.
@@ -710,6 +732,33 @@ impl DownloadManager {
         Some(self.torrent_root().join(&entry.path))
     }
 
+    /// Read this torrent's on-disk piece ledger and clear the bits of every
+    /// piece overlapping the given files. Returns (path, patched bytes), or
+    /// None when anything looks unexpected (missing ledger, zero piece
+    /// length, size mismatch) - callers then fall back to the full re-check.
+    fn patched_bitv_without(&self, drop_indices: &[usize]) -> Option<(PathBuf, Vec<u8>)> {
+        let hash = self.info_hash_hex.as_ref()?;
+        let path = self.persistence_dir.join(format!("{}.bitv", hash));
+        let mut bytes = std::fs::read(&path).ok()?;
+        let piece_len = self.torrent_index.piece_length;
+        if piece_len == 0 {
+            return None;
+        }
+        let total_pieces = self.torrent_index.total_size.div_ceil(piece_len);
+        if (bytes.len() as u64) * 8 < total_pieces {
+            log::warn!(
+                "Piece ledger smaller than expected ({} bytes for {} pieces) - falling back to full re-check",
+                bytes.len(), total_pieces
+            );
+            return None;
+        }
+        for &idx in drop_indices {
+            let f = self.torrent_index.files.get(idx)?;
+            clear_file_pieces(&mut bytes, f.offset, f.size, piece_len);
+        }
+        Some((path, bytes))
+    }
+
     /// Reset librqbit's piece bookkeeping after a tracked file was deleted
     /// from disk (uninstall). The persisted fastresume bitfield still claims
     /// the deleted file's pieces exist, so a re-download would instantly
@@ -736,9 +785,25 @@ impl DownloadManager {
             // would have adopted a persisted one) - nothing to invalidate.
             return Ok(());
         };
+        // Surgical ledger patch: snapshot the piece bitfield, clear only the
+        // deleted files' pieces, and restore it after session.delete (which
+        // erases the file). The next add loads it via fastresume and skips
+        // the full re-check - which took 15-30 min in the field. Boundary
+        // pieces shared with neighbors are cleared too (they just get
+        // re-fetched); on any format surprise we fall back to the full check.
+        let patched_bitv = self.patched_bitv_without(drop_indices);
         self.session
             .delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false)
             .await?;
+        if let Some((path, bytes)) = patched_bitv {
+            match std::fs::write(&path, &bytes) {
+                Ok(()) => log::info!(
+                    "Restored piece ledger with {} file(s) invalidated - next add skips the full re-check",
+                    drop_indices.len()
+                ),
+                Err(e) => log::warn!("Could not restore patched piece ledger: {}", e),
+            }
+        }
         drop(handle_guard);
         log::info!(
             "Dropped torrent from session after uninstall ({} files still selected)",
@@ -749,5 +814,34 @@ impl DownloadManager {
             self.download_files(remaining).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clear_file_pieces;
+
+    #[test]
+    fn clear_file_pieces_clears_exactly_the_overlapping_range() {
+        // 32 pieces, all "have". File spans bytes 1000..5000 with 1024-byte
+        // pieces -> pieces 0..=4 inclusive (offset 1000 is in piece 0,
+        // last byte 4999 is in piece 4).
+        let mut bytes = vec![0xFFu8; 4];
+        clear_file_pieces(&mut bytes, 1000, 4000, 1024);
+        assert_eq!(bytes[0], 0b0000_0111, "pieces 0-4 cleared (MSB0)");
+        assert_eq!(&bytes[1..], &[0xFF, 0xFF, 0xFF], "later pieces untouched");
+    }
+
+    #[test]
+    fn clear_file_pieces_handles_byte_boundaries_and_empty() {
+        let mut bytes = vec![0xFFu8; 2];
+        // File exactly covering pieces 7..=8 (crosses the byte boundary).
+        clear_file_pieces(&mut bytes, 7 * 64, 2 * 64, 64);
+        assert_eq!(bytes[0], 0b1111_1110);
+        assert_eq!(bytes[1], 0b0111_1111);
+        // Zero-size file: no-op.
+        let mut untouched = vec![0xFFu8; 2];
+        clear_file_pieces(&mut untouched, 100, 0, 64);
+        assert_eq!(untouched, vec![0xFF, 0xFF]);
     }
 }

@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **No more "Validating torrent" after uninstall**: uninstall now patches
+  librqbit's piece ledger surgically - only the removed game's pieces are
+  cleared and the ledger is restored for the next add, which loads it via
+  fastresume and starts downloading in seconds, exactly like a fresh
+  install. The 15-30 minute full re-check (which field testing showed is
+  slow regardless of antivirus or disk type) only remains for genuinely
+  unrecoverable states (missing/corrupt ledger).
+
+### Fixed
+
 - **Uninstall is idempotent**: half-states (incomplete download, failed
   extraction) can be cleaned up instead of erroring with "not installed".
 - **Detail panel no longer flickers** on install/uninstall completions -
