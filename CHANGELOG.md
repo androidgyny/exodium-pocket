@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **"Validating torrent" frozen forever after uninstall -> re-download**
+  (observed twice on Windows): pushing a file-selection update into a
+  torrent mid-initial-check could wedge librqbit's checking task. Selection
+  updates now wait for the check to finish (without blocking progress
+  polling) before applying.
+- **librqbit upgraded** from a git-pinned 9.0.0-beta.2 to 9.0.0-rc.0 from
+  crates.io - months of upstream fixes and no git-pin supply-chain
+  dependency.
+
 ### Fixed (second adversarial review pass - 19 confirmed findings)
 
 - **Linux deb/rpm installs no longer offered un-installable updates** - the

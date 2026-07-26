@@ -201,8 +201,12 @@ impl DownloadManager {
         let session = Session::new_with_opts(
             session_dir.to_path_buf(),
             SessionOptions {
-                disable_dht: false,
-                disable_dht_persistence: true,
+                // DHT on, DHT persistence off (unchanged semantics from the
+                // pre-rc API's disable_dht=false + disable_dht_persistence).
+                dht: Some(librqbit::DhtSessionConfig {
+                    persistence: None,
+                    ..Default::default()
+                }),
                 // fastresume + JSON persistence: librqbit caches the per-torrent
                 // have-pieces bitfield to `<persistence_dir>/<info_hash>.bitv`.
                 // On subsequent adds (or after we plant an empty bitfield for a
@@ -329,25 +333,42 @@ impl DownloadManager {
         self.data_dir.join(&self.torrent_index.name)
     }
 
-    /// Call update_only_files with retries.
-    /// librqbit returns "can't update initializing torrent" if the torrent handle was
-    /// freshly loaded from session state and hasn't finished its init phase.
-    async fn update_files_retrying(
+    /// Wait out an in-progress initial check, then apply the CURRENT
+    /// selection (re-read at apply time, so concurrent waiters converge on
+    /// the same final set).
+    ///
+    /// Pushing update_only_files into an initializing torrent has wedged
+    /// librqbit's checking task in the field (Windows, uninstall -> re-add,
+    /// "Validating N%" frozen forever) - twice, both times when a selection
+    /// update raced the check. So: wait for the check to finish first. Must
+    /// NOT be called while holding the handle lock - a full re-check takes
+    /// minutes and progress polling reads that lock.
+    async fn wait_ready_then_apply_selection(
         &self,
         handle: &Arc<ManagedTorrent>,
-        selected: &HashSet<usize>,
     ) -> anyhow::Result<()> {
-        const MAX_ATTEMPTS: u32 = 20;
-        const DELAY_MS: u64 = 300;
+        const MAX_WAIT_SECS: u64 = 1800; // full check of a large selection on slow disks
+        let start = std::time::Instant::now();
+        let mut last_log = 0u64;
+        while handle.stats().state.to_string() == "initializing" {
+            let waited = start.elapsed().as_secs();
+            if waited >= MAX_WAIT_SECS {
+                anyhow::bail!("torrent still initializing after {}s", waited);
+            }
+            if waited / 30 > last_log {
+                last_log = waited / 30;
+                log::info!("Selection update waiting for initial check ({}s)", waited);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        // Small retry tail for the init->live transition race.
+        const MAX_ATTEMPTS: u32 = 10;
         for attempt in 0..MAX_ATTEMPTS {
-            match self.session.update_only_files(handle, selected).await {
+            let selected = self.selected_files.read().await.clone();
+            match self.session.update_only_files(handle, &selected).await {
                 Ok(_) => return Ok(()),
-                Err(e) if e.to_string().contains("initializing") => {
-                    if attempt + 1 < MAX_ATTEMPTS {
-                        tokio::time::sleep(Duration::from_millis(DELAY_MS)).await;
-                    } else {
-                        return Err(e);
-                    }
+                Err(e) if e.to_string().contains("initializing") && attempt + 1 < MAX_ATTEMPTS => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -364,12 +385,25 @@ impl DownloadManager {
             }
         }
 
+        // The already-running path may wait MINUTES for an initial check
+        // before it can apply the selection - clone the Arc and release the
+        // lock first, or every progress poll would block on it.
+        let existing: Option<Arc<ManagedTorrent>> =
+            { self.handle.read().await.as_ref().map(Arc::clone) };
+        if let Some(handle) = existing {
+            self.wait_ready_then_apply_selection(&handle).await?;
+            log::info!("Updated file selection, added: {:?}", file_indices);
+            return Ok(());
+        }
+
         let mut handle_guard = self.handle.write().await;
 
         if let Some(ref handle) = *handle_guard {
-            // Torrent already running - just update file selection
-            let selected = self.selected_files.read().await;
-            self.update_files_retrying(handle, &selected).await?;
+            // Raced another add between our read-check and this write lock -
+            // it owns the torrent now; just apply the selection.
+            let handle = Arc::clone(handle);
+            drop(handle_guard);
+            self.wait_ready_then_apply_selection(&handle).await?;
             log::info!("Updated file selection, added: {:?}", file_indices);
         } else {
             // First download - add torrent to session now
@@ -434,20 +468,17 @@ impl DownloadManager {
             log::info!("Torrent added (already_managed={already_managed}), downloading files: {:?}", file_indices);
 
             // If the session already had this torrent, apply our file selection.
-            // Retry because the handle may still be in the Initializing state when
-            // AlreadyManaged is returned (session loads torrent from disk asynchronously).
+            // Waits out any in-progress initial check first (see
+            // wait_ready_then_apply_selection) - done AFTER dropping the
+            // handle lock below, via `pending_selection_update`.
             if already_managed {
                 // Merge librqbit's current selection first: the session may
                 // have auto-resumed files from a previous run that this
                 // manager doesn't know about - replacing the selection
                 // outright would silently deselect them mid-download.
                 let session_selection = handle.only_files().unwrap_or_default();
-                let selected = {
-                    let mut selected = self.selected_files.write().await;
-                    selected.extend(session_selection.iter().copied());
-                    selected.clone()
-                };
-                self.update_files_retrying(handle_guard.as_ref().unwrap(), &selected).await?;
+                let mut selected = self.selected_files.write().await;
+                selected.extend(session_selection.iter().copied());
             }
 
             // Periodic diagnostic stats: log peer count, live state, and
@@ -530,6 +561,14 @@ impl DownloadManager {
                     log::warn!("Failed to clean up placeholder files: {}", e);
                 }
             });
+
+            // AlreadyManaged: apply the merged selection - AFTER releasing
+            // the handle lock, because this may wait out a full initial
+            // check and progress polling needs that lock.
+            drop(handle_guard);
+            if already_managed {
+                self.wait_ready_then_apply_selection(&handle).await?;
+            }
         }
 
         Ok(())
