@@ -29,6 +29,49 @@ use commands::{
     ContentPackState, DbState, TorrentState,
 };
 
+/// Raise the file-descriptor soft limit as high as the platform allows.
+/// librqbit's filesystem storage opens EVERY file of a torrent read/write
+/// and keeps the handles (14,011 for the eXoDOS torrent) - Linux's default
+/// soft limit of 1024 makes the first torrent add fail with "error opening
+/// ... in read/write mode" at roughly file #950 (verified in the field:
+/// Brickwar's GameData at torrent index 947). Standard practice for torrent
+/// clients; no-op on Windows (no comparable limit).
+#[cfg(unix)]
+fn raise_fd_limit() {
+    unsafe {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            return;
+        }
+        // Try the hard limit first; macOS reports RLIM_INFINITY but caps
+        // setrlimit at kern.maxfilesperproc, so fall back through sane values.
+        let candidates = [lim.rlim_max.min(1 << 20), 65536, 10240];
+        for target in candidates {
+            if target <= lim.rlim_cur {
+                break; // already high enough
+            }
+            let new = libc::rlimit {
+                rlim_cur: target,
+                rlim_max: lim.rlim_max,
+            };
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &new) == 0 {
+                log::info!("Raised open-file limit: {} -> {}", lim.rlim_cur, target);
+                return;
+            }
+        }
+        log::warn!(
+            "Could not raise open-file limit above {} - large torrents may fail to add",
+            lim.rlim_cur
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
+
 /// Copy the bundled pre-built DB to the target path.
 pub fn install_bundled_db(target: &Path) -> Result<(), String> {
     let metadata_dir = bundled_metadata_dir()?;
@@ -284,6 +327,7 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    raise_fd_limit();
     tauri::Builder::default()
         // A second instance would contend on the SQLite DB and corrupt the
         // torrent session; focus the existing window instead.

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Linux: first download failed with "error opening ... in read/write
+  mode"** - the torrent engine keeps every file of the 14,011-file torrent
+  open, blowing Linux's default 1,024-descriptor limit at roughly file #950.
+  The limit is now raised to the platform maximum at startup (standard
+  torrent-client practice; macOS/Windows unaffected).
+- Duplicated "Uninstalling" text in the detail panel.
+
 ## 0.8.1 - 2026-07-27
 
 ### Fixed
