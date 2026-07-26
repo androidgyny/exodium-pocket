@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "exodium"
-version = "0.6.9"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "flate2",
