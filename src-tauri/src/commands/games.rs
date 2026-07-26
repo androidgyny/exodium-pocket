@@ -233,12 +233,6 @@ pub async fn download_game(
         return Ok(format!("{} is already installed", game.title));
     }
 
-    // Mark as in library immediately
-    {
-        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-        queries::set_in_library(&conn, id).map_err(|e| e.to_string())?;
-    }
-
     let game_idx = game
         .game_torrent_index
         .ok_or_else(|| format!("{} has no torrent index - cannot download", game.title))?
@@ -258,9 +252,10 @@ pub async fn download_game(
     };
 
     // Disk-space preflight: refusing upfront beats a multi-GB torrent (plus
-    // ~equal-sized extraction) failing halfway with a partial install. Bytes
-    // already on disk (resume, re-download after uninstall backup) are
-    // credited - the naive 2x check blocked exactly those recovery flows.
+    // ~equal-sized extraction) failing halfway with a partial install. Runs
+    // BEFORE set_in_library so a refusal doesn't leave a phantom "My Games"
+    // entry. Downloaded bytes on disk are credited ONCE (they only reduce
+    // the remaining download; the extraction target still needs full size).
     if let Some(size) = game.download_size {
         let data_dir = {
             let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -274,7 +269,7 @@ pub async fn download_game(
                 .unwrap_or(0);
             let needed = (size as u64)
                 .saturating_mul(2)
-                .saturating_sub(on_disk.saturating_mul(2))
+                .saturating_sub(on_disk)
                 + 500 * 1024 * 1024;
             if let Ok(free) = fs4::available_space(std::path::Path::new(&dir)) {
                 if free < needed {
@@ -289,6 +284,12 @@ pub async fn download_game(
                 }
             }
         }
+    }
+
+    // Mark as in library only after the preflight has passed.
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        queries::set_in_library(&conn, id).map_err(|e| e.to_string())?;
     }
 
     let mut files = vec![game_idx];
@@ -415,8 +416,15 @@ pub async fn get_download_progress(
     if let (Some(ref mut p), Some(gd_idx)) = (progress.as_mut(), gamedata_idx) {
         if manager.is_file_selected(gd_idx).await {
             if let Some(gd) = manager.file_progress(gd_idx).await {
+                // Disk fallback mirrors the game-file one above: librqbit's
+                // per-file stat can stall short of total for fully-written
+                // files, which would pin "downloading extras" forever.
+                let disk_done = manager
+                    .file_output_path(gd_idx)
+                    .and_then(|zp| std::fs::metadata(zp).ok())
+                    .is_some_and(|m| gd.total_bytes > 0 && m.len() >= gd.total_bytes);
                 p.extras_progress = Some(gd.progress);
-                p.extras_done = Some(gd.finished);
+                p.extras_done = Some(gd.finished || disk_done);
             }
         } else {
             // Not selected (already complete in an earlier session, or the
@@ -843,10 +851,13 @@ pub async fn uninstall_game(
     };
 
     for (col_id, mgr) in managers {
-        let mut drop_indices: Vec<usize> = deleted_rels
+        // Files of this torrent that were genuinely deleted from disk -
+        // only these get their ledger pieces cleared.
+        let deleted_indices: Vec<usize> = deleted_rels
             .iter()
             .filter_map(|rel| mgr.index().find_by_path(rel).map(|f| f.index))
             .collect();
+        let mut drop_indices = deleted_indices.clone();
         let is_source = col_id == source;
         if is_source {
             if let Some(gi) = game.game_torrent_index {
@@ -855,6 +866,9 @@ pub async fn uninstall_game(
                     drop_indices.push(gi);
                 }
             }
+            // The shared GameData ZIP stays ON DISK - deselect it (when no
+            // sibling needs it) but never clear its ledger pieces, or the
+            // next install re-downloads gigabytes it already has.
             if let Some(gd) = gamedata_drop {
                 if !drop_indices.contains(&gd) {
                     drop_indices.push(gd);
@@ -862,12 +876,13 @@ pub async fn uninstall_game(
             }
         }
 
-        let tracked_deleted = deleted_rels
-            .iter()
-            .any(|rel| mgr.index().find_by_path(rel).is_some());
+        let tracked_deleted = !deleted_indices.is_empty();
         if tracked_deleted {
             // Disk state changed under this torrent - full invalidation.
-            if let Err(e) = mgr.invalidate_after_file_delete(&drop_indices).await {
+            if let Err(e) = mgr
+                .invalidate_after_file_delete(&drop_indices, &deleted_indices)
+                .await
+            {
                 log::warn!("Failed to reset {} torrent state after uninstall: {}", col_id, e);
             }
         } else if is_source {

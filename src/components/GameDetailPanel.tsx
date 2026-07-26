@@ -10,7 +10,7 @@ import { launchGame, getGameVariants } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
-import { downloads, startGameDownload, getDownloadState, cancelGameDownload } from "../stores/downloads";
+import { downloads, startGameDownload, getDownloadState, cancelGameDownload, watchExtrasIfPending } from "../stores/downloads";
 import { loadGameMetadata } from "../stores/metadata";
 
 interface Props {
@@ -47,6 +47,11 @@ export function GameDetailPanel(props: Props) {
     if (!g) { lastGameId = null; return; }
     if (g.id === lastGameId) { return; }
     lastGameId = g.id;
+    // Restart-resume: extras may still be downloading for this installed
+    // game with no live tracker (app restarted mid-extras).
+    if (g.installed && g.id != null && g.gamedata_torrent_index != null) {
+      watchExtrasIfPending(g.id, g.title);
+    }
     setImgError(false);
     setStatus("");
     setVariants([]);
@@ -127,7 +132,7 @@ export function GameDetailPanel(props: Props) {
   };
 
   const isDownloading = () => dlState()?.downloading ?? false;
-  const isInstalled = () => (props.game?.installed ?? false) || dlState()?.status === "Installed!";
+  const isInstalled = () => (props.game?.installed ?? false) || (dlState()?.installed ?? false);
   const currentProgress = () => dlState()?.progress ?? 0;
   const currentStatus = () => {
     const dl = dlState();

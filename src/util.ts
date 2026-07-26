@@ -1,6 +1,6 @@
 import { uninstallGame } from "./api/tauri";
 import { refreshLoadedGames, notifyGameLibraryChanged } from "./stores/games";
-import { getDownloadState, cancelGameDownload } from "./stores/downloads";
+import { getDownloadState, cancelGameDownload, stopGameDownloadTracking } from "./stores/downloads";
 import { showToast } from "./stores/toasts";
 
 export async function performUninstall(
@@ -16,6 +16,9 @@ export async function performUninstall(
     setStatus("Cancelling download…");
     await cancelGameDownload(gameId);
   }
+  // Also kill any non-downloading tracker (extras-phase poller, error card) -
+  // it would otherwise resurrect phantom state for the uninstalled game.
+  stopGameDownloadTracking(gameId);
   setStatus("Uninstalling...");
   try {
     await uninstallGame(gameId);

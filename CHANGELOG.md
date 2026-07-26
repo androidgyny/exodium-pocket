@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Fixed (third adversarial review pass - 17 confirmed findings)
+
+- **Uninstall no longer wipes the extras' download credit**: the piece
+  ledger now only clears pieces of files actually deleted from disk - the
+  still-present GameData ZIP keeps its credit, so reinstalling doesn't
+  re-download gigabytes of extras.
+- **Ledger restore survives Windows delete-pending** (exFAT/SMB/older NTFS):
+  written via temp-file + rename with retries; failures now log at error
+  level instead of silently reverting to the full re-check.
+- **Uninstall during the extras phase** no longer leaves an orphaned poller
+  that resurrects phantom stuck-download state for the removed game.
+- **Cancel during validation sticks**: a deselect rejected by an
+  initializing torrent is re-applied automatically once the check finishes
+  (previously the cancelled game kept downloading invisibly).
+- **Extras completion has a disk fallback** for librqbit's known stat-stall,
+  and the extras phase resumes visibly after an app restart.
+- **Disk preflight** credits on-disk bytes once (was double), and a refusal
+  no longer leaves a phantom "My Games" entry.
+- Selection updates hold the lock across the apply (closes a cancel race);
+  install-moment refresh no longer skipped on re-downloads; UI reads an
+  explicit installed flag instead of string-matching statuses.
+
 ### Fixed
 
 - **The extras download phase is visible**: after a game installs, its

@@ -7,6 +7,9 @@ interface DownloadState {
   status: string;
   progress: number;
   downloading: boolean;
+  /** True from the moment the game itself is playable (extras may still be
+   *  downloading) - components must use this, not string-match the status. */
+  installed?: boolean;
   title?: string;
 }
 
@@ -60,6 +63,7 @@ export function getDownloadState(gameId: number): DownloadState | undefined {
 export function startGameDownload(gameId: number, title?: string) {
   const attempt = (attempts[gameId] ?? 0) + 1;
   attempts[gameId] = attempt;
+  delete announcedInstalled[gameId];
   maxProgress[gameId] = 0;
   commandPending[gameId] = true;
   lastProgressVal[gameId] = -1;
@@ -135,6 +139,7 @@ export function startGameDownload(gameId: number, title?: string) {
         delete maxProgress[gameId];
         delete lastProgressAt[gameId];
         delete lastProgressVal[gameId];
+        delete announcedInstalled[gameId];
         setDownloads((prev) => ({
           ...prev,
           [gameId]: { status: p.error!, progress: 0, downloading: false, title: titles[gameId] },
@@ -162,6 +167,7 @@ export function startGameDownload(gameId: number, title?: string) {
               status: `Installed - downloading extras… ${pct}%`,
               progress: 1,
               downloading: false,
+              installed: true,
               title: titles[gameId],
             },
           }));
@@ -176,7 +182,7 @@ export function startGameDownload(gameId: number, title?: string) {
         delete announcedInstalled[gameId];
         setDownloads((prev) => ({
           ...prev,
-          [gameId]: { status: "Installed!", progress: 1, downloading: false, title: titles[gameId] },
+          [gameId]: { status: "Installed!", progress: 1, downloading: false, installed: true, title: titles[gameId] },
         }));
         refreshLoadedGames();
         // Fires metadata-cache invalidation: when extras finished AFTER the
@@ -283,6 +289,42 @@ export function startGameDownload(gameId: number, title?: string) {
       { detail: String(e) },
     );
   });
+}
+
+/** Stop any polling/UI state for a game regardless of phase - used by
+ *  uninstall, which may run during the extras phase where downloading is
+ *  false but a poll interval is still alive (it would otherwise resurrect a
+ *  phantom stuck/failed card for the freshly uninstalled game). */
+export function stopGameDownloadTracking(gameId: number) {
+  attempts[gameId] = (attempts[gameId] ?? 0) + 1;
+  clearInterval(intervals[gameId]);
+  delete intervals[gameId];
+  delete stuckSince[gameId];
+  delete maxProgress[gameId];
+  delete nullPollCount[gameId];
+  delete commandPending[gameId];
+  delete lastProgressAt[gameId];
+  delete lastProgressVal[gameId];
+  delete announcedInstalled[gameId];
+  setDownloads((prev) => {
+    if (!prev[gameId]) { return prev; }
+    const next = { ...prev };
+    delete next[gameId];
+    return next;
+  });
+}
+
+/** Restart-resume for the extras phase: an installed game whose GameData
+ *  was still downloading when the app quit resumes invisibly (librqbit
+ *  session restore) - poll it so the phase stays visible and the completion
+ *  refresh fires. No-op when a tracker already exists or extras are done. */
+export async function watchExtrasIfPending(gameId: number, title?: string) {
+  if (intervals[gameId] || getDownloadState(gameId)) { return; }
+  try {
+    const p = await getDownloadProgress(gameId);
+    if (!p || !p.installed || p.extras_done !== false) { return; }
+  } catch { return; }
+  startGameDownload(gameId, title);
 }
 
 export async function cancelGameDownload(gameId: number) {

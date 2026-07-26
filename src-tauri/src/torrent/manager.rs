@@ -391,11 +391,18 @@ impl DownloadManager {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        // Small retry tail for the init->live transition race.
+        // Small retry tail for the init->live transition race. The
+        // selected_files read lock is HELD across the apply so a concurrent
+        // deselect_file (write lock) strictly serializes after us and
+        // re-applies the newer, smaller set - without this a cancelled file
+        // could be resurrected inside librqbit by our in-flight apply.
         const MAX_ATTEMPTS: u32 = 10;
         for attempt in 0..MAX_ATTEMPTS {
-            let selected = self.selected_files.read().await.clone();
-            match self.session.update_only_files(handle, &selected).await {
+            let result = {
+                let selected = self.selected_files.read().await;
+                self.session.update_only_files(handle, &selected).await
+            };
+            match result {
                 Ok(_) => return Ok(()),
                 Err(e) if e.to_string().contains("initializing") && attempt + 1 < MAX_ATTEMPTS => {
                     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -710,13 +717,28 @@ impl DownloadManager {
     /// Remove a file from the active selection, telling librqbit to stop prioritising it.
     /// Holds the write lock across the session update to keep selected_files and the
     /// torrent session in sync - no other caller can observe a partially-updated state.
-    pub async fn deselect_file(&self, file_index: usize) {
+    pub async fn deselect_file(self: &Arc<Self>, file_index: usize) {
         // Lock order: handle before selected_files (see struct docs).
         let handle_guard = self.handle.read().await;
         let mut selected = self.selected_files.write().await;
         selected.remove(&file_index);
         if let Some(ref handle) = *handle_guard {
-            let _ = self.session.update_only_files(handle, &selected).await;
+            if let Err(e) = self.session.update_only_files(handle, &selected).await {
+                // Most commonly "can't update initializing torrent": a cancel
+                // during the (possibly long) initial check. Re-apply the
+                // reduced selection once the check finishes, otherwise the
+                // cancelled file keeps downloading invisibly.
+                log::info!("deselect deferred until torrent is ready: {}", e);
+                let mgr = Arc::clone(self);
+                let handle = Arc::clone(handle);
+                drop(selected);
+                drop(handle_guard);
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = mgr.wait_ready_then_apply_selection(&handle).await {
+                        log::warn!("deferred deselect failed: {}", e);
+                    }
+                });
+            }
         }
     }
 
@@ -745,7 +767,9 @@ impl DownloadManager {
     }
 
     /// Read this torrent's on-disk piece ledger and clear the bits of every
-    /// piece overlapping the given files. Returns (path, patched bytes), or
+    /// piece overlapping the given files. The on-disk snapshot can lag the
+    /// in-memory bitfield by one flush interval, so pieces downloaded in the
+    /// final seconds before an uninstall may re-download - bounded, harmless. Returns (path, patched bytes), or
     /// None when anything looks unexpected (missing ledger, zero piece
     /// length, size mismatch) - callers then fall back to the full re-check.
     fn patched_bitv_without(&self, drop_indices: &[usize]) -> Option<(PathBuf, Vec<u8>)> {
@@ -782,7 +806,15 @@ impl DownloadManager {
     ///
     /// `drop_indices`: file indices to remove from the selection first
     /// (the uninstalled game's own files), so the re-add doesn't fetch them.
-    pub async fn invalidate_after_file_delete(&self, drop_indices: &[usize]) -> anyhow::Result<()> {
+    /// `deleted_indices`: the subset whose files were actually DELETED from
+    /// disk - only their pieces are cleared in the ledger. Clearing the bits
+    /// of merely-deselected files (e.g. a shared GameData ZIP still on disk)
+    /// would force a pointless multi-GB re-download on the next install.
+    pub async fn invalidate_after_file_delete(
+        &self,
+        drop_indices: &[usize],
+        deleted_indices: &[usize],
+    ) -> anyhow::Result<()> {
         // Lock order: handle before selected_files (see struct docs).
         let mut handle_guard = self.handle.write().await;
         let remaining: Vec<usize> = {
@@ -803,17 +835,42 @@ impl DownloadManager {
         // the full re-check - which took 15-30 min in the field. Boundary
         // pieces shared with neighbors are cleared too (they just get
         // re-fetched); on any format surprise we fall back to the full check.
-        let patched_bitv = self.patched_bitv_without(drop_indices);
+        let patched_bitv = self.patched_bitv_without(deleted_indices);
         self.session
             .delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false)
             .await?;
         if let Some((path, bytes)) = patched_bitv {
-            match std::fs::write(&path, &bytes) {
-                Ok(()) => log::info!(
+            // librqbit's async bitv flusher may hold the old file's handle
+            // for a moment after session.delete; on filesystems without
+            // POSIX delete semantics (exFAT/SMB/older NTFS) that leaves the
+            // name delete-pending and a write fails transiently. Write to a
+            // temp name and rename with a short retry so the optimization
+            // doesn't silently degrade to the full re-check there.
+            let tmp = path.with_extension("bitv.tmp");
+            let mut restored = false;
+            for attempt in 0..10u32 {
+                let result = std::fs::write(&tmp, &bytes)
+                    .and_then(|_| std::fs::rename(&tmp, &path));
+                match result {
+                    Ok(()) => {
+                        restored = true;
+                        break;
+                    }
+                    Err(e) if attempt < 9 => {
+                        log::debug!("piece-ledger restore attempt {} failed: {}", attempt + 1, e);
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                    Err(e) => log::error!(
+                        "Could not restore patched piece ledger ({}); next download will run a full re-check",
+                        e
+                    ),
+                }
+            }
+            if restored {
+                log::info!(
                     "Restored piece ledger with {} file(s) invalidated - next add skips the full re-check",
-                    drop_indices.len()
-                ),
-                Err(e) => log::warn!("Could not restore patched piece ledger: {}", e),
+                    deleted_indices.len()
+                );
             }
         }
         drop(handle_guard);
