@@ -144,6 +144,30 @@ export function GameDetailPanel(props: Props) {
     startGameDownload(gameId, title ?? props.game?.title);
   };
 
+  const handleManualClick = async () => {
+    if (metadata()?.manual_path) {
+      setManualOpen(true);
+      return;
+    }
+    // Unresolved manual: the GameData ZIP may have finished downloading
+    // since the last check - retry with the cache bypassed.
+    const g = props.game;
+    if (!g?.title || !g.torrent_source) { return; }
+    setMetadataLoading(true);
+    const fresh = await loadGameMetadata(
+      g.torrent_source, g.title, g.shortcode ?? null, g.manual_path ?? null, true
+    ).finally(() => setMetadataLoading(false));
+    if (props.game?.id !== g.id) { return; }
+    setMetadata(fresh);
+    if (fresh?.manual_path) {
+      setManualOpen(true);
+    } else {
+      showToast("Manual not available yet", "info", {
+        detail: "It downloads with the game's extras - check back once downloads finish.",
+      });
+    }
+  };
+
   const handleLaunch = async (gameId: number) => {
     if (launchingId() != null) { return; }
     setLaunchingId(gameId);
@@ -266,23 +290,24 @@ export function GameDetailPanel(props: Props) {
                 <Show when={isInstalled()}>
                   <PlayButton id={props.game!.id!} class="game-detail-btn btn-play" />
                 </Show>
-                {/* Manual: placeholder while loading; after load either the
-                    real button or an explained disabled state - silently
-                    vanishing reads as a bug ("where did my manual go?"). */}
-                <Show when={isInstalled()}>
+                {/* Manual: shown iff the catalog says this game HAS one
+                    (game.manual_path). Unresolved = its GameData ZIP is
+                    still downloading - clicking retries the lookup, so the
+                    button self-heals once the download lands. */}
+                <Show when={isInstalled() && props.game?.manual_path}>
                   <button
                     class="game-detail-btn btn-manual"
-                    onClick={() => { if (metadata()?.manual_path) { setManualOpen(true); } }}
-                    disabled={metadataLoading() || !metadata()?.manual_path}
+                    onClick={handleManualClick}
+                    disabled={metadataLoading()}
                     title={
                       !metadataLoading() && !metadata()?.manual_path
-                        ? "No manual available - most manuals come with the Metadata content pack (Settings → Content Packs)"
+                        ? "The manual arrives with the game's extras download - click to check again"
                         : undefined
                     }
                   >
                     <Show when={metadataLoading()} fallback={
-                      <Show when={metadata()?.manual_path} fallback={<>⊞ No manual</>}>
-                        ⊞ Manual
+                      <Show when={metadata()?.manual_path} fallback={<>Manual…</>}>
+                        Manual
                       </Show>
                     }>
                       <span class="btn-spinner" /> Manual

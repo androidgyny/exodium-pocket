@@ -40,7 +40,7 @@
           "url": "",
           "sha256": "",
           "torrent_file_path": "Content/eXoDOS_GLP_Metadata.zip",
-          "size_bytes": 24000000000,
+          "size_bytes": 25411286691,
           "version": 1,
           "install_path": "content/metadata/eXoDOS_GLP",
           "supersedes": []
@@ -57,7 +57,7 @@
           "url": "",
           "sha256": "",
           "torrent_file_path": "Content/eXoDOS_PLP_Metadata.zip",
-          "size_bytes": 0,
+          "size_bytes": 843638998,
           "version": 1,
           "install_path": "content/metadata/eXoDOS_PLP",
           "supersedes": []
@@ -74,7 +74,7 @@
           "url": "",
           "sha256": "",
           "torrent_file_path": "Content/eXoDOS_SLP_Metadata.zip",
-          "size_bytes": 0,
+          "size_bytes": 4104388102,
           "version": 1,
           "install_path": "content/metadata/eXoDOS_SLP",
           "supersedes": []

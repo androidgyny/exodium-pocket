@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Manual button tells the truth**: it now only appears for games that
+  actually have a manual in the catalog, retries the lookup on click (the
+  manual arrives inside the game's extras download, which often finishes
+  after the game itself), and no longer caches a premature "no manual" for
+  the whole session. Icon removed from the label.
+- **Spanish/Polish metadata packs no longer show a 0 B download size** -
+  the manifest carried placeholder sizes.
+
 ## 0.7.4 - 2026-07-26
 
 ### Fixed

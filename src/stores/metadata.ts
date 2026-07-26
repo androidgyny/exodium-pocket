@@ -20,15 +20,24 @@ export async function loadGameMetadata(
   title: string | null | undefined,
   shortcode: string | null | undefined,
   manualPath: string | null | undefined,
+  force = false,
 ): Promise<GameMetadata | null> {
   if (!collection || !title) { return null; }
   // Cache key includes title since the backend now matches by title.
   const key = `${collection}:${title}`;
-  const hit = cache.get(key);
-  if (hit) { return hit; }
+  if (!force) {
+    const hit = cache.get(key);
+    if (hit) { return hit; }
+  }
   try {
     const fresh = await getGameMetadata(collection, title, shortcode ?? null, manualPath ?? null);
-    cache.set(key, fresh);
+    // A game whose catalog row promises a manual that didn't resolve is a
+    // TRANSIENT state - its GameData ZIP (the actual manual source) is
+    // usually still downloading. Caching it would pin "No manual" for the
+    // whole session even after the download lands.
+    if (!(manualPath && !fresh.manual_path)) {
+      cache.set(key, fresh);
+    }
     return fresh;
   } catch {
     cache.set(key, EMPTY);
