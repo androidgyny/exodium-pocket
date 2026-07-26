@@ -33,6 +33,10 @@ const commandPending: Record<number, boolean> = {};
 // download_game promise (or orphaned interval tick) must not clobber the
 // state of a NEWER attempt for the same game.
 const attempts: Record<number, number> = {};
+// Set once the game itself is installed while extras are still downloading -
+// the library refresh must fire at that moment (game is playable), not only
+// when the extras finish minutes later.
+const announcedInstalled: Record<number, boolean> = {};
 // Stall detection: timestamp + value of the last observed progress increase.
 const lastProgressAt: Record<number, number> = {};
 const lastProgressVal: Record<number, number> = {};
@@ -141,17 +145,42 @@ export function startGameDownload(gameId: number, title?: string) {
           { detail: p.error! },
         );
       } else if (p.installed) {
+        // The game is playable now, but its extras (GameData: manuals,
+        // videos, music) may still be downloading - keep polling and show
+        // that second phase instead of letting it finish invisibly.
+        const extrasPending = p.extras_done === false;
+        if (extrasPending) {
+          const pct = ((p.extras_progress ?? 0) * 100).toFixed(0);
+          if (!announcedInstalled[gameId]) {
+            announcedInstalled[gameId] = true;
+            refreshLoadedGames();
+            notifyGameLibraryChanged(gameId);
+          }
+          setDownloads((prev) => ({
+            ...prev,
+            [gameId]: {
+              status: `Installed - downloading extras… ${pct}%`,
+              progress: 1,
+              downloading: false,
+              title: titles[gameId],
+            },
+          }));
+          return;
+        }
         clearInterval(interval);
         delete intervals[gameId];
         delete stuckSince[gameId];
         delete maxProgress[gameId];
         delete lastProgressAt[gameId];
         delete lastProgressVal[gameId];
+        delete announcedInstalled[gameId];
         setDownloads((prev) => ({
           ...prev,
           [gameId]: { status: "Installed!", progress: 1, downloading: false, title: titles[gameId] },
         }));
         refreshLoadedGames();
+        // Fires metadata-cache invalidation: when extras finished AFTER the
+        // game, this is what makes the manual button resolve on its own.
         notifyGameLibraryChanged(gameId);
         // Delay cleanup so isInstalled() stays true until fetchGames() propagates the
         // updated installed flag from the DB into the games store.
@@ -258,6 +287,7 @@ export function startGameDownload(gameId: number, title?: string) {
 
 export async function cancelGameDownload(gameId: number) {
   attempts[gameId] = (attempts[gameId] ?? 0) + 1; // invalidate in-flight handlers
+  delete announcedInstalled[gameId];
   clearInterval(intervals[gameId]);
   delete intervals[gameId];
   delete stuckSince[gameId];

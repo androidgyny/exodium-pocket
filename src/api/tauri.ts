@@ -161,6 +161,10 @@ export interface DownloadProgress {
   /** 0..1 of whole-torrent progress. During init = validation pass; once live
    *  = cumulative download. Used for the "Validating…" UI status. */
   torrent_progress?: number | null;
+  /** 0..1 progress of the game's extras (GameData: manuals, videos, music) -
+   *  they keep downloading after the game itself is installed. */
+  extras_progress?: number | null;
+  extras_done?: boolean | null;
 }
 
 export interface SetupStatus {

@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **The extras download phase is visible**: after a game installs, its
+  GameData (manuals, videos, music - often larger than the game itself)
+  keeps downloading; the card now shows "Installed - downloading extras…
+  N%" instead of finishing silently, and when the extras land the manual
+  button resolves automatically. Games stay playable the moment the game
+  itself is installed.
 - **Manual button tells the truth**: it now only appears for games that
   actually have a manual in the catalog, retries the lookup on click (the
   manual arrives inside the game's extras download, which often finishes

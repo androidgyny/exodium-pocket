@@ -364,7 +364,7 @@ pub async fn get_download_progress(
     torrent_state: State<'_, TorrentState>,
     id: i64,
 ) -> Result<Option<DownloadProgress>, String> {
-    let (game_idx, title, already_installed, source) = {
+    let (game_idx, gamedata_idx, title, already_installed, source) = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         let game = queries::fetch_game_by_id(&conn, id)
             .map_err(|e| e.to_string())?
@@ -372,6 +372,7 @@ pub async fn get_download_progress(
         match game.game_torrent_index {
             Some(idx) => (
                 idx as usize,
+                game.gamedata_torrent_index.map(|i| i as usize),
                 game.title,
                 game.installed,
                 game.torrent_source.unwrap_or_else(|| "eXoDOS".to_string()),
@@ -406,6 +407,22 @@ pub async fn get_download_progress(
     // Attach installed status from DB
     if let Some(ref mut p) = progress {
         p.installed = already_installed;
+    }
+
+    // Attach extras (GameData) progress: it keeps downloading after the game
+    // itself is installed - without this the second phase is invisible and
+    // features that depend on it (manuals, videos) look broken meanwhile.
+    if let (Some(ref mut p), Some(gd_idx)) = (progress.as_mut(), gamedata_idx) {
+        if manager.is_file_selected(gd_idx).await {
+            if let Some(gd) = manager.file_progress(gd_idx).await {
+                p.extras_progress = Some(gd.progress);
+                p.extras_done = Some(gd.finished);
+            }
+        } else {
+            // Not selected (already complete in an earlier session, or the
+            // game has no extras in flight) - report done so the UI settles.
+            p.extras_done = Some(true);
+        }
     }
 
     // Disk-based completion fallback: librqbit's in-memory file_progress can

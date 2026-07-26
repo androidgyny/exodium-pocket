@@ -153,6 +153,14 @@ pub struct DownloadProgress {
     /// bytes across all selected files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent_progress: Option<f64>,
+    /// Progress (0.0..1.0) of the game's extras (GameData: manuals, videos,
+    /// music). Downloads continue after the game itself is installed and
+    /// playable - surfaced so the UI can show the second phase instead of
+    /// letting it finish invisibly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras_progress: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras_done: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -634,6 +642,8 @@ impl DownloadManager {
             error: None,
             torrent_state,
             torrent_progress,
+            extras_progress: None,
+            extras_done: None,
         })
     }
 
@@ -666,6 +676,8 @@ impl DownloadManager {
                         finished,
                         installed: false,
                         error: None,
+                        extras_progress: None,
+                        extras_done: None,
                         torrent_state: Some(stats.state.to_string()),
                         torrent_progress: if stats.total_bytes > 0 {
                             Some((stats.progress_bytes as f64 / stats.total_bytes as f64).min(1.0))
