@@ -104,8 +104,10 @@ fn cleanup_placeholder_files(root: &Path, keep_paths: &[String]) -> std::io::Res
         let path_fwd = path.to_string_lossy().replace('\\', "/");
         let in_torrent = keep_paths.iter().any(|sp| path_fwd.ends_with(sp));
         if in_torrent {
+            // No per-file logging: this fires ~14k times per torrent add
+            // (observed 14,616 lines in one field session) - the summary
+            // line below carries the counts.
             kept += 1;
-            log::debug!("Cleanup: keeping librqbit-tracked placeholder {}", path.display());
             continue;
         }
         log::info!("Cleanup: deleting orphan 0-byte placeholder {}", path.display());

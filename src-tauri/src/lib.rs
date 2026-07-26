@@ -70,9 +70,15 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
 /// (often $HOME) would expose far more than the app serves.
 pub fn allow_asset_dir(app: &tauri::AppHandle, data_dir: &Path) {
     use tauri::Manager;
-    let media_root = data_dir.join("eXoDOS");
-    if let Err(e) = app.asset_protocol_scope().allow_directory(&media_root, true) {
-        log::warn!("Failed to extend asset scope to {}: {}", media_root.display(), e);
+    // Two served subtrees: game media in <data>/eXoDOS and installed
+    // content packs (posters, metadata screenshots) in <data>/content.
+    // Regression note: v0.7.x granted only eXoDOS/, silently blocking every
+    // content-pack image ("asset protocol not configured to allow" spam).
+    for sub in ["eXoDOS", "content"] {
+        let dir = data_dir.join(sub);
+        if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
+            log::warn!("Failed to extend asset scope to {}: {}", dir.display(), e);
+        }
     }
 }
 

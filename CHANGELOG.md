@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Content-pack images were blocked** since the v0.7.x asset-scope
+  narrowing granted only the games subtree - screenshots and pack media in
+  <data>/content now load again (field log showed 49 asset-protocol
+  denials in one session).
+- **Placeholder-cleanup log spam removed** (~14k debug lines per torrent
+  re-add).
+
 ### Changed
 
 - **The UI can no longer be frozen by backend work**: 27 commands (game
