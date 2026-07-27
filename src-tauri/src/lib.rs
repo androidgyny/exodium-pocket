@@ -264,12 +264,11 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
         .append(true)
         .open(&log_path);
 
-    // Diagnostic default. Captures the events we need to triage Windows
-    // stuck-at-0% (file open errors, peer / tracker activity, sparse-file
-    // allocation, our own info) without drowning the file in DHT bootstrap
-    // chatter. Set `RUST_LOG` to override - e.g. `RUST_LOG=librqbit_dht=debug`
-    // if DHT diagnosis is needed too. ~30s of normal startup ≈ tens of KB.
-    let default_filter = "info,librqbit=debug,librqbit_dht=info,exodium_lib=debug,rqbit=info";
+    // Default to info everywhere - debug chatter (librqbit's per-piece /
+    // requeue messages) drowned the log window in the field. Override with
+    // `RUST_LOG` when diagnosing, e.g. `RUST_LOG=librqbit=debug,exodium_lib=debug`
+    // (or `librqbit_dht=debug` for DHT issues).
+    let default_filter = "info";
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(default_filter));
 

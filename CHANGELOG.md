@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Default log level is now `info` (librqbit debug chatter no longer floods
+  the log); set `RUST_LOG` to raise verbosity for diagnosis.
+
 ## 0.8.2 - 2026-07-27
 
 ### Fixed
