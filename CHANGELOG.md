@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.8.3 - 2026-07-27
+
+### Added
+
+- Support links: heart button in the top bar and a Settings section pointing
+  to GitHub Sponsors and Ko-fi.
+- Release pages now carry a "Which file do I need?" download table; README
+  gained a quick-start section with direct-download permalinks.
 
 ### Changed
 
