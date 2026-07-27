@@ -52,6 +52,8 @@ eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the
 - ✅ Stream individual games on demand - no full collection download required
 - ✅ Launch via bundled DOSBox Staging with no external dependencies
 - ✅ MT-32 and General MIDI music - Roland ROMs and the SoundCanvas soundfont are fetched from the collection and eXoDOS' DOSBox-ECE configs are translated for DOSBox Staging automatically
+- ✅ Game manuals and per-game media galleries - box scans, in-game screenshots, and ads
+- ✅ Per-game settings - CRT shader, fullscreen, CPU cycles, and a free-form DOSBox config editor
 - ✅ Favorites and a personal library of installed games
 
 > **Compatibility note:** every game runs under DOSBox Staging. A handful of
@@ -60,8 +62,7 @@ eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the
 > differently than under the original Windows eXoDOS setup.
 
 ### Planned
-- 🔲 Full metadata support including manuals, game videos, and other media from the eXoDOS archive
-- 🔲 Individual game settings with a per-game DOSBox configuration editor
+- 🔲 Game videos and remaining media from the eXoDOS archive
 - 🔲 Improved download management - queue, pause/resume, bandwidth throttling, progress history
 - 🔲 Support for other eXo collections - eXoWin3x, eXoWin9x, eXoScummVM, eXoDream, and future releases
 
