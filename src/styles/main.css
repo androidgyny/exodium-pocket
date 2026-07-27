@@ -147,6 +147,10 @@ body {
   outline-offset: 2px;
 }
 
+.icon-btn-heart:hover {
+  color: #e5534b;
+}
+
 
 /* ── Download indicator (top bar pill) ────────────────────────────────────── */
 

@@ -9,11 +9,29 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/tvollstaedt/exodium/releases/latest"><img src="https://img.shields.io/github/v/release/tvollstaedt/exodium" alt="Latest release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/built%20with-Tauri-blueviolet" alt="Built with Tauri" />
   <img src="https://img.shields.io/badge/language-Rust%20%2B%20TypeScript-orange" alt="Rust + TypeScript" />
 </p>
+
+<p align="center">
+  <img src="docs/screenshots/library.png" width="820" alt="Browse view with cover-art grid, language packs, genre and rating filters" />
+</p>
+
+---
+
+## Quick start
+
+1. **Download** the latest release for your platform:
+   [Windows (.exe)](https://github.com/tvollstaedt/exodium/releases/latest/download/Exodium-windows-x64-setup.exe) ·
+   [macOS (.dmg)](https://github.com/tvollstaedt/exodium/releases/latest/download/Exodium-macos-aarch64.dmg) ·
+   [Linux (.AppImage)](https://github.com/tvollstaedt/exodium/releases/latest/download/Exodium-linux-x86_64.AppImage) ·
+   [all downloads](https://github.com/tvollstaedt/exodium/releases/latest)
+2. **Install and launch** - see [Installation](#installation) for platform notes.
+3. **Pick a games folder** in the setup wizard - this is where downloaded games are stored.
+4. **Browse and play** - hit download on any game; it streams from the eXoDOS torrent and launches in the bundled DOSBox Staging.
 
 ---
 
@@ -27,22 +45,29 @@ Exodium is a frontend client for that collection. It does not host or distribute
 
 ## What it does
 
-eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the full ~500 GB torrent to browse the catalogue. Exodium replaces that frontend with a native app that:
+eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the full ~500 GB torrent to browse the catalogue. Exodium replaces that frontend with a small native app for Linux, macOS, and Windows.
 
-- **Runs everywhere** - Linux, macOS, Windows
-- **Streams on demand** - download only the games you want, no full collection required
-- **Zero dependencies** - DOSBox Staging is bundled, no separate installation needed
-- **Favorites** - star games to bookmark them for later
+### Available now
+- ✅ Browse ~9,200 games across eXoDOS + German, Spanish, and Polish language packs
+- ✅ Stream individual games on demand - no full collection download required
+- ✅ Launch via bundled DOSBox Staging with no external dependencies
+- ✅ MT-32 and General MIDI music - Roland ROMs and the SoundCanvas soundfont are fetched from the collection and eXoDOS' DOSBox-ECE configs are translated for DOSBox Staging automatically
+- ✅ Favorites and a personal library of installed games
+
+> **Compatibility note:** every game runs under DOSBox Staging. A handful of
+> titles are tuned for DOSBox-ECE / DOSBox-X specials (3dfx Voodoo tuning,
+> GunStick light-gun, ~19 special builds) and may look or behave slightly
+> differently than under the original Windows eXoDOS setup.
+
+### Planned
+- 🔲 Full metadata support including manuals, game videos, and other media from the eXoDOS archive
+- 🔲 Individual game settings with a per-game DOSBox configuration editor
+- 🔲 Improved download management - queue, pause/resume, bandwidth throttling, progress history
+- 🔲 Support for other eXo collections - eXoWin3x, eXoWin9x, eXoScummVM, eXoDream, and future releases
 
 ---
 
 ## Screenshots
-
-<p align="center">
-  <img src="docs/screenshots/library.png" width="820" alt="Browse view with cover-art grid, language packs, genre and rating filters" />
-</p>
-
-<p align="center"><em>Browse the full eXoDOS catalogue with genre, rating, and language-pack filters.</em></p>
 
 <p align="center">
   <img src="docs/screenshots/cover.png" width="820" alt="Game detail with cover-art lightbox" />
@@ -101,28 +126,6 @@ msiexec /a "path\to\Exodium_<version>_x64_en-US.msi" /qb TARGETDIR=C:\Exodium
 This unpacks the payload to `C:\Exodium\` without invoking Windows Installer's policy checks. Run `C:\Exodium\Exodium.exe` directly - no Start Menu entry, but fully functional.
 
 **If downloads are stuck at 0%**: check `%APPDATA%\Exodium\logs\exodium.log` for error details. Firewall issues are one possible cause - allow both "Private" and "Public" networks for Exodium under Windows Security → Firewall & network protection → Allow an app through firewall.
-
----
-
-## Features
-
-### Available now
-- ✅ Browse ~9,200 games across eXoDOS + German, Spanish, and Polish language packs
-- ✅ Stream individual games on demand - no full collection download required
-- ✅ Launch via bundled DOSBox Staging with no external dependencies
-- ✅ MT-32 and General MIDI music - Roland ROMs and the SoundCanvas soundfont are fetched from the collection and eXoDOS' DOSBox-ECE configs are translated for DOSBox Staging automatically
-- ✅ Favorites and a personal library of installed games
-
-> **Compatibility note:** every game runs under DOSBox Staging. A handful of
-> titles are tuned for DOSBox-ECE / DOSBox-X specials (3dfx Voodoo tuning,
-> GunStick light-gun, ~19 special builds) and may look or behave slightly
-> differently than under the original Windows eXoDOS setup.
-
-### Planned
-- 🔲 Full metadata support including manuals, game videos, and other media from the eXoDOS archive
-- 🔲 Individual game settings with a per-game DOSBox configuration editor
-- 🔲 Improved download management - queue, pause/resume, bandwidth throttling, progress history
-- 🔲 Support for other eXo collections - eXoWin3x, eXoWin9x, eXoScummVM, eXoDream, and future releases
 
 ---
 
@@ -218,6 +221,14 @@ exodium/
 ├── thumbnails/eXoDOS/      Shortcode-keyed game thumbnails (gitignored, generated by init-dev)
 └── torrents/               .torrent files for all 4 collections
 ```
+
+---
+
+## Support
+
+Found a bug or have a question? Open an [issue](https://github.com/tvollstaedt/exodium/issues) - include `exodium.log` from the app's log folder (Settings → Open log folder) for download or launch problems.
+
+If Exodium is useful to you, consider donating via [GitHub Sponsors](https://github.com/sponsors/tvollstaedt) or [Ko-fi](https://ko-fi.com/tvollstaedt). Donations go toward OS code-signing certificates (Apple Developer ID, Windows signing) so the install warnings on macOS and Windows can go away.
 
 ---
 

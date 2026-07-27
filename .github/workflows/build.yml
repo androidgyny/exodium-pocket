@@ -133,10 +133,29 @@ jobs:
           python3 repo/scripts/gen_latest_json.py artifacts "${GITHUB_REF_NAME}" "${GITHUB_REPOSITORY}" > artifacts/latest.json
           cat artifacts/latest.json
 
+      # Stable-name copies of the three primary installers so
+      # releases/latest/download/<name> permalinks (README buttons) never
+      # break. No .sig uploaded for these, so gen_latest_json ignores them.
+      - name: Create stable-name download aliases
+        run: |
+          mkdir -p stable
+          cp "$(find artifacts -name '*-setup.exe' | head -1)" stable/Exodium-windows-x64-setup.exe
+          cp "$(find artifacts -name '*.dmg' | head -1)" stable/Exodium-macos-aarch64.dmg
+          cp "$(find artifacts -name '*.AppImage' | head -1)" stable/Exodium-linux-x86_64.AppImage
+          ls -la stable
+
+      - name: Generate release body (download table)
+        run: |
+          python3 repo/scripts/gen_release_body.py artifacts "${GITHUB_REF_NAME}" "${GITHUB_REPOSITORY}" > release_body.md
+          cat release_body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          # The download-table body is prepended; generate_release_notes
+          # appends GitHub's auto changelog after it.
+          body_path: release_body.md
           generate_release_notes: true
           # Recursive globs because upload-artifact@v4 preserves the common-prefix
           # directory hierarchy - Linux has bundle/deb + bundle/appimage, and
@@ -151,3 +170,4 @@ jobs:
             artifacts/**/*.app.tar.gz
             artifacts/**/*.sig
             artifacts/latest.json
+            stable/*

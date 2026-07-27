@@ -1,6 +1,7 @@
 import { createSignal, onMount, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { Tooltip } from "@ark-ui/solid/tooltip";
 import { Library } from "./pages/Library";
@@ -303,6 +304,14 @@ function App() {
             <DownloadIndicator />
             <Tooltip.Root openDelay={400}>
               <Tooltip.Trigger asChild={(props) =>
+                <button {...props()} class="icon-btn icon-btn-heart" onClick={() => openUrl("https://ko-fi.com/tvollstaedt")}>
+                  &#9829;
+                </button>
+              } />
+              <Portal><Tooltip.Positioner><Tooltip.Content class="ark-tooltip">Support Exodium</Tooltip.Content></Tooltip.Positioner></Portal>
+            </Tooltip.Root>
+            <Tooltip.Root openDelay={400}>
+              <Tooltip.Trigger asChild={(props) =>
                 <button {...props()} class="icon-btn" onClick={() => setShowSettings(true)}>
                   &#9881;
                 </button>
@@ -409,6 +418,21 @@ function App() {
                         <Show when={logOpenError()}>
                           <div class="error" style="margin-top:6px">{logOpenError()}</div>
                         </Show>
+                      </section>
+
+                      <section class="settings-section">
+                        <h3 class="settings-section-title">Support Exodium</h3>
+                        <p class="settings-section-hint">Exodium is free and open source. If it's useful to you, you can support its development.</p>
+                        <div class="setting-row">
+                          <span class="setting-label">Ko-fi</span>
+                          <span class="setting-hint">One-time donation, no account needed</span>
+                          <button class="btn-small" onClick={() => openUrl("https://ko-fi.com/tvollstaedt")}>Open</button>
+                        </div>
+                        <div class="setting-row">
+                          <span class="setting-label">GitHub Sponsors</span>
+                          <span class="setting-hint">One-time or monthly via GitHub</span>
+                          <button class="btn-small" onClick={() => openUrl("https://github.com/sponsors/tvollstaedt")}>Open</button>
+                        </div>
                       </section>
 
                       <section class="settings-section danger">
