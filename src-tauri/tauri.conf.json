@@ -41,7 +41,7 @@
   "bundle": {
     "createUpdaterArtifacts": true,
     "active": true,
-    "targets": "all",
+    "targets": ["app", "dmg", "appimage", "deb", "rpm", "nsis"],
     "externalBin": [
       "binaries/dosbox-staging"
     ],
@@ -50,7 +50,7 @@
       "../torrents": "torrents",
       "../manifest.json": "manifest.json",
       "resources/previews/eXoDOS": "previews/eXoDOS",
-      "resources/dosbox-glshaders": "dosbox-glshaders",
+      "resources/dosbox-glshaders": "glshaders",
       "resources/dosbox-bin": "dosbox-bin"
     },
     "icon": [
