@@ -66,7 +66,7 @@ def main() -> int:
             "|---|---|---|",
             *rows,
             "",
-            "Everything else (`.sig`, `latest.json`, `.app.tar.gz`, `.msi`) is auto-update",
+            "Everything else (`.sig`, `latest.json`, `.app.tar.gz`) is auto-update",
             "plumbing, and the `Exodium-windows/-macos/-linux` files are permalink copies",
             "for the README download buttons - you don't need any of them.",
             "",

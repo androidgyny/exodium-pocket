@@ -77,10 +77,26 @@ if [[ "$OS" == MINGW* || "$OS" == MSYS* || "$OS" == CYGWIN* ]]; then
   [[ ! -f "$STAGED_DBS_BIN/dosbox-staging.exe" ]] && NEEDS_DBS_BIN_STAGE=1
 fi
 
-if [[ -f "$OUT_BIN" && -d "$STAGED_SHADERS" && "$NEEDS_DBS_BIN_STAGE" -eq 0 && "$FORCE" -eq 0 ]]; then
-  echo "dosbox-staging-$TRIPLE already present, skipping download."
+# The staged-shaders check requires the mandatory fallback shader FILE, not
+# just the directory: a leftover .placeholder staging (transient DMG mount
+# failure, CI stub) would otherwise satisfy the skip forever and ship
+# shaderless bundles that crash DOSBox on fresh installs (crt-auto default).
+MANDATORY_SHADER="$STAGED_SHADERS/interpolation/bilinear.glsl"
+
+# Version stamp: a VERSION bump must re-download instead of silently keeping
+# the previously installed binary (dev/CI version drift).
+VERSION_STAMP="$BINARIES_DIR/.dosbox-version"
+STAMPED_VERSION="$(cat "$VERSION_STAMP" 2>/dev/null || true)"
+
+if [[ -f "$OUT_BIN" && -f "$MANDATORY_SHADER" && "$STAMPED_VERSION" == "$VERSION" \
+      && "$NEEDS_DBS_BIN_STAGE" -eq 0 && "$FORCE" -eq 0 ]]; then
+  echo "dosbox-staging-$TRIPLE $VERSION already present, skipping download."
 else
-  [[ -f "$OUT_BIN" ]] && echo "dosbox-staging-$TRIPLE already present, re-downloading (--force)."
+  if [[ -f "$OUT_BIN" && "$FORCE" -eq 1 ]]; then
+    echo "dosbox-staging-$TRIPLE already present, re-downloading (--force)."
+  elif [[ -f "$OUT_BIN" && -n "$STAMPED_VERSION" && "$STAMPED_VERSION" != "$VERSION" ]]; then
+    echo "dosbox-staging-$TRIPLE is $STAMPED_VERSION, want $VERSION - re-downloading."
+  fi
 
 # ── Resolve download URL ──────────────────────────────────────────────────────
 
@@ -127,7 +143,9 @@ stage_shaders_from() {
   else
     mkdir -p "$STAGED_SHADERS"
     touch "$STAGED_SHADERS/.placeholder"
-    echo "No upstream shaders found; wrote placeholder to $STAGED_SHADERS"
+    echo "WARNING: No upstream shaders found; wrote placeholder to $STAGED_SHADERS"
+    echo "WARNING: A release built from this state ships WITHOUT glshaders -"
+    echo "         DOSBox Staging aborts on fresh installs (glshader defaults to crt-auto)."
   fi
 }
 
@@ -221,7 +239,8 @@ elif [[ "$ARCHIVE" == *.zip ]]; then
 fi
 
   chmod +x "$OUT_BIN"
-  echo "Installed: $OUT_BIN"
+  echo "$VERSION" > "$VERSION_STAMP"
+  echo "Installed: $OUT_BIN ($VERSION)"
 
   # GPL compliance: ship DOSBox Staging's license text alongside the bundled
   # binary. Prefer the copy inside the release archive; fall back to the

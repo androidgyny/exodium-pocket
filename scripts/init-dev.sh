@@ -99,6 +99,27 @@ fi
 
 # ── Helper: download a single file from a torrent ─────────────────────────────
 
+# torrent_file_index <torrent> <filename> <fallback_idx>
+# Resolve the aria2c --select-file index for a filename by parsing
+# `aria2c --show-files` output. Hardcoded indices break when eXoDOS publishes
+# a new torrent with a reshuffled file list - and the failure mode is a
+# multi-GB wrong download. Falls back to the known-good index with a warning
+# if parsing yields nothing (e.g. aria2c output format changes).
+torrent_file_index() {
+  local torrent="$1" filename="$2" fallback="$3"
+  local idx
+  idx="$(aria2c --show-files=true "$torrent" 2>/dev/null \
+    | grep -E "^ *[0-9]+\|.*${filename}\$" \
+    | head -1 \
+    | sed -E 's/^ *([0-9]+)\|.*/\1/' || true)"
+  if [[ "$idx" =~ ^[0-9]+$ ]]; then
+    echo "$idx"
+  else
+    echo "  WARNING: could not resolve index for $filename in $(basename "$torrent"); using fallback $fallback" >&2
+    echo "$fallback"
+  fi
+}
+
 # download_torrent_file <torrent> <file_index> <dir> <expected_zip>
 download_torrent_file() {
   local torrent="$1" file_idx="$2" dir="$3" zip_path="$4"
@@ -132,7 +153,10 @@ validate_zip() {
   if [[ ! -s "$zip_path" ]]; then
     return 1
   fi
-  if python3 -c "import zipfile, sys; f=zipfile.ZipFile('$zip_path'); sys.exit(0 if f.testzip() is None else 1)" 2>/dev/null; then
+  # $PYTHON, not python3: the 3.11+ selection above exists because Python
+  # 3.10's zipfile mis-seeks in archives >4 GB - bare python3 here would
+  # falsely flag a good 5 GB download as corrupt and delete it in a loop.
+  if "$PYTHON" -c "import zipfile, sys; f=zipfile.ZipFile('$zip_path'); sys.exit(0 if f.testzip() is None else 1)" 2>/dev/null; then
     return 0
   fi
   echo "  WARNING: $zip_path is corrupt. Deleting for re-download..."
@@ -149,7 +173,9 @@ TORRENT_EXODOS="$REPO_ROOT/torrents/eXoDOS.torrent"
 echo "── eXoDOS metadata ──────────────────────────────────────────────────────────"
 if ! validate_zip "$METADATA_ZIP"; then
   echo "Downloading XODOSMetadata.zip (~5 GB, one-time)..."
-  download_torrent_file "$TORRENT_EXODOS" 9 "$DATA_DIR" "$METADATA_ZIP"
+  download_torrent_file "$TORRENT_EXODOS" \
+    "$(torrent_file_index "$TORRENT_EXODOS" "XODOSMetadata.zip" 9)" \
+    "$DATA_DIR" "$METADATA_ZIP"
 else
   echo "XODOSMetadata.zip already present, skipping."
 fi
@@ -164,7 +190,9 @@ if [[ "$WANT_GLP" -eq 1 ]]; then
   echo "── GLP (German) metadata ────────────────────────────────────────────────────"
   if ! validate_zip "$GLP_ZIP"; then
     echo "Downloading eXoDOS_GLP_Metadata.zip (~23 GB)..."
-    download_torrent_file "$REPO_ROOT/torrents/eXoDOS_GLP.torrent" 5 "$DATA_DIR/eXoDOS_GLP" "$GLP_ZIP"
+    download_torrent_file "$REPO_ROOT/torrents/eXoDOS_GLP.torrent" \
+      "$(torrent_file_index "$REPO_ROOT/torrents/eXoDOS_GLP.torrent" "eXoDOS_GLP_Metadata.zip" 5)" \
+      "$DATA_DIR/eXoDOS_GLP" "$GLP_ZIP"
   else
     echo "eXoDOS_GLP_Metadata.zip already present, skipping."
   fi
@@ -174,7 +202,9 @@ if [[ "$WANT_SLP" -eq 1 ]]; then
   echo "── SLP (Spanish) metadata ───────────────────────────────────────────────────"
   if ! validate_zip "$SLP_ZIP"; then
     echo "Downloading eXoDOS_SLP_Metadata.zip (~3.8 GB)..."
-    download_torrent_file "$REPO_ROOT/torrents/eXoDOS_SLP.torrent" 1 "$DATA_DIR/eXoDOS_SLP" "$SLP_ZIP"
+    download_torrent_file "$REPO_ROOT/torrents/eXoDOS_SLP.torrent" \
+      "$(torrent_file_index "$REPO_ROOT/torrents/eXoDOS_SLP.torrent" "eXoDOS_SLP_Metadata.zip" 1)" \
+      "$DATA_DIR/eXoDOS_SLP" "$SLP_ZIP"
   else
     echo "eXoDOS_SLP_Metadata.zip already present, skipping."
   fi
@@ -184,7 +214,9 @@ if [[ "$WANT_PLP" -eq 1 ]]; then
   echo "── PLP (Polish) metadata ────────────────────────────────────────────────────"
   if ! validate_zip "$PLP_ZIP"; then
     echo "Downloading eXoDOS_PLP_Metadata.zip (~800 MB)..."
-    download_torrent_file "$REPO_ROOT/torrents/eXoDOS_PLP.torrent" 3 "$DATA_DIR/eXoDOS_PLP" "$PLP_ZIP"
+    download_torrent_file "$REPO_ROOT/torrents/eXoDOS_PLP.torrent" \
+      "$(torrent_file_index "$REPO_ROOT/torrents/eXoDOS_PLP.torrent" "eXoDOS_PLP_Metadata.zip" 3)" \
+      "$DATA_DIR/eXoDOS_PLP" "$PLP_ZIP"
   else
     echo "eXoDOS_PLP_Metadata.zip already present, skipping."
   fi

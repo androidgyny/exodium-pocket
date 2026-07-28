@@ -19,7 +19,7 @@ jobs:
             artifact-pattern: "*.deb,*.AppImage"
           - os: windows-latest
             platform: windows
-            artifact-pattern: "*.msi,*.exe"
+            artifact-pattern: "*.exe"
 
     runs-on: ${{ matrix.os }}
 
@@ -63,6 +63,17 @@ jobs:
         shell: bash
         run: bash scripts/get-dosbox.sh
 
+      - name: Verify DOSBox staging is complete
+        # Guard against shipping placeholder shaders: without the mandatory
+        # fallback shader, DOSBox Staging aborts on every fresh install
+        # (glshader defaults to crt-auto). Fail the release build instead.
+        shell: bash
+        run: |
+          if [[ ! -f src-tauri/resources/dosbox-glshaders/interpolation/bilinear.glsl ]]; then
+            echo "::error::glshaders staging is missing or placeholder-only - a release from this state crashes DOSBox on fresh installs"
+            exit 1
+          fi
+
       - name: Install frontend dependencies
         run: pnpm install
 
@@ -103,8 +114,6 @@ jobs:
         with:
           name: exodium-windows
           path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.msi.sig
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.exe.sig
           retention-days: 14
@@ -158,14 +167,14 @@ jobs:
           body_path: release_body.md
           generate_release_notes: true
           # Recursive globs because upload-artifact@v4 preserves the common-prefix
-          # directory hierarchy - Linux has bundle/deb + bundle/appimage, and
-          # Windows has bundle/msi + bundle/nsis, so files end up nested.
+          # directory hierarchy - Linux has bundle/deb + bundle/appimage, so
+          # files end up nested. (MSI is no longer built: MSI<->NSIS updater
+          # cross-grades are unsupported, NSIS is the only Windows format.)
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.deb
             artifacts/**/*.AppImage
             artifacts/**/*.rpm
-            artifacts/**/*.msi
             artifacts/**/*.exe
             artifacts/**/*.app.tar.gz
             artifacts/**/*.sig

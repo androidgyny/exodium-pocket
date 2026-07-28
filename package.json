@@ -12,7 +12,7 @@
     "get-dosbox": "bash scripts/get-dosbox.sh",
     "init-dev": "bash scripts/get-dosbox.sh && bash scripts/init-dev.sh",
     "gen-db": "cd src-tauri && cargo run --bin generate_db && cd .. && gzip -kf metadata/exodium.db",
-    "infohash": "sqlite3 \"$HOME/Library/Application Support/com.redfox.exodium/exodium.db\" \"SELECT key, value FROM config WHERE key LIKE '%infohash%';\"",
+    "infohash": "sqlite3 \"${EXODIUM_DB:-$HOME/Library/Application Support/com.redfox.exodium/exodium.db}\" \"SELECT key, value FROM config WHERE key LIKE '%infohash%';\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
