@@ -355,6 +355,14 @@ impl DownloadManager {
         log::info!("Seeding {}", if enabled { "enabled" } else { "disabled (upload capped at 1 KB/s)" });
     }
 
+    /// Stop the shared librqbit session: aborts live torrents and flushes
+    /// persistence, so callers can delete data files without a writer task
+    /// racing the delete and re-creating them. The session is shared across
+    /// collections - stopping via any one manager stops them all.
+    pub async fn shutdown_session(&self) {
+        self.session.stop().await;
+    }
+
     /// Returns true if the given file index has been queued for download.
     pub async fn is_file_selected(&self, file_index: usize) -> bool {
         self.selected_files.read().await.contains(&file_index)

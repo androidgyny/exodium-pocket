@@ -173,37 +173,52 @@ pub struct GameFilter<'a> {
 }
 
 /// Build WHERE clause from filters.
+/// One grid row per game: rows sharing a shortcode are one multi-language
+/// group, represented by its primary row (EN preferred, lowest id as
+/// tiebreak). Rows without a shortcode stand alone. Filters are evaluated
+/// against EVERY variant of a group (EXISTS subquery), so searching a
+/// localized title or filtering an LP collection still surfaces the merged
+/// primary card - see CLAUDE.md "Multi-language games are merged".
+/// All consumers must alias the table as `g` (FROM games g).
+const PRIMARY_ROW_CONDITION: &str = "(g.shortcode IS NULL OR g.id = (
+        SELECT p.id FROM games p WHERE p.shortcode = g.shortcode
+        ORDER BY CASE WHEN p.language = 'EN' THEN 0 ELSE 1 END, p.id LIMIT 1))";
+
 fn build_where_clause(f: &GameFilter) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
-    let mut conditions = Vec::new();
+    let mut variant_conds = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if !f.query.is_empty() {
         params.push(Box::new(format!("%{}%", f.query)));
-        conditions.push(format!("title LIKE ?{}", params.len()));
+        variant_conds.push(format!("v.title LIKE ?{}", params.len()));
     }
 
     if !f.genre.is_empty() {
         // Genre is semicolon-separated, use LIKE for partial match
         params.push(Box::new(format!("%{}%", f.genre)));
-        conditions.push(format!("genre LIKE ?{}", params.len()));
+        variant_conds.push(format!("v.genre LIKE ?{}", params.len()));
     }
 
     if !f.collection.is_empty() {
         params.push(Box::new(f.collection.to_string()));
-        conditions.push(format!("torrent_source = ?{}", params.len()));
+        variant_conds.push(format!("v.torrent_source = ?{}", params.len()));
     }
 
     if f.favorites_only {
-        conditions.push("favorited = 1".to_string());
+        variant_conds.push("v.favorited = 1".to_string());
     }
 
-    let clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", conditions.join(" AND "))
-    };
+    let mut conditions = vec![PRIMARY_ROW_CONDITION.to_string()];
+    if !variant_conds.is_empty() {
+        conditions.push(format!(
+            "EXISTS (SELECT 1 FROM games v \
+             WHERE (v.id = g.id OR (g.shortcode IS NOT NULL AND v.shortcode = g.shortcode)) \
+             AND {})",
+            variant_conds.join(" AND ")
+        ));
+    }
 
-    (clause, params)
+    (format!(" WHERE {}", conditions.join(" AND ")), params)
 }
 
 fn order_clause(sort_by: &str) -> &str {
@@ -225,7 +240,7 @@ pub fn count_games(conn: &Connection, query: &str) -> DbResult<usize> {
 
 pub fn count_games_filtered(conn: &Connection, f: &GameFilter) -> DbResult<usize> {
     let (where_clause, params) = build_where_clause(f);
-    let sql = format!("SELECT COUNT(*) FROM games{}", where_clause);
+    let sql = format!("SELECT COUNT(*) FROM games g{}", where_clause);
     let mut stmt = conn.prepare_cached(&sql)?;
     let count: usize = stmt.query_row(rusqlite::params_from_iter(&params), |row| row.get(0))?;
     Ok(count)
@@ -247,16 +262,64 @@ pub fn fetch_games_filtered(
     let offset_idx = params.len();
 
     let sql = format!(
-        "SELECT {} FROM games{} {} LIMIT ?{} OFFSET ?{}",
+        "SELECT {} FROM games g{} {} LIMIT ?{} OFFSET ?{}",
         GAME_COLUMNS, where_clause, order, limit_idx, offset_idx
     );
 
     let mut stmt = conn.prepare_cached(&sql)?;
-    let games = stmt
+    let mut games = stmt
         .query_map(rusqlite::params_from_iter(&params), row_to_game)?
         .collect::<Result<Vec<_>, _>>()?;
 
+    attach_language_maps(conn, &mut games)?;
     Ok(games)
+}
+
+/// Populate `available_languages` ("EN:0,DE:2" - state 0=available,
+/// 1=in_library, 2=installed; EN first, then alphabetical) for every game
+/// whose shortcode has more than one language variant. Single-variant games
+/// keep None so the frontend renders no badge.
+fn attach_language_maps(conn: &Connection, games: &mut [Game]) -> DbResult<()> {
+    let shortcodes: Vec<&str> = games
+        .iter()
+        .filter_map(|g| g.shortcode.as_deref())
+        .collect();
+    if shortcodes.is_empty() {
+        return Ok(());
+    }
+
+    let placeholders: Vec<String> = (1..=shortcodes.len()).map(|i| format!("?{}", i)).collect();
+    let sql = format!(
+        "SELECT shortcode, language, installed, in_library FROM games \
+         WHERE shortcode IN ({}) \
+         ORDER BY CASE WHEN language = 'EN' THEN 0 ELSE 1 END, language",
+        placeholders.join(",")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let rows = stmt.query_map(rusqlite::params_from_iter(shortcodes.iter()), |row| {
+        let sc: String = row.get(0)?;
+        let lang: Option<String> = row.get(1)?;
+        let installed: i32 = row.get::<_, i32>(2).unwrap_or(0);
+        let in_library: i32 = row.get::<_, i32>(3).unwrap_or(0);
+        Ok((sc, lang.unwrap_or_else(|| "EN".to_string()), installed, in_library))
+    })?;
+    for row in rows {
+        let (sc, lang, installed, in_library) = row?;
+        let state = if installed != 0 { 2 } else if in_library != 0 { 1 } else { 0 };
+        map.entry(sc).or_default().push(format!("{}:{}", lang, state));
+    }
+
+    for game in games.iter_mut() {
+        if let Some(sc) = game.shortcode.as_deref() {
+            if let Some(entries) = map.get(sc) {
+                if entries.len() > 1 {
+                    game.available_languages = Some(entries.join(","));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 
@@ -341,7 +404,7 @@ pub fn get_section_keys(conn: &Connection, f: &GameFilter) -> DbResult<Vec<Strin
     };
 
     let sql = format!(
-        "SELECT DISTINCT {select} as key FROM games {where_clause} ORDER BY {order}",
+        "SELECT DISTINCT {select} as key FROM games g {where_clause} ORDER BY {order}",
         select = select_expr,
         where_clause = where_clause,
         order = order_expr,
@@ -396,9 +459,10 @@ pub fn fetch_installed_games(conn: &Connection) -> DbResult<Vec<Game>> {
         GAME_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
-    let games: Vec<Game> = stmt
+    let mut games: Vec<Game> = stmt
         .query_map([], row_to_game)?
         .collect::<Result<Vec<_>, _>>()?;
+    attach_language_maps(conn, &mut games)?;
     Ok(games)
 }
 
@@ -409,9 +473,10 @@ pub fn fetch_recently_played(conn: &Connection, limit: usize) -> DbResult<Vec<Ga
         GAME_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
-    let games: Vec<Game> = stmt
+    let mut games: Vec<Game> = stmt
         .query_map(params![limit as i64], row_to_game)?
         .collect::<Result<Vec<_>, _>>()?;
+    attach_language_maps(conn, &mut games)?;
     Ok(games)
 }
 
@@ -564,6 +629,48 @@ mod tests {
         assert_eq!(fetched.language, "EN");
         assert!(!fetched.installed);
         assert!(!fetched.favorited);
+    }
+
+    #[test]
+    fn merged_grid_one_card_per_shortcode() {
+        let conn = open_test_db();
+        let mut en = make_game("The 11th Hour");
+        en.shortcode = Some("11thHour".to_string());
+        let mut de = make_game("Die 11te Stunde");
+        de.language = "DE".to_string();
+        de.shortcode = Some("11thHour".to_string());
+        let solo = make_game("Bloxit");
+        insert_games(&conn, &[en, de, solo]).unwrap();
+        conn.execute(
+            "UPDATE games SET installed = 1, torrent_source = 'GLP' WHERE language = 'DE'", [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE games SET torrent_source = 'eXoDOS' WHERE language = 'EN'", [],
+        ).unwrap();
+
+        // Grid: one merged card (EN primary) + one standalone = 2, not 3.
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false };
+        assert_eq!(count_games_filtered(&conn, &f).unwrap(), 2);
+        let games = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+        assert_eq!(games.len(), 2);
+        let merged = games.iter().find(|g| g.shortcode.as_deref() == Some("11thHour")).unwrap();
+        assert_eq!(merged.language, "EN");
+        assert_eq!(merged.available_languages.as_deref(), Some("EN:0,DE:2"));
+        let solo = games.iter().find(|g| g.title == "Bloxit").unwrap();
+        assert_eq!(solo.available_languages, None);
+
+        // Searching the localized title surfaces the merged EN primary.
+        let f = GameFilter { query: "11te Stunde", genre: "", sort_by: "", collection: "", favorites_only: false };
+        let hits = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].language, "EN");
+
+        // Filtering by the LP collection also surfaces the EN primary.
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "GLP", favorites_only: false };
+        let hits = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].language, "EN");
+        assert_eq!(count_games_filtered(&conn, &f).unwrap(), 1);
     }
 
     #[test]

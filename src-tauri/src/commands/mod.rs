@@ -10,7 +10,7 @@ pub use content_packs::{
 pub use games::{
     cancel_download, collection_data_dir, download_game, get_config, get_download_progress, get_game,
     get_game_settings, get_game_variants, get_games, get_genres, get_recently_played,
-    get_section_keys, get_installed_games, launch_game, set_config, set_game_settings,
+    get_section_keys, get_installed_games, launch_game, open_manual, set_config, set_game_settings,
     set_seeding_enabled, toggle_favorite, uninstall_game, update_check_supported, DbState,
 };
 pub use setup::{

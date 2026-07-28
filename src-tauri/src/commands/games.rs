@@ -182,6 +182,34 @@ pub async fn set_config(
     Ok(())
 }
 
+/// Open a manual (or other game file) in the system viewer. The webview has
+/// no opener:allow-open-path capability - this command re-validates that the
+/// path lives under the configured data dir before handing it to the OS,
+/// which also works for data dirs outside $HOME (external drives).
+#[tauri::command]
+pub async fn open_manual(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    path: String,
+) -> Result<(), String> {
+    let data_dir = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        queries::get_config(&conn, "data_dir")
+            .map_err(|e| e.to_string())?
+            .ok_or("Data directory not configured")?
+    };
+    let canonical = std::fs::canonicalize(&path)
+        .map_err(|e| format!("Cannot open '{}': {}", path, e))?;
+    let base = std::fs::canonicalize(&data_dir).map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&base) {
+        return Err(format!("Refusing to open path outside the data directory: {}", path));
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(canonical.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Can this install apply updates via the tauri updater? Linux deb/rpm
 /// installs cannot (AppImage-only there) - the frontend suppresses the
 /// update pill for them instead of offering a download that can't install.
@@ -289,12 +317,6 @@ pub async fn download_game(
         }
     }
 
-    // Mark as in library only after the preflight has passed.
-    {
-        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-        queries::set_in_library(&conn, id).map_err(|e| e.to_string())?;
-    }
-
     let mut files = vec![game_idx];
     if let Some(gd_idx) = game.gamedata_torrent_index {
         files.push(gd_idx as usize);
@@ -357,6 +379,13 @@ pub async fn download_game(
         .download_files(files)
         .await
         .map_err(|e| format!("Failed to queue download: {}", e))?;
+
+    // Mark as in library only after the download is actually queued - doing
+    // it earlier left a phantom "My Games" card when queueing failed.
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        queries::set_in_library(&conn, id).map_err(|e| e.to_string())?;
+    }
 
     Ok(format!("Downloading: {}", game.title))
 }
@@ -467,7 +496,7 @@ pub async fn get_download_progress(
             if main_mgr.is_file_complete(dosbox_meta.index).await {
                 if let Some(zip_path) = main_mgr.file_output_path(dosbox_meta.index) {
                     let lock = zip_path.with_extension("extracted");
-                    if zip_path.exists() && !lock.exists() {
+                    if zip_path.exists() && !lock.exists() && dosmeta_extract_try_begin() {
                         let torrent_root = main_mgr.torrent_root();
                         tauri::async_runtime::spawn_blocking(move || {
                             let result = (|| -> Result<(), String> {
@@ -477,10 +506,11 @@ pub async fn get_download_progress(
                                 std::fs::write(&lock, "").map_err(|e| e.to_string())?;
                                 Ok(())
                             })();
-                            match result {
+                            match &result {
                                 Ok(()) => log::info!("Extracted DOSBox configs to {}", torrent_root.display()),
                                 Err(e) => log::error!("Failed to extract DOSBox configs: {}", e),
                             }
+                            dosmeta_extract_finish(result.is_ok());
                         });
                     }
                 }
@@ -532,22 +562,55 @@ pub async fn get_download_progress(
                                 .ok_or_else(|| "Cannot determine database path".to_string())?
                         };
 
-                        tauri::async_runtime::spawn_blocking(move || {
-                            log::info!("Extracting {} from {}", title, zip_path.display());
-                            if let Err(e) = extract_game_zip(&zip_path, &extract_dir) {
-                                log::error!("Failed to extract {}: {}", title, e);
+                        tauri::async_runtime::spawn(async move {
+                            // Serialize against uninstall/launch/download of the
+                            // same game. Without this, Uninstall during a multi-GB
+                            // extraction renames the half-extracted dir into !save
+                            // (garbage backup) and the extractor then re-creates the
+                            // dir and re-marks the game installed AFTER uninstall
+                            // cleared the flag.
+                            let op_lock = game_op_lock(game_id);
+                            let _op_guard = op_lock.lock().await;
+                            // Re-check: uninstall/cancel may have removed the ZIP
+                            // while we waited for the lock.
+                            if !zip_path.exists() {
                                 let _ = std::fs::remove_file(&lock_path);
                                 return;
                             }
-                            match db::open(&db_path) {
-                                Ok(conn) => {
-                                    if let Err(e) = queries::set_game_installed(&conn, game_id, true) {
-                                        log::error!("Failed to mark {} installed: {}", title, e);
-                                    } else {
-                                        log::info!("Installed: {}", title);
+                            log::info!("Extracting {} from {}", title, zip_path.display());
+                            let extract_result = {
+                                let (z, d) = (zip_path.clone(), extract_dir.clone());
+                                tauri::async_runtime::spawn_blocking(move || extract_game_zip(&z, &d)).await
+                            };
+                            match extract_result {
+                                Ok(Ok(())) => match db::open(&db_path) {
+                                    Ok(conn) => {
+                                        if let Err(e) = queries::set_game_installed(&conn, game_id, true) {
+                                            log::error!("Failed to mark {} installed: {}", title, e);
+                                        } else {
+                                            log::info!("Installed: {}", title);
+                                        }
+                                    }
+                                    Err(e) => log::error!("Failed to open DB for install update: {}", e),
+                                },
+                                Ok(Err(e)) => {
+                                    log::error!("Failed to extract {}: {}", title, e);
+                                    // Corrupt/stub ZIP (same detection as the launch
+                                    // path): delete it and clear in_library so the
+                                    // 1 Hz poll stops re-extracting the same broken
+                                    // bytes forever and the user can re-download.
+                                    if e.contains("EOCD") || e.contains("invalid Zip") || e.contains("Invalid archive") {
+                                        log::warn!(
+                                            "ZIP for {} is corrupt/incomplete - removing it so a re-download starts clean",
+                                            title
+                                        );
+                                        let _ = std::fs::remove_file(&zip_path);
+                                        if let Ok(conn) = db::open(&db_path) {
+                                            let _ = queries::clear_in_library(&conn, game_id);
+                                        }
                                     }
                                 }
-                                Err(e) => log::error!("Failed to open DB for install update: {}", e),
+                                Err(e) => log::error!("Extraction task panicked for {}: {}", title, e),
                             }
                             let _ = std::fs::remove_file(&lock_path);
                         });
@@ -683,6 +746,12 @@ pub async fn cancel_download(
         )
     };
 
+    // Serialize against a concurrently-running extraction/launch/uninstall of
+    // the same game - cancel mid-extraction otherwise clears in_library while
+    // the extractor later sets installed=1 (installed-but-not-in-library).
+    let op_lock = game_op_lock(id);
+    let _op_guard = op_lock.lock().await;
+
     // Deselect from torrent first - if this fails silently, we still want to clear the DB flag.
     // Clone Arc before dropping the guard so we don't hold the read lock across awaits.
     {
@@ -738,6 +807,17 @@ pub async fn uninstall_game(
         );
     }
 
+    if running_games()
+        .lock()
+        .map(|s| s.contains(&running_game_key(&game)))
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "'{}' is currently running - quit DOSBox before uninstalling.",
+            game.title
+        ));
+    }
+
     let op_lock = game_op_lock(id);
     let _op_guard = op_lock.lock().await;
 
@@ -755,15 +835,17 @@ pub async fn uninstall_game(
         .and_then(crate::commands::setup::game_name_from_app_path)
         .unwrap_or_else(|| game.title.clone());
 
-    // Determine game directory
-    // For EN:  <game_prefix>/<shortcode>/
-    // For LP:  <game_prefix>/<lang_dir>/<shortcode>/
-    let mut game_dir_candidates = vec![torrent_root.join(format!("{}/{}", game_prefix, shortcode))];
-    for ld in LANG_DIRS {
-        game_dir_candidates.push(torrent_root.join(format!("{}/{}/{}", game_prefix, ld, shortcode)));
-    }
-
-    let game_dir: Option<PathBuf> = game_dir_candidates.into_iter().find(|d| d.exists());
+    // Determine THIS variant's game directory:
+    // EN: <game_prefix>/<shortcode>/   LP: <game_prefix>/<lang_dir>/<shortcode>/
+    // Never probe other languages' dirs - the old first-existing probe over
+    // all lang dirs made "uninstall the DE variant" back up and delete the
+    // EN install when both were on disk.
+    let lang_dir = collection_lang_dir(source);
+    let game_dir_candidate = match lang_dir {
+        Some(ld) => torrent_root.join(format!("{}/{}/{}", game_prefix, ld, shortcode)),
+        None => torrent_root.join(format!("{}/{}", game_prefix, shortcode)),
+    };
+    let game_dir: Option<PathBuf> = Some(game_dir_candidate).filter(|d| d.exists());
 
     let db_path = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -774,8 +856,15 @@ pub async fn uninstall_game(
     let deleted_rels: Vec<String> = tauri::async_runtime::spawn_blocking(move || {
         if let Some(ref dir) = game_dir {
             if dir.exists() {
-                // Back up the entire game directory (preserves saves, configs, etc.)
-                let save_dir = torrent_root.join(format!("{}/!save/{}", game_prefix, shortcode));
+                // Back up the entire game directory (preserves saves, configs,
+                // etc.). LP backups live under the language dir so uninstalling
+                // one variant can't clobber another's backup; extract_game_zip's
+                // restore probes both the lang-scoped and the legacy shared
+                // location.
+                let save_dir = match lang_dir {
+                    Some(ld) => torrent_root.join(format!("{}/{}/!save/{}", game_prefix, ld, shortcode)),
+                    None => torrent_root.join(format!("{}/!save/{}", game_prefix, shortcode)),
+                };
                 if save_dir.exists() {
                     let _ = std::fs::remove_dir_all(&save_dir);
                 }
@@ -784,7 +873,10 @@ pub async fn uninstall_game(
                     // Rename failed (cross-device?), fall back to copy + delete
                     log::warn!("Rename to save dir failed ({}), falling back to copy", e);
                     if let Err(e) = copy_dir_recursive(dir, &save_dir) {
-                        log::error!("Failed to back up game directory '{}': {}", dir.display(), e);
+                        log::error!(
+                            "Failed to back up game directory '{}': {} - keeping originals in place",
+                            dir.display(), e
+                        );
                         // Don't delete the source if backup failed
                     } else {
                         let _ = std::fs::remove_dir_all(dir);
@@ -796,11 +888,12 @@ pub async fn uninstall_game(
 
         // Track which ZIPs actually got deleted (torrent-relative paths) so
         // the caller can reset piece bookkeeping in exactly the torrents
-        // that tracked them.
-        let mut zip_rels = vec![format!("{}/{}.zip", game_prefix, game_name)];
-        for ld in LANG_DIRS {
-            zip_rels.push(format!("{}/{}/{}.zip", game_prefix, ld, game_name));
-        }
+        // that tracked them. Only THIS variant's ZIP - the old all-languages
+        // sweep deleted neighbor variants' downloads too.
+        let zip_rels = vec![match lang_dir {
+            Some(ld) => format!("{}/{}/{}.zip", game_prefix, ld, game_name),
+            None => format!("{}/{}.zip", game_prefix, game_name),
+        }];
         let mut deleted_rels: Vec<String> = Vec::new();
         for rel in &zip_rels {
             let zip = torrent_root.join(rel);
@@ -901,6 +994,54 @@ pub async fn uninstall_game(
     }
 
     Ok(format!("Uninstalled: {}", game.title))
+}
+
+/// In-flight + failure-backoff guard for the !DOSmetadata.zip extraction.
+/// Without it, every 1 Hz progress poll during the (long) extraction spawned
+/// another overlapping full extraction - and a corrupt ZIP retried forever.
+/// State: (in_flight, last_failure).
+static DOSMETA_EXTRACT: OnceLock<Mutex<(bool, Option<std::time::Instant>)>> = OnceLock::new();
+
+fn dosmeta_state() -> &'static Mutex<(bool, Option<std::time::Instant>)> {
+    DOSMETA_EXTRACT.get_or_init(|| Mutex::new((false, None)))
+}
+
+/// Returns true (and marks in-flight) if an extraction attempt may start now.
+fn dosmeta_extract_try_begin() -> bool {
+    let Ok(mut state) = dosmeta_state().lock() else { return false };
+    if state.0 {
+        return false;
+    }
+    // 5-minute cooldown after a failure so a corrupt ZIP doesn't hot-loop.
+    if let Some(failed_at) = state.1 {
+        if failed_at.elapsed().as_secs() < 300 {
+            return false;
+        }
+    }
+    state.0 = true;
+    true
+}
+
+fn dosmeta_extract_finish(success: bool) {
+    if let Ok(mut state) = dosmeta_state().lock() {
+        state.0 = false;
+        state.1 = if success { None } else { Some(std::time::Instant::now()) };
+    }
+}
+
+/// Currently-running games (keyed by shortcode:language, or id when no
+/// shortcode exists). Inserted at spawn, removed by the reaper task when
+/// DOSBox exits. Lets uninstall refuse while the game's files are open.
+fn running_games() -> &'static Mutex<std::collections::HashSet<String>> {
+    static RUNNING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    RUNNING.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+fn running_game_key(game: &Game) -> String {
+    match game.shortcode.as_deref() {
+        Some(sc) => format!("{}:{}", sc, game.language),
+        None => format!("id:{}", game.id.unwrap_or(-1)),
+    }
 }
 
 /// Per-game mutual exclusion for launch / uninstall / download. The old
@@ -1456,7 +1597,15 @@ fn patch_dosbox_conf(
         patched
     };
 
-    let patched_path = working_dir.join(".exodium_launch.conf");
+    // Name the fragment after the game's conf dir: working_dir is SHARED
+    // across every game in a collection, and a fixed name let two
+    // concurrent launches read each other's patched conf (wrong game boots).
+    let tag = conf_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "conf".to_string());
+    let patched_path = working_dir.join(format!(".exodium_launch_{}.conf", tag));
     std::fs::write(&patched_path, &patched)
         .map_err(|e| format!("Failed to write patched config: {}", e))?;
 
@@ -1819,18 +1968,43 @@ fn autoexec_has_launch_cmd(conf: &str) -> bool {
     })
 }
 
+/// Copy a directory tree. Returns Err when ANY entry failed - callers that
+/// delete the source after a "successful" backup must see partial copies as
+/// failures, otherwise locked/unreadable files are silently lost.
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     std::fs::create_dir_all(dst).map_err(|e| format!("Failed to create {}: {}", dst.display(), e))?;
-    for entry in walkdir::WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
+    let mut failures = 0usize;
+    let mut first_err = String::new();
+    let mut fail = |msg: String| {
+        log::warn!("{}", msg);
+        if first_err.is_empty() {
+            first_err = msg;
+        }
+        failures += 1;
+    };
+    for entry in walkdir::WalkDir::new(src) {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                fail(format!("Walk error under {}: {}", src.display(), err));
+                continue;
+            }
+        };
         let rel = entry.path().strip_prefix(src).unwrap();
         let target = dst.join(rel);
         if entry.path().is_dir() {
             if let Err(e) = std::fs::create_dir_all(&target) {
-                log::warn!("Failed to create dir {}: {}", target.display(), e);
+                fail(format!("Failed to create dir {}: {}", target.display(), e));
             }
         } else if let Err(e) = std::fs::copy(entry.path(), &target) {
-            log::warn!("Failed to copy {} -> {}: {}", entry.path().display(), target.display(), e);
+            fail(format!("Failed to copy {} -> {}: {}", entry.path().display(), target.display(), e));
         }
+    }
+    if failures > 0 {
+        return Err(format!(
+            "{} item(s) failed while copying {} (first: {})",
+            failures, src.display(), first_err
+        ));
     }
     Ok(())
 }
@@ -1840,9 +2014,16 @@ fn extract_game_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Resul
     let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
-    // Get the top-level directory name from the ZIP (the shortcode)
-    let shortcode = archive.by_index(0).ok()
-        .and_then(|e| e.name().split('/').next().map(|s| s.to_string()));
+    // Get the top-level directory name from the ZIP (the shortcode). Scan
+    // for the first entry that actually has a directory component - entry 0
+    // being a root-level file would otherwise silently skip save restore.
+    let shortcode = (0..archive.len()).find_map(|i| {
+        let entry = archive.by_index(i).ok()?;
+        let name = entry.name();
+        let (first, rest) = name.split_once('/')?;
+        let _ = rest;
+        Some(first.to_string())
+    });
 
     archive.extract(dest).map_err(|e| e.to_string())?;
     log::info!("Extracted: {} -> {}", zip_path.display(), dest.display());
@@ -1861,7 +2042,9 @@ fn extract_game_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Resul
         for save_dir in &save_candidates {
             if save_dir.exists() && game_dir.exists() {
                 log::info!("Restoring saves from {}", save_dir.display());
-                let _ = copy_dir_recursive(save_dir, &game_dir);
+                if let Err(e) = copy_dir_recursive(save_dir, &game_dir) {
+                    log::warn!("Save restore incomplete for {}: {}", game_dir.display(), e);
+                }
                 break;
             }
         }
@@ -1950,15 +2133,17 @@ fn resolve_dosbox(app: &AppHandle) -> PathBuf {
 /// Install DOSBox Staging glshaders into the user config dir if missing.
 ///
 /// DOSBox aborts at startup with "Fallback shader 'interpolation/bilinear'
-/// not found" unless it finds glshaders in the user config dir. The shader
-/// pack is bundled as a Tauri resource (`bundle.resources` maps
-/// `resources/dosbox-glshaders` → `dosbox-glshaders` inside resource_dir).
-/// Here we copy it to the user config dir on first launch; subsequent
-/// launches see the dir already exists and no-op.
+/// not found" unless it finds glshaders in one of its search paths. The
+/// shader pack is bundled as a Tauri resource (`bundle.resources` maps
+/// `resources/dosbox-glshaders` → `glshaders` inside resource_dir). On
+/// macOS that alone is enough: the sidecar searches
+/// `Contents/MacOS/../Resources/glshaders` natively. The copy into the
+/// user config dir here covers Linux/Windows and acts as a fallback.
 ///
-/// On macOS this is only needed when the user opts into CRT shaders -
-/// otherwise launch_game writes `output = texture` (SDL renderer, no
-/// shader pipeline) which sidesteps the startup check entirely.
+/// The presence check targets the mandatory fallback shader file, NOT the
+/// directory: an empty `glshaders/` dir (seen in the wild on macOS, cause
+/// unknown) used to short-circuit the install forever and DOSBox then
+/// aborted on every launch with CRT enabled.
 fn ensure_dosbox_shaders(app: &AppHandle) {
     use tauri::Manager;
 
@@ -1985,7 +2170,7 @@ fn ensure_dosbox_shaders(app: &AppHandle) {
         return;
     };
 
-    if user_shader_dir.is_dir() {
+    if user_shader_dir.join("interpolation").join("bilinear.glsl").is_file() {
         return;
     }
 
@@ -1996,11 +2181,18 @@ fn ensure_dosbox_shaders(app: &AppHandle) {
             return;
         }
     };
-    let bundled = res_dir.join("dosbox-glshaders");
-    if !bundled.is_dir() {
-        log::debug!("No bundled DOSBox shaders at {}", bundled.display());
+    // Production layout first ("glshaders"), then pre-0.8.4 bundles
+    // ("dosbox-glshaders"), then the dev-mode staged source path.
+    const SHADER_RES_DIRS: &[&str] =
+        &["glshaders", "dosbox-glshaders", "resources/dosbox-glshaders"];
+    let Some(bundled) = SHADER_RES_DIRS
+        .iter()
+        .map(|sub| res_dir.join(sub))
+        .find(|p| p.join("interpolation").join("bilinear.glsl").is_file())
+    else {
+        log::warn!("No bundled DOSBox shaders found under {}", res_dir.display());
         return;
-    }
+    };
 
     if let Some(parent) = user_shader_dir.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -2312,16 +2504,12 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         if use_ece { "DOSBox ECE" } else { "DOSBox Staging" }
     );
 
-    // Linux/Windows need shaders for DOSBox to start at all. macOS only needs
-    // them if CRT auto is enabled (otherwise `output = texture` sidesteps the
-    // shader pipeline). Avoid writing files to the user's macOS prefs dir
-    // unless they've actually opted into shader-based rendering.
-    #[cfg(not(target_os = "macos"))]
+    // DOSBox Staging aborts at startup when it can't find glshaders and CRT
+    // is enabled (glshader defaults to crt-auto, which is also OUR default).
+    // Run unconditionally on every platform: the check is a single stat once
+    // installed, and it self-repairs the empty-glshaders-dir state that
+    // bricked launches on fresh macOS installs (v0.8.3).
     ensure_dosbox_shaders(&app);
-    #[cfg(target_os = "macos")]
-    if crt_auto_enabled {
-        ensure_dosbox_shaders(&app);
-    }
 
     let dosbox_bin = ece_bin.unwrap_or_else(|| resolve_dosbox(&app));
     let mut cmd = Command::new(&dosbox_bin);
@@ -2333,18 +2521,16 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         cmd.arg("-conf").arg(&options_conf);
     }
 
-    // macOS: the standalone binary extracted from the .app DMG lacks the bundle's
-    // Contents/Resources/glshaders/, so DOSBox aborts when it can't find the
-    // mandatory 'interpolation/bilinear' fallback shader. Default path is to
-    // force `output = texture` (SDL hardware renderer, no shader pipeline) via
-    // a last-wins conf fragment - sidesteps the shader requirement entirely.
-    // If the user enabled CRT shaders globally we skip this override and rely
-    // on ensure_dosbox_shaders having installed the pack into
-    // ~/Library/Preferences/DOSBox/glshaders (see that function).
+    // macOS with CRT off: force `output = texture` (SDL hardware renderer, no
+    // shader pipeline) via a last-wins conf fragment. Shaders are bundled at
+    // Contents/Resources/glshaders since 0.8.4 so this is no longer required
+    // to avoid the missing-shader abort, but texture output is the
+    // long-proven macOS path for the non-CRT look, so keep it.
     #[cfg(target_os = "macos")]
     {
         if !crt_auto_enabled {
-            let conf_path = std::path::Path::new(&data_dir).join("exodium_macos_dosbox.conf");
+            let conf_path =
+                std::path::Path::new(&data_dir).join(format!("exodium_macos_dosbox_{}.conf", id));
             std::fs::write(&conf_path, "[sdl]\noutput = texture\n")
                 .map_err(|e| format!("Failed to write macOS override conf: {e}"))?;
             cmd.arg("-conf").arg(&conf_path);
@@ -2371,7 +2557,8 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
                 "[sdl]\nfullscreen = {fullscreen_val}\n[render]\nglshader = {glshader_val}\n"
             )
         };
-        let conf_path = std::path::Path::new(&data_dir).join("exodium_global_overrides.conf");
+        let conf_path =
+            std::path::Path::new(&data_dir).join(format!("exodium_global_overrides_{}.conf", id));
         std::fs::write(&conf_path, &frag)
             .map_err(|e| format!("Failed to write global override conf: {e}"))?;
         cmd.arg("-conf").arg(&conf_path);
@@ -2497,7 +2684,7 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     }
 
     log::info!("Spawning DOSBox: {}", dosbox_bin.display());
-    cmd.spawn().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         log::error!("DOSBox spawn failed for {}: {} (raw_os_error={:?})",
             dosbox_bin.display(), e, e.raw_os_error());
         format!(
@@ -2505,6 +2692,20 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
             dosbox_bin.display(), e
         )
     })?;
+
+    // Reap the child (dropped Child handles become zombies on Unix) and track
+    // the running game so uninstall can refuse while DOSBox holds its files
+    // open - deleting/renaming a live game dir on Windows fails per-file and
+    // used to silently lose saves through the copy fallback.
+    let run_key = running_game_key(&game);
+    running_games().lock().map(|mut s| s.insert(run_key.clone())).ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        match child.wait() {
+            Ok(status) => log::info!("DOSBox exited ({}) for {}", status, run_key),
+            Err(e) => log::warn!("DOSBox wait failed for {}: {}", run_key, e),
+        }
+        running_games().lock().map(|mut s| s.remove(&run_key)).ok();
+    });
 
     Ok(format!("Launched: {}", game.title))
 }

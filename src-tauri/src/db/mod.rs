@@ -26,7 +26,10 @@ pub const CATALOG_VERSION: i64 = 2;
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    // busy_timeout: side connections (import, extraction watcher, uninstall)
+    // write concurrently with the main DbState connection; without a timeout
+    // rusqlite surfaces SQLITE_BUSY instantly instead of waiting.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
     Ok(conn)
 }
 

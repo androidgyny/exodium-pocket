@@ -13,10 +13,6 @@
     "core:window:allow-close",
     "core:event:allow-listen",
     "opener:default",
-    {
-      "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "$HOME/**" }]
-    },
     "dialog:default",
     "updater:default",
     "process:allow-restart"

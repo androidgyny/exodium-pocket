@@ -48,11 +48,11 @@ exodium/
 │   ├── capabilities/default.json   ← Tauri permissions (drag/resize perms live here)
 │   └── src/
 │       ├── commands/
-│       │   ├── setup.rs       ← init_download_manager, import_bundled_metadata, COLLECTION_MAP
+│       │   ├── setup.rs       ← init_download_manager, setup flow, factory_reset, COLLECTION_MAP
 │       │   └── games.rs       ← get_games, launch_game, download_game, uninstall_game
 │       ├── db/
 │       │   ├── schema.rs      ← CREATE TABLE statements
-│       │   └── queries.rs     ← fetch_games_merged, language map building
+│       │   └── queries.rs     ← fetch_games_filtered (merged rows), attach_language_maps
 │       ├── import/            ← LaunchBox XML parser
 │       ├── torrent/           ← librqbit wrapper, per-collection download manager
 │       └── models/
@@ -97,10 +97,10 @@ All four eXoDOS torrents have the same internal name `eXoDOS`, which causes libr
 
 `COLLECTION_MAP` in `setup.rs` is ordered **LP first, eXoDOS last** so title-matching prefers LP entries when populating merged rows.
 
-### 3. Multi-language games are merged in `fetch_games_merged`
-One row per shortcode returned to the frontend, with `language` = EN (preferred) and `available_languages` = a string like `"DE:2,EN:0,FR:1"`. State codes: `0=available`, `1=in_library/downloading`, `2=installed`. The frontend parses this in `GameCard.tsx::langEntries()`.
+### 3. Multi-language games are merged in `fetch_games_filtered`
+One row per shortcode returned to the frontend (`PRIMARY_ROW_CONDITION` in `queries.rs` picks the EN row, lowest id as tiebreak), with `available_languages` = a string like `"EN:0,DE:2"` attached by `attach_language_maps` for groups with >1 variant. State codes: `0=available`, `1=in_library/downloading`, `2=installed`. The frontend parses this in `util.ts::parseLangEntries()` (used by `GameCard.tsx::langEntries()`).
 
-`build_where_clause` intentionally does **not** filter by language; language filtering is applied via a separate shortcode subquery so that filtering by DE still shows the merged EN primary row.
+`build_where_clause` evaluates filters (title search, genre, collection, favorites) against EVERY variant of a group via an EXISTS subquery, so searching a localized title or filtering an LP collection still surfaces the merged EN primary row. History: this merging was lost in the pre-built-DB migration (per-language duplicate cards, dead badges) and restored in 0.8.4.
 
 ### 4. `in_library` vs `installed` (two flags, not one)
 - `in_library = 1` → shown in "My Games" (sticky: set on download start, cleared on uninstall)
@@ -109,7 +109,7 @@ One row per shortcode returned to the frontend, with `language` = EN (preferred)
 This lets the "My Games" view show a download progress card immediately when the user clicks download, before extraction finishes.
 
 ### 5. Save backup via atomic rename (not file-diff)
-On uninstall, the entire game directory is moved to `!save/<shortcode>/` via `std::fs::rename`. On reinstall, `copy_dir_recursive` restores it after ZIP extraction. Simple, preserves every user modification, no `zip --dif` gymnastics.
+On uninstall, the entire game directory is moved to `!save/<shortcode>/` (EN) or `<lang_dir>/!save/<shortcode>/` (LP variants - language-scoped since 0.8.4 so variants can't clobber each other's backup) via `std::fs::rename`. On reinstall, `extract_game_zip` restores it, probing the lang-scoped location first, then the legacy shared one. Simple, preserves every user modification, no `zip --dif` gymnastics.
 
 ### 6. LP games auto-download shared EN GameData
 Videos and animations for LP games live in the main eXoDOS torrent's GameData folder. `download_game` in `games.rs` auto-fetches the matching EN GameData entry when installing an LP variant. `get_game_variants` dynamically subtracts the EN GameData size from the displayed download size if it's already on disk.

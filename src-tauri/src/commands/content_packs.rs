@@ -232,6 +232,15 @@ pub async fn install_content_pack(
     if !has_torrent_source && !has_http_source {
         return Err(format!("'{}' is not yet available for download.", pack_info.display_name));
     }
+    // HTTP installs are only integrity-checked via the manifest sha256; a
+    // placeholder hash would mean installing unverified content. Torrent
+    // installs are unaffected (piece hashes cover them).
+    if !has_torrent_source && pack_info.sha256.starts_with("TODO") {
+        return Err(format!(
+            "'{}' has no integrity hash in the manifest; refusing download.",
+            pack_info.display_name
+        ));
+    }
 
     let key = format!("{}:{}", collection, pack_id);
 
@@ -440,7 +449,11 @@ async fn do_install_torrent(
         .await
         .map_err(|e| format!("Failed to queue torrent download: {}", e))?;
 
-    // Poll for completion, updating progress on the job.
+    // Poll for completion, updating progress on the job. file_progress
+    // returning None means the manager lost the torrent handle (e.g. after a
+    // failed session restore) - without the counter this would spin in
+    // "downloading" forever with only cancel as an exit.
+    let mut none_streak = 0u32;
     loop {
         if cancel.load(Ordering::Relaxed) {
             manager.deselect_file(file_index).await;
@@ -449,6 +462,7 @@ async fn do_install_torrent(
 
         let progress = manager.file_progress(file_index).await;
         if let Some(p) = progress {
+            none_streak = 0;
             let mut jmap = jobs.write().await;
             if let Some(job) = jmap.get_mut(key) {
                 job.downloaded_bytes = p.downloaded_bytes;
@@ -456,6 +470,15 @@ async fn do_install_torrent(
             }
             if p.finished {
                 break;
+            }
+        } else {
+            none_streak += 1;
+            if none_streak >= 10 {
+                return Err(format!(
+                    "Torrent progress unavailable for '{}' - the download manager \
+                     lost the file handle. Restart Exodium and retry.",
+                    pack_info.display_name
+                ));
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -553,7 +576,13 @@ async fn do_install(
 
     // ── Phase 1: Download + stream-hash ──────────────────────────────────────
 
-    let response = reqwest::get(&pack_info.url)
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client init failed: {}", e))?;
+    let response = client
+        .get(&pack_info.url)
+        .send()
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
 
@@ -579,7 +608,24 @@ async fn do_install(
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
 
-    while let Some(chunk_result) = stream.next().await {
+    // A lying/misconfigured server must not fill the disk: allow 5% slack over
+    // the manifest size, then abort.
+    let size_cap = (pack_info.size_bytes > 0)
+        .then(|| pack_info.size_bytes + pack_info.size_bytes / 20);
+
+    loop {
+        // Stall guard: a server that keeps the connection open without
+        // sending data would otherwise hang the job forever.
+        let next = tokio::time::timeout(std::time::Duration::from_secs(60), stream.next())
+            .await
+            .map_err(|_| {
+                let _ = std::fs::remove_file(&tmp_file);
+                "Download stalled: no data received for 60 seconds.".to_string()
+            })?;
+        let Some(chunk_result) = next else {
+            break;
+        };
+
         if cancel.load(Ordering::Relaxed) {
             let _ = std::fs::remove_file(&tmp_file);
             return Err("Cancelled".to_string());
@@ -591,6 +637,16 @@ async fn do_install(
             .map_err(|e| format!("Write error: {}", e))?;
 
         downloaded += chunk.len() as u64;
+        if let Some(cap) = size_cap {
+            if downloaded > cap {
+                let _ = std::fs::remove_file(&tmp_file);
+                return Err(format!(
+                    "Download exceeded expected size ({} > {}); aborting.",
+                    format_bytes(downloaded),
+                    format_bytes(pack_info.size_bytes)
+                ));
+            }
+        }
 
         // Update progress (not every chunk - throttle to avoid lock contention).
         if downloaded % (256 * 1024) < chunk.len() as u64 || downloaded >= content_length {
@@ -612,8 +668,10 @@ async fn do_install(
         }
     }
 
+    // No TODO-placeholder exemption here: install_content_pack refuses those
+    // upfront, and a placeholder that slips through must fail closed.
     let hash = format!("{:x}", hasher.finalize());
-    if !pack_info.sha256.starts_with("TODO") && hash != pack_info.sha256 {
+    if hash != pack_info.sha256 {
         let _ = std::fs::remove_file(&tmp_file);
         return Err(format!(
             "Checksum mismatch - expected {}, got {}. Download may be corrupted, please retry.",
@@ -712,9 +770,23 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 #[tauri::command]
 pub async fn uninstall_content_pack(
     db_state: State<'_, DbState>,
+    pack_state: State<'_, ContentPackState>,
     collection: String,
     pack_id: String,
 ) -> Result<(), String> {
+    // A running installer would race this delete (its staging rename can
+    // repopulate the dir we just removed, or we can yank the dir out from
+    // under its "remove old install" step).
+    {
+        let jobs = pack_state.0.read().await;
+        let key = format!("{}:{}", collection, pack_id);
+        if let Some(job) = jobs.get(&key) {
+            if !job.finished {
+                return Err("Install in progress - cancel it first.".to_string());
+            }
+        }
+    }
+
     let (_data_dir, install_dir) = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         let data_dir = queries::get_config(&conn, "data_dir")

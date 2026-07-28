@@ -325,13 +325,21 @@ pub async fn init_download_manager(
         if let Ok(torrent_path) = bundled_torrent_path(col.torrent_file) {
             match DownloadManager::new_with_session(Arc::clone(&session), &torrent_path, &data_path, &persistence_dir) {
                 Ok(mgr) => {
-                    // Store the torrent infohash so the update-checker can compare later
+                    // Store the torrent infohash so the update-checker can compare
+                    // later. Write-if-absent: overwriting on every startup would
+                    // clobber the stored baseline the moment a newer bundled
+                    // torrent ships, masking exactly the comparison
+                    // check_for_updates exists to make.
                     match TorrentIndex::infohash(&torrent_path) {
                         Ok(hash) => {
                             match db_state.0.lock() {
                                 Ok(conn) => {
-                                    if let Err(e) = queries::set_config(&conn, &format!("{}_infohash", col.id), &hash) {
-                                        log::warn!("Failed to save infohash for {}: {}", col.id, e);
+                                    let key = format!("{}_infohash", col.id);
+                                    let existing = queries::get_config(&conn, &key).ok().flatten();
+                                    if existing.is_none() {
+                                        if let Err(e) = queries::set_config(&conn, &key, &hash) {
+                                            log::warn!("Failed to save infohash for {}: {}", col.id, e);
+                                        }
                                     }
                                 }
                                 Err(e) => log::warn!("Failed to lock DB for infohash write ({}): {}", col.id, e),
@@ -349,11 +357,23 @@ pub async fn init_download_manager(
                                 let lock = torrent_root.join(format!(".{}_configs_extracted", col.id));
                                 if !lock.exists() {
                                     log::info!("Extracting {} configs to {}", col.id, torrent_root.display());
-                                    if let Ok(file) = std::fs::File::open(&cfg_path) {
-                                        if let Ok(mut archive) = zip::ZipArchive::new(file) {
-                                            let _ = archive.extract(&torrent_root);
-                                            let _ = std::fs::write(&lock, "");
+                                    // Write the lock ONLY on success - latching a
+                                    // failed extract (disk full, permissions) left
+                                    // the configs permanently missing with no retry.
+                                    let extracted = std::fs::File::open(&cfg_path)
+                                        .map_err(|e| e.to_string())
+                                        .and_then(|f| zip::ZipArchive::new(f).map_err(|e| e.to_string()))
+                                        .and_then(|mut a| a.extract(&torrent_root).map_err(|e| e.to_string()));
+                                    match extracted {
+                                        Ok(()) => {
+                                            if let Err(e) = std::fs::write(&lock, "") {
+                                                log::warn!("Could not write configs lock for {}: {}", col.id, e);
+                                            }
                                         }
+                                        Err(e) => log::error!(
+                                            "Failed to extract {} configs (will retry next startup): {}",
+                                            col.id, e
+                                        ),
                                     }
                                 }
                             }
@@ -531,15 +551,29 @@ pub async fn factory_reset(
     };
 
     // Drop all download managers. Use a timeout so a stuck reader doesn't hang forever.
-    match tokio::time::timeout(
+    let session_mgr = match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         torrent_state.0.write(),
     ).await {
-        Ok(mut managers) => managers.clear(),
+        Ok(mut managers) => {
+            // Keep one Arc to reach the shared session after clearing the map.
+            let any = managers.values().next().cloned();
+            managers.clear();
+            any
+        }
         Err(_) => {
             log::error!("factory_reset: timed out waiting for torrent write lock");
             return Err("Could not stop downloads in time. Cancel any active downloads and try again.".to_string());
         }
+    };
+
+    // Quiesce librqbit BEFORE deleting files: spawned tasks hold Arcs that
+    // keep the session's writers alive past the map clear, and a live writer
+    // can re-create files after the wipe - leaving a piece ledger that
+    // claims data which no longer exists ("100% but ZIP missing" on the
+    // next setup).
+    if let Some(mgr) = session_mgr {
+        mgr.shutdown_session().await;
     }
 
     // Reset user state without touching the game catalog.
@@ -583,26 +617,36 @@ pub async fn factory_reset(
             if downloads_path.exists() {
                 let _ = std::fs::remove_dir_all(&downloads_path);
             }
+            // Legacy residue: pre-0.8.4 setup sessions persisted fastresume
+            // in the DATA dir (session split-brain bug). Clean it up here so
+            // a later setup against the same dir can't load a stale ledger.
+            let legacy_fastresume = base.join("librqbit-fastresume");
+            if legacy_fastresume.exists() {
+                let _ = std::fs::remove_dir_all(&legacy_fastresume);
+            }
         }
     }
 
-    // Clear librqbit's fastresume cache so the next session re-seeds empty
-    // bitfields (or runs real validation if the user pointed at existing data).
-    // Stale .bitv files would otherwise mislead librqbit about disk state and
-    // either skip validation when it shouldn't, or trigger re-downloads.
-    match app.path().app_data_dir() {
-        Ok(config_dir) => {
-            let persistence = fastresume_dir(&config_dir);
-            if persistence.exists() {
-                log::info!("Clearing fastresume cache: {}", persistence.display());
-                if let Err(e) = std::fs::remove_dir_all(&persistence) {
-                    log::warn!("Failed to clear fastresume cache: {}", e);
+    // Fastresume cache: clear it ONLY when the data was deleted too. The
+    // ledger describes the torrent bytes on disk - after a delete it's stale
+    // and would mislead librqbit, but in keep-data mode it's still accurate,
+    // and clearing it forced the next download into a full multi-minute
+    // revalidation of ~14k files (the exact hang the seeding avoids).
+    if delete_game_data {
+        match app.path().app_data_dir() {
+            Ok(config_dir) => {
+                let persistence = fastresume_dir(&config_dir);
+                if persistence.exists() {
+                    log::info!("Clearing fastresume cache: {}", persistence.display());
+                    if let Err(e) = std::fs::remove_dir_all(&persistence) {
+                        log::warn!("Failed to clear fastresume cache: {}", e);
+                    }
                 }
             }
+            Err(e) => log::warn!(
+                "factory_reset: could not resolve app_data_dir to clear fastresume cache: {}", e
+            ),
         }
-        Err(e) => log::warn!(
-            "factory_reset: could not resolve app_data_dir to clear fastresume cache: {}", e
-        ),
     }
 
     log::info!("Factory reset completed (delete_game_data={})", delete_game_data);
@@ -1202,10 +1246,13 @@ pub async fn get_torrent_info() -> Result<TorrentInfo, String> {
 /// Initialize the download system and start downloading metadata.
 #[tauri::command]
 pub async fn setup_start(
+    app: tauri::AppHandle,
     db_state: State<'_, DbState>,
     torrent_state: State<'_, TorrentState>,
     data_dir: String,
 ) -> Result<String, String> {
+    use tauri::Manager;
+
     // Save data_dir to config
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -1215,9 +1262,23 @@ pub async fn setup_start(
     let torrent_path = bundled_torrent_path("eXoDOS.torrent")?;
     let data_path = PathBuf::from(&data_dir);
 
-    let manager = DownloadManager::new(&torrent_path, &data_path)
+    // Same session root as init_download_manager (app config dir, NOT the
+    // data dir). The old data-dir session split the piece ledger from the
+    // main flow: fastresume earned during setup was invisible afterwards
+    // (forcing a full ~14k-file revalidation on the first game download) and
+    // its data-dir persistence was cleaned by neither factory_reset nor
+    // eviction, leaving stale ledgers behind.
+    let config_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let persistence_dir = fastresume_dir(&config_dir);
+    seed_fastresume_bitvs(&persistence_dir, &["eXoDOS"], &data_path);
+    let session = DownloadManager::create_session(&config_dir, &persistence_dir)
         .await
-        .map_err(|e| format!("Failed to init download manager: {}", e))?;
+        .map_err(|e| e.to_string())?;
+    evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
+    apply_seeding_preference(&session, &db_state);
+    let manager =
+        DownloadManager::new_with_session(session, &torrent_path, &data_path, &persistence_dir)
+            .map_err(|e| format!("Failed to init download manager: {}", e))?;
 
     // Find metadata files in the torrent
     let metadata_idx = manager
@@ -1337,10 +1398,16 @@ pub async fn setup_import(
     db_state: State<'_, DbState>,
     torrent_state: State<'_, TorrentState>,
 ) -> Result<usize, String> {
-    let guard = torrent_state.0.read().await;
-    let manager = guard
-        .get("eXoDOS")
-        .ok_or("Download manager not initialized")?;
+    // Clone the Arc and drop the read guard immediately (same pattern as
+    // get_setup_status) - holding it across the multi-second import blocks
+    // factory_reset's write lock into its 5s timeout.
+    let manager = {
+        let guard = torrent_state.0.read().await;
+        guard
+            .get("eXoDOS")
+            .cloned()
+            .ok_or("Download manager not initialized")?
+    };
 
     // Find the downloaded metadata ZIP path
     let metadata_idx = manager
@@ -1819,12 +1886,15 @@ fn scan_installed_games_with_db(
         .join("eXo")
         .join("eXoDOS");
 
-    // Reset all installed flags before the scan so that games whose extracted directory
-    // was removed are correctly flipped back to "not installed".
-    // in_library is also cleared - the scan is the authoritative source for local installs.
+    // Reset installed flags before the scan so that games whose extracted
+    // directory was removed are correctly flipped back to "not installed".
+    // in_library is left alone: it is sticky by design (set on download
+    // start, cleared on uninstall/cancel) - wiping it here removed the
+    // "My Games" progress card of any download that was still in flight
+    // when the user triggered a rescan.
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        conn.execute_batch("UPDATE games SET installed = 0, in_library = 0")
+        conn.execute_batch("UPDATE games SET installed = 0")
             .map_err(|e| e.to_string())?;
     }
 
