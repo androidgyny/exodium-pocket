@@ -14,12 +14,15 @@ export function WindowFrame() {
 
   const [maximized, setMaximized] = createSignal(false);
 
-  onMount(async () => {
-    setMaximized(await win.isMaximized());
-    const unlisten = await win.onResized(async () => {
+  onMount(() => {
+    // onCleanup must register synchronously - after an `await` the reactive
+    // owner is gone and the cleanup would never run. Keep the promise and
+    // unlisten through it instead.
+    const unlistenPromise = win.onResized(async () => {
       setMaximized(await win.isMaximized());
     });
-    onCleanup(unlisten);
+    onCleanup(() => { unlistenPromise.then((unlisten) => unlisten()); });
+    win.isMaximized().then(setMaximized);
   });
 
   return (

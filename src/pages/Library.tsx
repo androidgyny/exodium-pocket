@@ -345,43 +345,16 @@ export function Library() {
     } catch {}
   };
 
-  onMount(async () => {
-    // Load recently played first - if any exist, auto-switch to My Library tab.
-    const recent = await getRecentlyPlayed(12).catch(() => [] as Game[]);
-    setRecentGames(recent);
-    if (recent.length > 0) {
-      setActiveTab("library");
-    }
-
-    refreshInstalled();
-    refreshFavorites();
-
-    try {
-      const [colStr, available] = await Promise.all([
-        getConfig("collections"),
-        getAvailableCollections(),
-      ]);
-      if (colStr) {
-        const labelMap: Record<string, string> = {};
-        for (const c of available) {
-          labelMap[c.id] = c.display_name;
-        }
-        const cols = colStr.split(",")
-          .map((id) => ({ id, label: labelMap[id] || id }))
-          .sort((a, b) => a.id === "eXoDOS" ? -1 : b.id === "eXoDOS" ? 1 : 0);
-        setCollections(cols);
-        if (cols.length > 0 && !collectionFilter()) {
-          setCollectionFilter(cols[0].id);
-        }
-      }
-    } catch {}
-
-    refreshGenres();
-    fetchGames();
-
+  onMount(() => {
+    // Interval, observer, and onCleanup MUST register synchronously: after the
+    // first `await` in an async onMount the reactive owner is gone, so a late
+    // onCleanup never runs and the interval/observer leak (and stack up across
+    // factory-reset remounts).
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore() && !loading() && activeTab() === "browse") {
+        // hasFetched guards the initial mount: hasMore defaults to true, and
+        // the sentinel is visible in the empty grid before page 1 loads.
+        if (entries[0].isIntersecting && hasFetched() && hasMore() && !loading() && activeTab() === "browse") {
           fetchMoreGames();
         }
       },
@@ -390,8 +363,43 @@ export function Library() {
 
     if (sentinelRef) { observer.observe(sentinelRef); }
 
-    const interval = setInterval(() => { refreshInstalled(); refreshFavorites(); }, 5000);
+    const interval = setInterval(() => { refreshRecent(); refreshInstalled(); refreshFavorites(); }, 5000);
     onCleanup(() => { clearInterval(interval); observer.disconnect(); });
+
+    (async () => {
+      // Load recently played first - if any exist, auto-switch to My Library tab.
+      const recent = await getRecentlyPlayed(12).catch(() => [] as Game[]);
+      setRecentGames(recent);
+      if (recent.length > 0) {
+        setActiveTab("library");
+      }
+
+      refreshInstalled();
+      refreshFavorites();
+
+      try {
+        const [colStr, available] = await Promise.all([
+          getConfig("collections"),
+          getAvailableCollections(),
+        ]);
+        if (colStr) {
+          const labelMap: Record<string, string> = {};
+          for (const c of available) {
+            labelMap[c.id] = c.display_name;
+          }
+          const cols = colStr.split(",")
+            .map((id) => ({ id, label: labelMap[id] || id }))
+            .sort((a, b) => a.id === "eXoDOS" ? -1 : b.id === "eXoDOS" ? 1 : 0);
+          setCollections(cols);
+          if (cols.length > 0 && !collectionFilter()) {
+            setCollectionFilter(cols[0].id);
+          }
+        }
+      } catch {}
+
+      refreshGenres();
+      fetchGames();
+    })();
   });
 
   const applyFilter = (setter: (v: string) => void) => (value: string) => {

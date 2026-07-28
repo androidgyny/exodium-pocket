@@ -134,6 +134,12 @@ export async function setConfig(key: string, value: string): Promise<void> {
   return invoke("set_config", { key, value });
 }
 
+// Opens a manual in the system viewer. Path validation happens in Rust
+// (must be under the data dir), so no broad opener capability is needed.
+export async function openManual(path: string): Promise<void> {
+  return invoke("open_manual", { path });
+}
+
 export async function setSeedingEnabled(enabled: boolean): Promise<void> {
   return invoke("set_seeding_enabled", { enabled });
 }

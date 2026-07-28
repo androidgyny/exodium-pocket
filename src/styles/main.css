@@ -2653,9 +2653,16 @@ body {
 .game-settings-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
   padding: 12px 20px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.game-settings-error {
+  margin-right: auto;
+  color: #e5484d;
+  font-size: 12px;
 }
 
 .btn-primary {

@@ -68,7 +68,7 @@ export async function fetchGames() {
     setTotalGames(result.total);
     setHasMore(result.games.length < result.total);
   } catch (e) {
-    setError(e instanceof Error ? e.message : String(e));
+    if (epoch === fetchEpoch) { setError(e instanceof Error ? e.message : String(e)); }
   } finally {
     setHasFetched(true);
     if (epoch === fetchEpoch) { setLoading(false); }
@@ -119,7 +119,7 @@ export async function fetchMoreGames() {
     setCurrentPage(nextPage);
     setHasMore(games().length < result.total);
   } catch (e) {
-    setError(e instanceof Error ? e.message : String(e));
+    if (epoch === fetchEpoch) { setError(e instanceof Error ? e.message : String(e)); }
   } finally {
     if (epoch === fetchEpoch) { setLoading(false); }
   }
@@ -136,7 +136,7 @@ export async function fetchAllGames() {
     setGames(result.games);
     setHasMore(false);
   } catch (e) {
-    setError(e instanceof Error ? e.message : String(e));
+    if (epoch === fetchEpoch) { setError(e instanceof Error ? e.message : String(e)); }
   } finally {
     if (epoch === fetchEpoch) { setLoading(false); }
   }

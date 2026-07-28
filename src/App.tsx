@@ -176,7 +176,10 @@ function App() {
 
   // Global launch-time overrides (persisted via DB config table, read by the
   // Rust launch_game command, layered as a last-wins -conf fragment).
-  const [crtAuto, setCrtAuto] = createSignal(false);
+  // Initial values MUST mirror the backend defaults in launch_game (unset
+  // global_glshader means crt-auto there), so the UI is truthful even
+  // before loadGameDefaults resolves.
+  const [crtAuto, setCrtAuto] = createSignal(true);
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
 
   const [seeding, setSeeding] = createSignal(true);
@@ -193,6 +196,16 @@ function App() {
     } catch (e) {
       console.warn("[settings] failed to load game defaults:", e);
     }
+  };
+
+  // Opening goes through this helper because Ark's onOpenChange only fires
+  // for component-initiated changes (Escape, backdrop, close button) - not
+  // when we flip the controlled `open` prop, so init logic there never ran.
+  const openSettings = () => {
+    loadGameDefaults();
+    setLogOpenError("");
+    setSettingsTab("general");
+    setShowSettings(true);
   };
 
   const handleToggleSeeding = async (next: boolean) => {
@@ -312,7 +325,7 @@ function App() {
             </Tooltip.Root>
             <Tooltip.Root openDelay={400}>
               <Tooltip.Trigger asChild={(props) =>
-                <button {...props()} class="icon-btn" onClick={() => setShowSettings(true)}>
+                <button {...props()} class="icon-btn" onClick={openSettings}>
                   &#9881;
                 </button>
               } />
@@ -322,10 +335,7 @@ function App() {
         </div>
 
         <Show when={showSettings()}>
-        <Dialog.Root open={showSettings()} onOpenChange={(e) => {
-          setShowSettings(e.open);
-          if (e.open) { loadGameDefaults(); setLogOpenError(""); setSettingsTab("general"); }
-        }}>
+        <Dialog.Root open={showSettings()} onOpenChange={(e) => setShowSettings(e.open)}>
           <Portal>
             <Dialog.Backdrop class="ark-dialog-backdrop" />
             <Dialog.Positioner class="ark-dialog-positioner">

@@ -87,17 +87,32 @@ export function GameDetailPanel(props: Props) {
     }
   });
 
-  // Refresh variant list when any download completes so badges/buttons stay current
+  // Refresh variant list when a download transitions to installed so
+  // badges/buttons stay current. Tracks per-id transitions via the store's
+  // `installed` flag (its documented contract - status text keeps changing
+  // during the extras phase, and re-matching it on every poll tick both
+  // missed that phase and refetched variants redundantly).
+  const announcedInstalls = new Set<number>();
   createEffect(() => {
+    const dl = downloads();
+    let freshInstall = false;
+    for (const [idStr, d] of Object.entries(dl)) {
+      const id = Number(idStr);
+      if (d.installed && !announcedInstalls.has(id)) {
+        announcedInstalls.add(id);
+        freshInstall = true;
+      }
+    }
+    for (const id of [...announcedInstalls]) {
+      if (!(id in dl)) { announcedInstalls.delete(id); }
+    }
+    if (!freshInstall) { return; }
     const g = props.game;
     if (!g?.shortcode || !isMultiLang()) { return; }
-    const dl = downloads();
-    if (Object.values(dl).some((d) => d.status === "Installed!" && !d.downloading)) {
-      const shortcode = g.shortcode;
-      getGameVariants(shortcode).then((v) => {
-        if (props.game?.shortcode === shortcode) { setVariants(v); }
-      }).catch(() => {});
-    }
+    const shortcode = g.shortcode;
+    getGameVariants(shortcode).then((v) => {
+      if (props.game?.shortcode === shortcode) { setVariants(v); }
+    }).catch(() => {});
   });
 
   const handleKeyDown = (e: KeyboardEvent) => {

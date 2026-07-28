@@ -16,10 +16,19 @@ export function GameSettingsDialog(props: GameSettingsDialogProps) {
   const [cycles, setCycles] = createSignal<string>("");
   const [customConf, setCustomConf] = createSignal<string>("");
   const [saving, setSaving] = createSignal(false);
+  const [saveError, setSaveError] = createSignal<string>("");
 
   createEffect(() => {
     if (!props.open || props.gameId == null) { return; }
     const id = props.gameId;
+    // Reset synchronously before the async load resolves - signals persist
+    // across opens, so without this the previous game's values are visible
+    // (and saveable onto the wrong game) until the fetch lands.
+    setGlshader("");
+    setFullscreen("");
+    setCycles("");
+    setCustomConf("");
+    setSaveError("");
     getGameSettings(id).then((s) => {
       if (props.gameId !== id) { return; }
       setGlshader(s.glshader ?? "");
@@ -32,6 +41,7 @@ export function GameSettingsDialog(props: GameSettingsDialogProps) {
   const handleSave = async () => {
     if (props.gameId == null) { return; }
     setSaving(true);
+    setSaveError("");
     try {
       await setGameSettings(
         props.gameId,
@@ -43,6 +53,7 @@ export function GameSettingsDialog(props: GameSettingsDialogProps) {
       props.onClose();
     } catch (e) {
       console.error("Failed to save game settings:", e);
+      setSaveError(`Failed to save: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSaving(false);
     }
@@ -132,6 +143,9 @@ export function GameSettingsDialog(props: GameSettingsDialogProps) {
             </div>
 
             <div class="game-settings-actions">
+              <Show when={saveError()}>
+                <span class="game-settings-error">{saveError()}</span>
+              </Show>
               <button class="btn-secondary" onClick={props.onClose}>Cancel</button>
               <button class="btn-primary" onClick={handleSave} disabled={saving()}>
                 {saving() ? "Saving…" : "Save"}

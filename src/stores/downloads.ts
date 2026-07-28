@@ -115,6 +115,9 @@ export function startGameDownload(gameId: number, title?: string) {
           delete stuckSince[gameId];
           delete maxProgress[gameId];
           delete nullPollCount[gameId];
+          delete commandPending[gameId];
+          delete lastProgressAt[gameId];
+          delete lastProgressVal[gameId];
           setDownloads((prev) => ({
             ...prev,
             [gameId]: {
@@ -124,6 +127,7 @@ export function startGameDownload(gameId: number, title?: string) {
               title: titles[gameId],
             },
           }));
+          delete titles[gameId];
         }
         return;
       }
@@ -140,6 +144,7 @@ export function startGameDownload(gameId: number, title?: string) {
         delete lastProgressAt[gameId];
         delete lastProgressVal[gameId];
         delete announcedInstalled[gameId];
+        delete commandPending[gameId];
         setDownloads((prev) => ({
           ...prev,
           [gameId]: { status: p.error!, progress: 0, downloading: false, title: titles[gameId] },
@@ -149,6 +154,7 @@ export function startGameDownload(gameId: number, title?: string) {
           "error",
           { detail: p.error! },
         );
+        delete titles[gameId];
       } else if (p.installed) {
         // The game is playable now, but its extras (GameData: manuals,
         // videos, music) may still be downloading - keep polling and show
@@ -180,10 +186,12 @@ export function startGameDownload(gameId: number, title?: string) {
         delete lastProgressAt[gameId];
         delete lastProgressVal[gameId];
         delete announcedInstalled[gameId];
+        delete commandPending[gameId];
         setDownloads((prev) => ({
           ...prev,
           [gameId]: { status: "Installed!", progress: 1, downloading: false, installed: true, title: titles[gameId] },
         }));
+        delete titles[gameId];
         refreshLoadedGames();
         // Fires metadata-cache invalidation: when extras finished AFTER the
         // game, this is what makes the manual button resolve on its own.
@@ -279,6 +287,9 @@ export function startGameDownload(gameId: number, title?: string) {
     delete maxProgress[gameId];
     delete nullPollCount[gameId];
     delete commandPending[gameId];
+    delete lastProgressAt[gameId];
+    delete lastProgressVal[gameId];
+    delete announcedInstalled[gameId];
     setDownloads((prev) => ({
       ...prev,
       [gameId]: { status: `Error: ${e}`, progress: 0, downloading: false, title: titles[gameId] },
@@ -288,6 +299,7 @@ export function startGameDownload(gameId: number, title?: string) {
       "error",
       { detail: String(e) },
     );
+    delete titles[gameId];
   });
 }
 
@@ -306,6 +318,7 @@ export function stopGameDownloadTracking(gameId: number) {
   delete lastProgressAt[gameId];
   delete lastProgressVal[gameId];
   delete announcedInstalled[gameId];
+  delete titles[gameId];
   setDownloads((prev) => {
     if (!prev[gameId]) { return prev; }
     const next = { ...prev };
@@ -338,6 +351,7 @@ export async function cancelGameDownload(gameId: number) {
   delete commandPending[gameId];
   delete lastProgressAt[gameId];
   delete lastProgressVal[gameId];
+  delete titles[gameId];
   setDownloads((prev) => {
     const next = { ...prev };
     delete next[gameId];

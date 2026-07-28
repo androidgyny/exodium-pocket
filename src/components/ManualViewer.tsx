@@ -2,7 +2,7 @@ import { createSignal, createEffect, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openManual } from "../api/tauri";
 
 interface ManualViewerProps {
   path: string | null;
@@ -46,9 +46,9 @@ export function ManualViewer(props: ManualViewerProps) {
   const handleOpenExternal = async () => {
     if (!props.path) { return; }
     try {
-      await openPath(props.path);
+      await openManual(props.path);
     } catch (e) {
-      console.error("openPath failed:", e, "path:", props.path);
+      console.error("openManual failed:", e, "path:", props.path);
     }
   };
 
