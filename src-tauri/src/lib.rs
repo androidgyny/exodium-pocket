@@ -327,6 +327,17 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     raise_fd_limit();
+
+    // WebKitGTK's DMA-BUF renderer aborts with "Could not create default EGL
+    // display: EGL_BAD_PARAMETER" on some Wayland/driver combos (NVIDIA
+    // especially) before our window even exists. Disable it unless the user
+    // explicitly set the variable themselves - the fallback render path works
+    // everywhere at a minor compositing cost.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
         // A second instance would contend on the SQLite DB and corrupt the
         // torrent session; focus the existing window instead.
