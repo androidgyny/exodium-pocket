@@ -575,7 +575,7 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod fd_limit_tests {
     #[test]
     fn raise_fd_limit_reaches_torrent_scale() {
