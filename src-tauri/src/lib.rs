@@ -48,7 +48,39 @@ fn raise_fd_limit() {
         }
         // Try the hard limit first; macOS reports RLIM_INFINITY but caps
         // setrlimit at kern.maxfilesperproc, so fall back through sane values.
-        let candidates = [lim.rlim_max.min(1 << 20), 65536, 10240];
+        let mut candidates: Vec<libc::rlim_t> = vec![lim.rlim_max.min(1 << 20), 65536, 10240];
+
+        // macOS: kern.maxfilesperproc scales with installed RAM - 245760 on
+        // large machines but 61440 (or less) on small ones. 61440 < 65536,
+        // so without querying it those machines fell through to 10240: fewer
+        // fds than the eXoDOS torrent has files (14011), and librqbit opens
+        // EVERY file on torrent add. Field failure: EMFILE at torrent index
+        // ~10220 ("Laserwars (1994).zip") on an M2 Mac mini.
+        #[cfg(target_os = "macos")]
+        {
+            let mut maxfiles: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>();
+            let name = b"kern.maxfilesperproc\0";
+            if libc::sysctlbyname(
+                name.as_ptr() as *const libc::c_char,
+                &mut maxfiles as *mut _ as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            ) == 0
+                && maxfiles > 0
+            {
+                candidates.push(maxfiles as libc::rlim_t);
+            }
+        }
+        // Descending order so the early-exit below stays correct.
+        candidates.sort_unstable_by(|a, b| b.cmp(a));
+        candidates.dedup();
+
+        // The eXoDOS torrent has 14 011 files and librqbit holds an fd for
+        // each; anything below this leaves the main collection un-addable.
+        const COMFORTABLE: libc::rlim_t = 15_000;
+
         for target in candidates {
             if target <= lim.rlim_cur {
                 break; // already high enough
@@ -59,13 +91,23 @@ fn raise_fd_limit() {
             };
             if libc::setrlimit(libc::RLIMIT_NOFILE, &new) == 0 {
                 log::info!("Raised open-file limit: {} -> {}", lim.rlim_cur, target);
+                if target < COMFORTABLE {
+                    log::warn!(
+                        "Open-file limit {} is below the ~{} needed for the main eXoDOS \
+                         torrent - downloads from it will fail with 'error opening ... in \
+                         read/write mode'. Raise kern.maxfilesperproc / ulimit -n.",
+                        target, COMFORTABLE
+                    );
+                }
                 return;
             }
         }
-        log::warn!(
-            "Could not raise open-file limit above {} - large torrents may fail to add",
-            lim.rlim_cur
-        );
+        if lim.rlim_cur < COMFORTABLE {
+            log::warn!(
+                "Could not raise open-file limit above {} - large torrents may fail to add",
+                lim.rlim_cur
+            );
+        }
     }
 }
 
@@ -531,4 +573,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod fd_limit_tests {
+    #[test]
+    fn raise_fd_limit_reaches_torrent_scale() {
+        super::raise_fd_limit();
+        unsafe {
+            let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim), 0);
+            println!("soft limit after raise: {} (hard {})", lim.rlim_cur, lim.rlim_max);
+            // Floor candidate is 10240; anything less means the raise loop broke.
+            assert!(lim.rlim_cur >= 10240.min(lim.rlim_max));
+        }
+    }
 }
