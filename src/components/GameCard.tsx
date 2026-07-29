@@ -69,15 +69,21 @@ export function GameCard(props: GameCardProps) {
   const langEntries = () => parseLangEntries(props.game);
   const isMultiLang = () => langEntries().length > 1;
 
-  // Read download state - check primary game and any loaded variants
-  const dlState = () => {
+  // Read download state - check primary game and any loaded variants.
+  // Tracks WHICH id the state came from: on a merged card the overlay can
+  // show a variant's download, and the cancel button must target that id,
+  // not always the primary (which would no-op).
+  const dlEntry = () => {
     const dl = downloads();
-    if (props.game.id != null && dl[props.game.id]) { return dl[props.game.id]; }
+    if (props.game.id != null && dl[props.game.id]) {
+      return { id: props.game.id, state: dl[props.game.id] };
+    }
     for (const v of variants()) {
-      if (v.id != null && dl[v.id]?.downloading) { return dl[v.id]; }
+      if (v.id != null && dl[v.id]?.downloading) { return { id: v.id, state: dl[v.id] }; }
     }
     return undefined;
   };
+  const dlState = () => dlEntry()?.state;
 
   const handleContextMenu = (e: MouseEvent) => {
     if ((!props.game.installed && !props.game.in_library) || props.game.id == null) { return; }
@@ -144,10 +150,10 @@ export function GameCard(props: GameCardProps) {
                 <span class="circular-progress-pct">{Math.round(currentProgress() * 100)}%</span>
               </Show>
             </CircularProgress>
-            <Show when={props.game.id != null}>
+            <Show when={dlEntry() != null}>
               <button class="game-card-overlay-cancel"
                 title="Cancel download"
-                onClick={(e) => { e.stopPropagation(); cancelGameDownload(props.game.id!); }}>✕</button>
+                onClick={(e) => { e.stopPropagation(); cancelGameDownload(dlEntry()!.id); }}>✕</button>
             </Show>
           </div>
         </Show>

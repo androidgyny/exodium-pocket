@@ -452,10 +452,16 @@ pub fn get_section_keys(conn: &Connection, f: &GameFilter) -> DbResult<Vec<Strin
     Ok(raw)
 }
 
-/// Fetch installed games - flat list, one row per installed variant.
+/// Fetch installed games - one card per game: variants sharing a shortcode
+/// collapse to a single row (EN preferred AMONG INSTALLED variants, so a
+/// DE-only install shows its playable DE row, not the uninstalled EN one).
+/// Language badges on the card carry the per-variant states.
 pub fn fetch_installed_games(conn: &Connection) -> DbResult<Vec<Game>> {
     let sql = format!(
-        "SELECT {} FROM games WHERE installed = 1 ORDER BY title, language",
+        "SELECT {} FROM games g WHERE g.installed = 1 AND (g.shortcode IS NULL OR g.id = (
+            SELECT p.id FROM games p WHERE p.shortcode = g.shortcode AND p.installed = 1
+            ORDER BY CASE WHEN p.language = 'EN' THEN 0 ELSE 1 END, p.id LIMIT 1))
+         ORDER BY title, language",
         GAME_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -466,10 +472,15 @@ pub fn fetch_installed_games(conn: &Connection) -> DbResult<Vec<Game>> {
     Ok(games)
 }
 
-/// Fetch recently played games, ordered by last_played descending.
+/// Fetch recently played games, ordered by last_played descending. One card
+/// per game: when several variants of a shortcode were played, only the most
+/// recently played row represents the group.
 pub fn fetch_recently_played(conn: &Connection, limit: usize) -> DbResult<Vec<Game>> {
     let sql = format!(
-        "SELECT {} FROM games WHERE last_played IS NOT NULL ORDER BY last_played DESC LIMIT ?1",
+        "SELECT {} FROM games g WHERE g.last_played IS NOT NULL AND (g.shortcode IS NULL OR g.id = (
+            SELECT p.id FROM games p WHERE p.shortcode = g.shortcode AND p.last_played IS NOT NULL
+            ORDER BY p.last_played DESC, p.id LIMIT 1))
+         ORDER BY last_played DESC LIMIT ?1",
         GAME_COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -671,6 +682,50 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].language, "EN");
         assert_eq!(count_games_filtered(&conn, &f).unwrap(), 1);
+    }
+
+    #[test]
+    fn installed_shelf_merges_variants() {
+        let conn = open_test_db();
+        let mut en = make_game("The 11th Hour");
+        en.shortcode = Some("11thHour".to_string());
+        let mut de = make_game("Die 11te Stunde");
+        de.language = "DE".to_string();
+        de.shortcode = Some("11thHour".to_string());
+        insert_games(&conn, &[en, de]).unwrap();
+
+        // Only DE installed: the shelf must show the playable DE row, with
+        // badges telling the full story (EN available, DE installed).
+        conn.execute("UPDATE games SET installed = 1 WHERE language = 'DE'", []).unwrap();
+        let shelf = fetch_installed_games(&conn).unwrap();
+        assert_eq!(shelf.len(), 1);
+        assert_eq!(shelf[0].language, "DE");
+        assert_eq!(shelf[0].available_languages.as_deref(), Some("EN:0,DE:2"));
+
+        // Only one variant played: it represents the group on the shelf.
+        conn.execute(
+            "UPDATE games SET last_played = '2026-07-29 09:00:00' WHERE language = 'DE'", [],
+        ).unwrap();
+        let recent = fetch_recently_played(&conn, 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].language, "DE");
+        conn.execute("UPDATE games SET last_played = NULL", []).unwrap();
+
+        // Both installed: one card, EN preferred, badges show both as installed.
+        conn.execute("UPDATE games SET installed = 1", []).unwrap();
+        let shelf = fetch_installed_games(&conn).unwrap();
+        assert_eq!(shelf.len(), 1);
+        assert_eq!(shelf[0].language, "EN");
+        assert_eq!(shelf[0].available_languages.as_deref(), Some("EN:2,DE:2"));
+
+        // Recently played: both variants played -> one card, most recent wins.
+        conn.execute(
+            "UPDATE games SET last_played = CASE language WHEN 'EN' THEN '2026-07-29 10:00:00' ELSE '2026-07-29 11:00:00' END",
+            [],
+        ).unwrap();
+        let recent = fetch_recently_played(&conn, 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].language, "DE");
     }
 
     #[test]
