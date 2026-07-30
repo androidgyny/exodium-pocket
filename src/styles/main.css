@@ -1040,6 +1040,10 @@ body {
    window resize edges (9999). */
 .playlist-menu {
   min-width: 180px;
+  max-width: 260px;
+  /* Long playlist collections scroll instead of growing past the viewport. */
+  max-height: 50vh;
+  overflow-y: auto;
   z-index: 401;
 }
 

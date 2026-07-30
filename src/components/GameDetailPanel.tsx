@@ -35,6 +35,10 @@ export function GameDetailPanel(props: Props) {
   const [manualOpen, setManualOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [playlistMenu, setPlaylistMenu] = createSignal<{x: number, y: number} | null>(null);
+  const openPlaylistMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setPlaylistMenu({ x: rect.left, y: rect.bottom + 4 });
+  };
   const [launchingId, setLaunchingId] = createSignal<number | null>(null);
   const [uninstallingId, setUninstallingId] = createSignal<number | null>(null);
   // Is the in-flight uninstall about THIS panel's game (primary or variant)?
@@ -400,6 +404,15 @@ export function GameDetailPanel(props: Props) {
                     Uninstall
                   </button>
                 </Show>
+                <Show when={props.game!.id != null}>
+                  <button
+                    class="game-detail-btn btn-playlist"
+                    title="Add to playlist"
+                    onClick={openPlaylistMenu}
+                  >
+                    ＋ Playlist
+                  </button>
+                </Show>
               </div>
               </Show>
             </Show>
@@ -449,17 +462,15 @@ export function GameDetailPanel(props: Props) {
               </div>
             </Show>
 
-            {/* Playlist: outside the single/multi-language split so every
-                game gets it (membership is per merged group either way). */}
-            <Show when={props.game!.id != null}>
+            {/* Multi-language games render the Versions list instead of the
+                action bar, so they get the playlist button as its own row.
+                Single-language games have it inline in the action bar above. */}
+            <Show when={isMultiLang() && props.game!.id != null}>
               <div class="game-detail-actions game-detail-actions-secondary">
                 <button
                   class="game-detail-btn btn-playlist"
                   title="Add to playlist"
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setPlaylistMenu({ x: rect.left, y: rect.bottom + 4 });
-                  }}
+                  onClick={openPlaylistMenu}
                 >
                   ＋ Playlist
                 </button>

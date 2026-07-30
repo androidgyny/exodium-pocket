@@ -365,6 +365,29 @@ export function Library() {
     refreshPlaylistShelves();
   });
 
+  // My Library jump bar: one entry per rendered shelf, playlist shelves
+  // included - the shelf list can outgrow a screen, and scrolling past
+  // three fixed shelves to reach a playlist gets old fast.
+  const libraryShelves = createMemo<{ key: string; label: string }[]>(() => {
+    const shelves: { key: string; label: string }[] = [];
+    if (recentGames().length > 0) { shelves.push({ key: "recent", label: "Recent" }); }
+    if (favoriteGames().length > 0) { shelves.push({ key: "favorites", label: "Favorites" }); }
+    if (installedGames().length > 0) { shelves.push({ key: "installed", label: "Installed" }); }
+    for (const p of userPlaylists()) {
+      shelves.push({ key: `pl-${p.id}`, label: p.name });
+    }
+    return shelves;
+  });
+
+  const jumpToShelf = (key: string) => {
+    const el = document.querySelector<HTMLElement>(`[data-shelf-key="${CSS.escape(key)}"]`);
+    if (!el || !libraryRef) { return; }
+    const rect = el.getBoundingClientRect();
+    const containerRect = libraryRef.getBoundingClientRect();
+    // Land the shelf title at its sticky slot (tab bar is 40px).
+    libraryRef.scrollBy({ top: rect.top - containerRect.top - 40, behavior: "smooth" });
+  };
+
   const handleShelfDelete = async (playlist: Playlist) => {
     setShelfMenu(null);
     try {
@@ -651,7 +674,7 @@ export function Library() {
           }
         >
           <Show when={recentGames().length > 0}>
-            <div class="library-section">
+            <div class="library-section" data-shelf-key="recent">
               <h2 class="section-title">Recently Played <span class="section-count">{recentGames().length}</span></h2>
               <div class="game-grid">
                 <For each={recentGames()}>
@@ -662,7 +685,7 @@ export function Library() {
           </Show>
 
           <Show when={favoriteGames().length > 0}>
-            <div class="library-section">
+            <div class="library-section" data-shelf-key="favorites">
               <h2 class="section-title">Favorites <span class="section-count">{favoriteGames().length}</span></h2>
               <div class="game-grid">
                 <For each={favoriteGames()}>
@@ -673,7 +696,7 @@ export function Library() {
           </Show>
 
           <Show when={installedGames().length > 0}>
-            <div class="library-section">
+            <div class="library-section" data-shelf-key="installed">
               <h2 class="section-title">Installed <span class="section-count">{installedGames().length}</span></h2>
               <div class="game-grid">
                 <For each={installedGames()}>
@@ -685,7 +708,7 @@ export function Library() {
 
           <For each={userPlaylists()}>
             {(playlist) => (
-              <div class="library-section">
+              <div class="library-section" data-shelf-key={`pl-${playlist.id}`}>
                 <h2 class="section-title">
                   {playlist.name}
                   <span class="section-count">{playlist.game_count}</span>
@@ -775,6 +798,20 @@ export function Library() {
               {(label) => (
                 <button class="jump-bar-item" title={label} onClick={() => jumpToSection(label)}>
                   {jumpBarDisplayLabel(label)}
+                </button>
+              )}
+            </For>
+          </div>
+        </Portal>
+      </Show>
+
+      <Show when={activeTab() === "library" && libraryShelves().length > 1}>
+        <Portal>
+          <div class="jump-bar">
+            <For each={libraryShelves()}>
+              {(shelf) => (
+                <button class="jump-bar-item" title={shelf.label} onClick={() => jumpToShelf(shelf.key)}>
+                  {jumpBarDisplayLabel(shelf.label)}
                 </button>
               )}
             </For>

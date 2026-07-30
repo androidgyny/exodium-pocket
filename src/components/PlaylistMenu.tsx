@@ -19,8 +19,21 @@ interface PlaylistMenuProps {
  *  intentionally absent. */
 export function PlaylistMenu(props: PlaylistMenuProps) {
   const [memberOf, setMemberOf] = createSignal<Set<number>>(new Set());
+  // Anchor point clamped to the viewport - the detail panel's button sits
+  // near the right window edge, where an unclamped menu gets clipped.
+  const [pos, setPos] = createSignal({ x: props.x, y: props.y });
+  let menuRef: HTMLDivElement | undefined;
 
   onMount(() => {
+    // onMount runs after the DOM insert but before paint; measuring here
+    // repositions without a visible overflow frame.
+    if (menuRef) {
+      const rect = menuRef.getBoundingClientRect();
+      setPos({
+        x: Math.max(8, Math.min(props.x, window.innerWidth - rect.width - 8)),
+        y: Math.max(8, Math.min(props.y, window.innerHeight - rect.height - 8)),
+      });
+    }
     getGamePlaylists(props.gameId)
       .then((ids) => setMemberOf(new Set(ids)))
       .catch(() => {});
@@ -58,7 +71,7 @@ export function PlaylistMenu(props: PlaylistMenuProps) {
         onMouseDown={props.onClose}
         onContextMenu={(e) => { e.preventDefault(); props.onClose(); }}
       />
-      <div class="context-menu playlist-menu" style={{ left: `${props.x}px`, top: `${props.y}px` }}>
+      <div ref={menuRef} class="context-menu playlist-menu" style={{ left: `${pos().x}px`, top: `${pos().y}px` }}>
         <Show when={userPlaylists().length > 0}>
           <For each={userPlaylists()}>
             {(p) => (
