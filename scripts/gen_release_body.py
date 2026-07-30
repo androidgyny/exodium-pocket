@@ -66,26 +66,23 @@ def main() -> int:
             "|---|---|---|",
             *rows,
             "",
-            "Everything else (`.sig`, `latest.json`, `.app.tar.gz`) is auto-update",
-            "plumbing, and the `Exodium-windows/-macos/-linux` files are permalink copies",
-            "for the README download buttons - you don't need any of them.",
+            "Everything else (`.sig`, `latest.json`, `.app.tar.gz`) is auto-update plumbing, and the `Exodium-windows/-macos/-linux` files are permalink copies for the README download buttons - you don't need any of them.",
             "",
             "### macOS: \"Exodium is damaged\" on first launch",
             "",
-            "The app isn't signed with an Apple Developer ID yet, so Gatekeeper blocks it.",
-            "Run this once after dragging it to Applications:",
+            "The app isn't signed with an Apple Developer ID yet, so Gatekeeper blocks it. Run this once after dragging it to Applications:",
             "",
             "```",
             "xattr -cr /Applications/Exodium.app",
             "```",
             "",
-            "The macOS and Windows warnings exist because Exodium isn't code-signed yet -",
-            "certificates cost real money. Donating via",
-            "[GitHub Sponsors](https://github.com/sponsors/tvollstaedt) or",
-            "[Ko-fi](https://ko-fi.com/tvollstaedt) helps fund them.",
+            # NOTE: GitHub renders release bodies like comments - single
+            # newlines become visible <br> breaks. Keep each paragraph on ONE
+            # line, and end the body exactly at "---" with no trailing blank
+            # (generate_release_notes appends "Full Changelog" right after).
+            "The macOS and Windows warnings exist because Exodium isn't code-signed yet - certificates cost real money. Donating via [GitHub Sponsors](https://github.com/sponsors/tvollstaedt) or [Ko-fi](https://ko-fi.com/tvollstaedt) helps fund them.",
             "",
             "---",
-            "",
         ]
     ).replace("{base}", base)
     print(body)
