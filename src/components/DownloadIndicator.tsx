@@ -1,4 +1,4 @@
-import { createSignal, Show, For, onCleanup } from "solid-js";
+import { createSignal, Show, Index, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { AutoProgress } from "./ProgressBar";
 import { downloads, cancelGameDownload } from "../stores/downloads";
@@ -132,27 +132,32 @@ export function DownloadIndicator() {
             <div class="download-sheet-header">
               <span>Downloads</span>
             </div>
-            <For each={activeDownloads()}>
+            {/* Index, not For: activeDownloads() builds fresh objects every
+                poll tick, and For keys by reference - it recreated every
+                row's DOM each second, restarting the progress bar animation
+                (visible as "jumping" bars on stalled downloads). Index keeps
+                the DOM and updates values in place. */}
+            <Index each={activeDownloads()}>
               {(dl) => (
                 <div class="download-sheet-row">
                   <div class="download-sheet-info">
-                    <span class="download-sheet-label">{dl.label}</span>
+                    <span class="download-sheet-label">{dl().label}</span>
                     <div class="download-sheet-progress-row">
-                      <AutoProgress value={dl.progress} class="mini" />
-                      <span class="download-sheet-status">{dl.status}</span>
-                      <Show when={dl.speed}>
-                        <span class="download-sheet-speed">{dl.speed}</span>
+                      <AutoProgress value={dl().progress} class="mini" />
+                      <span class="download-sheet-status">{dl().status}</span>
+                      <Show when={dl().speed}>
+                        <span class="download-sheet-speed">{dl().speed}</span>
                       </Show>
                     </div>
                   </div>
                   <button
                     class="download-sheet-cancel"
-                    onClick={() => handleCancel(dl)}
+                    onClick={() => handleCancel(dl())}
                     title="Cancel"
                   >✕</button>
                 </div>
               )}
-            </For>
+            </Index>
           </div>
         </Portal>
       </Show>

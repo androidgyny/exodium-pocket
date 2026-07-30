@@ -434,7 +434,7 @@ export function GameDetailPanel(props: Props) {
                         <Show when={uninstallingId() !== vId() && !vDl()?.downloading && !variant.installed}>
                           <button
                             class="lang-picker-btn action-download"
-                            onClick={() => { if (variant.game_torrent_index != null) { handleDownload(vId()!, variant.title); } }}
+                            onClick={() => { if (variant.game_torrent_index != null) { handleDownload(vId()!, `${variant.title} [${variant.language}]`); } }}
                           >
                             {variant.game_torrent_index != null ? `↓ ${formatBytes(variant.download_size ?? 0)}` : "-"}
                           </button>
