@@ -14,7 +14,7 @@ import {
 } from "../stores/games";
 import {
   playlists, userPlaylists, curatedPlaylists, loadPlaylists,
-  lastPlaylistChange, setPlaylistDialog, deletePlaylist,
+  setPlaylistDialog, deletePlaylist,
 } from "../stores/playlists";
 import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, getAvailableCollections, getSectionKeys, getGames, type Game, type Playlist } from "../api/tauri";
 import { GameCard } from "../components/GameCard";
@@ -108,6 +108,8 @@ export function Library() {
     refreshRecent();
     refreshInstalled();
     refreshFavorites();
+    // Playlist shelf cards show installed/in_library state too.
+    refreshPlaylistShelves();
     const dg = detailGame();
     if (dg?.id === change.id) {
       getGame(change.id).then((fresh) => {
@@ -340,13 +342,19 @@ export function Library() {
   const [shelfMenu, setShelfMenu] = createSignal<{ playlist: Playlist; x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = createSignal<Playlist | null>(null);
 
+  // Epoch guard, same idea as stores/games.ts fetchEpoch: a slower
+  // pre-mutation batch resolving after a post-mutation one must not
+  // overwrite the fresher shelf state.
+  let shelvesEpoch = 0;
   const refreshPlaylistShelves = async () => {
     const user = userPlaylists();
+    const epoch = ++shelvesEpoch;
     try {
       const entries = await Promise.all(user.map(async (p) => {
         const result = await getGames(1, 500, "", "", "title", "", false, p.id);
         return [p.id, result.games] as const;
       }));
+      if (epoch !== shelvesEpoch) { return; }
       setPlaylistShelves((prev) => {
         const next = new Map<number, Game[]>();
         for (const [id, fresh] of entries) {
@@ -359,9 +367,10 @@ export function Library() {
     }
   };
 
-  // Refetch shelves + dropdown counts on any playlist mutation.
+  // Refetch shelves whenever the playlist list changes (reads userPlaylists()
+  // synchronously, so the effect tracks the playlists signal). Membership
+  // only changes through this app's own mutations - no polling needed.
   createEffect(() => {
-    lastPlaylistChange();
     refreshPlaylistShelves();
   });
 
@@ -470,7 +479,7 @@ export function Library() {
 
     if (sentinelRef) { observer.observe(sentinelRef); }
 
-    const interval = setInterval(() => { refreshRecent(); refreshInstalled(); refreshFavorites(); refreshPlaylistShelves(); }, 5000);
+    const interval = setInterval(() => { refreshRecent(); refreshInstalled(); refreshFavorites(); }, 5000);
     onCleanup(() => { clearInterval(interval); observer.disconnect(); });
 
     (async () => {
@@ -483,7 +492,7 @@ export function Library() {
 
       refreshInstalled();
       refreshFavorites();
-      loadPlaylists().then(refreshPlaylistShelves);
+      loadPlaylists(); // shelf fetch follows via the playlists() effect
 
       try {
         const [colStr, available] = await Promise.all([
@@ -597,8 +606,11 @@ export function Library() {
             <div class="playlist-hero-text">
               <div class="playlist-hero-title">
                 {activePlaylist()!.name}
+                {/* totalGames(), not game_count: the grid also applies
+                    search/genre/collection, and the header must never
+                    contradict what's actually rendered below. */}
                 <span class="playlist-hero-count">
-                  {activePlaylist()!.game_count.toLocaleString()} games
+                  {totalGames().toLocaleString()} games
                 </span>
               </div>
               <Show when={activePlaylist()!.description}>

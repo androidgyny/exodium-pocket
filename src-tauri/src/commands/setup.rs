@@ -586,8 +586,11 @@ pub async fn factory_reset(
              DELETE FROM game_config;
              DELETE FROM downloads;
              DELETE FROM images;
-             DELETE FROM playlists;
-             DELETE FROM playlist_games;
+             -- Curated playlists are catalog data like the games rows above:
+             -- deleting them here would leave the Playlists dropdown empty
+             -- until the next launch re-runs the catalog refresh. Only user
+             -- playlists are user state (their memberships cascade).
+             DELETE FROM playlists WHERE kind = 'user';
              DELETE FROM config;",
         )
         .map_err(|e| e.to_string())?;

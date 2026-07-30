@@ -209,18 +209,26 @@ fn build_where_clause(f: &GameFilter) -> (String, Vec<Box<dyn rusqlite::types::T
         variant_conds.push("v.favorited = 1".to_string());
     }
 
+    let mut conditions = vec![PRIMARY_ROW_CONDITION.to_string()];
+
     if let Some(pid) = f.playlist_id {
-        // Membership is stored on the primary row's id, but matching any
-        // variant keeps this robust if a variant id ever lands in the table.
+        // Top-level condition, NOT part of the per-variant EXISTS: curated
+        // membership sits almost entirely on EN rows while e.g. the
+        // collection filter matches LP rows, so requiring one variant to
+        // satisfy both would empty the grid (GLP + "Games with MT-32"
+        // returned 3 of 218 groups). Driving from playlist_games also makes
+        // the query O(members) instead of a full-catalog scan: each member
+        // maps to its group's primary row id, and g must be one of them.
         params.push(Box::new(pid));
-        variant_conds.push(format!(
-            "EXISTS (SELECT 1 FROM playlist_games pg \
-             WHERE pg.playlist_id = ?{} AND pg.game_id = v.id)",
+        conditions.push(format!(
+            "g.id IN (SELECT CASE WHEN m.shortcode IS NULL THEN m.id ELSE (
+                 SELECT p.id FROM games p WHERE p.shortcode = m.shortcode
+                 ORDER BY CASE WHEN p.language = 'EN' THEN 0 ELSE 1 END, p.id LIMIT 1) END
+             FROM playlist_games pg JOIN games m ON m.id = pg.game_id
+             WHERE pg.playlist_id = ?{})",
             params.len()
         ));
     }
-
-    let mut conditions = vec![PRIMARY_ROW_CONDITION.to_string()];
     if !variant_conds.is_empty() {
         conditions.push(format!(
             "EXISTS (SELECT 1 FROM games v \
@@ -668,8 +676,16 @@ pub fn set_playlist_membership(
             params![playlist_id, game_id],
         )?;
     } else {
+        // Group-wide, mirroring fetch_game_playlist_ids: the membership row
+        // may sit on a sibling variant (added from a shelf that rendered the
+        // installed LP row), and an exact-id DELETE would silently no-op
+        // while the checkmark keeps coming back.
         conn.execute(
-            "DELETE FROM playlist_games WHERE playlist_id = ?1 AND game_id = ?2",
+            "DELETE FROM playlist_games WHERE playlist_id = ?1 AND game_id IN (
+                SELECT v.id FROM games v
+                JOIN games me ON me.id = ?2
+                WHERE v.id = me.id
+                   OR (me.shortcode IS NOT NULL AND v.shortcode = me.shortcode))",
             params![playlist_id, game_id],
         )?;
     }
@@ -957,13 +973,28 @@ mod tests {
         let playlists = fetch_playlists(&conn).unwrap();
         assert_eq!(playlists.iter().find(|p| p.name == "Backlog").unwrap().game_count, 1);
         assert_eq!(count_games_filtered(&conn, &f).unwrap(), 1);
-        set_playlist_membership(&conn, pid, en_id, false).unwrap();
-        assert_eq!(fetch_game_playlist_ids(&conn, en_id).unwrap(), vec![pid]);
-        assert_eq!(fetch_game_playlist_ids(&conn, de_id).unwrap(), vec![pid]);
 
-        // Remove: filter goes empty.
-        set_playlist_membership(&conn, pid, de_id, false).unwrap();
+        // Removal is GROUP-wide, mirroring the lookup: the membership rows
+        // sit on both variants, removing via the EN id must clear the DE
+        // row too - otherwise a checkmark unchecked from the merged card
+        // silently comes back.
+        set_playlist_membership(&conn, pid, en_id, false).unwrap();
+        assert_eq!(fetch_game_playlist_ids(&conn, en_id).unwrap(), Vec::<i64>::new());
+        assert_eq!(fetch_game_playlist_ids(&conn, de_id).unwrap(), Vec::<i64>::new());
         assert_eq!(count_games_filtered(&conn, &f).unwrap(), 0);
+
+        // Playlist composes with the collection filter per GROUP, not per
+        // single variant: membership on the EN row, GLP filter matching the
+        // DE row - the merged card must still surface.
+        set_playlist_membership(&conn, pid, en_id, true).unwrap();
+        conn.execute(
+            "UPDATE games SET torrent_source = CASE language WHEN 'EN' THEN 'eXoDOS' ELSE 'eXoDOS_GLP' END",
+            [],
+        ).unwrap();
+        let f_glp = GameFilter { query: "", genre: "", sort_by: "", collection: "eXoDOS_GLP", favorites_only: false, playlist_id: Some(pid) };
+        let hits = fetch_games_filtered(&conn, 1, 50, &f_glp).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].language, "EN");
     }
 
     #[test]

@@ -63,10 +63,11 @@ pub fn create_tables(conn: &Connection) -> DbResult<()> {
 
         CREATE TABLE IF NOT EXISTS playlists (
             id          INTEGER PRIMARY KEY,
-            name        TEXT NOT NULL UNIQUE,
+            name        TEXT NOT NULL,
             kind        TEXT NOT NULL DEFAULT 'user',
             slug        TEXT,
-            description TEXT
+            description TEXT,
+            UNIQUE (kind, name)
         );
 
         CREATE TABLE IF NOT EXISTS playlist_games (

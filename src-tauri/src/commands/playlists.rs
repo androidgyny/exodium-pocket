@@ -21,14 +21,20 @@ pub async fn create_playlist(state: State<'_, DbState>, name: String) -> Result<
         return Err("Playlist name cannot be empty".into());
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    queries::create_playlist(&conn, &name).map_err(|e| match e {
+    queries::create_playlist(&conn, &name).map_err(|e| map_name_conflict(e, &name))
+}
+
+/// UNIQUE(kind, name) violations read as raw SQLite otherwise; both create
+/// and rename hit the same constraint.
+fn map_name_conflict(e: crate::db::DbError, name: &str) -> String {
+    match e {
         crate::db::DbError::Sqlite(rusqlite::Error::SqliteFailure(err, _))
             if err.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
             format!("A playlist named \"{}\" already exists", name)
         }
         other => other.to_string(),
-    })
+    }
 }
 
 #[tauri::command]
@@ -42,7 +48,7 @@ pub async fn rename_playlist(
         return Err("Playlist name cannot be empty".into());
     }
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    queries::rename_playlist(&conn, id, &name).map_err(|e| e.to_string())
+    queries::rename_playlist(&conn, id, &name).map_err(|e| map_name_conflict(e, &name))
 }
 
 #[tauri::command]

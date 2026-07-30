@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show } from "solid-js";
+import { createSignal, createEffect, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
 import {
@@ -21,12 +21,17 @@ export function PlaylistNameDialog() {
   // unmounting immediately would snap the modal away.
   const [closing, setClosing] = createSignal(false);
   let inputRef: HTMLInputElement | undefined;
+  let closeTimer: number | undefined;
+  onCleanup(() => { if (closeTimer) { clearTimeout(closeTimer); } });
 
   const request = () => playlistDialog();
 
   createEffect(() => {
     const req = request();
     if (!req) { return; }
+    // A reopen within the exit window must cancel the pending unmount, or
+    // the stale timer closes the fresh dialog under the user's cursor.
+    if (closeTimer) { clearTimeout(closeTimer); closeTimer = undefined; }
     setClosing(false);
     setName(req.mode === "rename" ? req.playlist.name : "");
     setError("");
@@ -37,7 +42,8 @@ export function PlaylistNameDialog() {
   const close = () => {
     if (closing()) { return; }
     setClosing(true);
-    setTimeout(() => {
+    closeTimer = window.setTimeout(() => {
+      closeTimer = undefined;
       setClosing(false);
       setPlaylistDialog(null);
     }, EXIT_MS);

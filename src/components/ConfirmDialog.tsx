@@ -1,4 +1,4 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, createEffect, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
 
@@ -20,11 +20,23 @@ const EXIT_MS = 180;
  *  exit animation used by PlaylistNameDialog. */
 export function ConfirmDialog(props: ConfirmDialogProps) {
   const [closing, setClosing] = createSignal(false);
+  let closeTimer: number | undefined;
+  onCleanup(() => { if (closeTimer) { clearTimeout(closeTimer); } });
+
+  // Reopening within the exit window must cancel the pending timer - a
+  // stale one would close (or worse, confirm) the fresh dialog.
+  createEffect(() => {
+    if (props.open) {
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = undefined; }
+      setClosing(false);
+    }
+  });
 
   const close = (confirmed: boolean) => {
     if (closing()) { return; }
     setClosing(true);
-    setTimeout(() => {
+    closeTimer = window.setTimeout(() => {
+      closeTimer = undefined;
       setClosing(false);
       if (confirmed) { props.onConfirm(); }
       props.onClose();

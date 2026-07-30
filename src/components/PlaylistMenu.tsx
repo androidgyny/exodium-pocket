@@ -19,6 +19,10 @@ interface PlaylistMenuProps {
  *  intentionally absent. */
 export function PlaylistMenu(props: PlaylistMenuProps) {
   const [memberOf, setMemberOf] = createSignal<Set<number>>(new Set());
+  // Once the user toggles anything, the (possibly still in-flight) initial
+  // membership fetch must not overwrite the optimistic state - a slow
+  // response would revert checkmarks for actions that already succeeded.
+  let touched = false;
   // Anchor point clamped to the viewport - the detail panel's button sits
   // near the right window edge, where an unclamped menu gets clipped.
   const [pos, setPos] = createSignal({ x: props.x, y: props.y });
@@ -35,11 +39,12 @@ export function PlaylistMenu(props: PlaylistMenuProps) {
       });
     }
     getGamePlaylists(props.gameId)
-      .then((ids) => setMemberOf(new Set(ids)))
+      .then((ids) => { if (!touched) { setMemberOf(new Set(ids)); } })
       .catch(() => {});
   });
 
   const toggle = async (playlistId: number) => {
+    touched = true;
     const isMember = memberOf().has(playlistId);
     const playlistName = userPlaylists().find((p) => p.id === playlistId)?.name ?? "playlist";
     // Optimistic: flip locally, revert on failure.

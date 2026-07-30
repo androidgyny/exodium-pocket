@@ -159,33 +159,21 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
         }
 
         // ── Curated playlist sync ─────────────────────────────────────
-        // Curated rows are catalog content: rebuild them from the bundled DB
-        // on every refresh, keyed by slug so renames of the display name
-        // don't duplicate. kind='user' playlists are never touched. The
-        // membership remap goes through application_path (title+language for
-        // empty-path rows) - same keys, same planner-friendly split as the
-        // games sync above.
-        tx.execute_batch(
-            "DELETE FROM playlist_games WHERE playlist_id IN
-                 (SELECT id FROM playlists WHERE kind = 'curated');
-             DELETE FROM playlists WHERE kind = 'curated'
-                 AND (slug IS NULL OR slug NOT IN
-                     (SELECT slug FROM cat.playlists WHERE kind = 'curated'));",
-        )?;
+        // Curated rows are catalog content with nothing user-owned hanging
+        // off them, so the sync is a plain rebuild: drop them all (their
+        // memberships cascade) and re-insert from the bundled catalog.
+        // UNIQUE is (kind, name), so a user playlist sharing a curated name
+        // can never collide - no OR IGNORE, no skipped lists, and a failure
+        // here is a real bug that should fail the refresh loudly.
+        // kind='user' playlists are never touched. The membership remap goes
+        // through application_path (title+language for empty-path rows) -
+        // same keys, same planner-friendly split as the games sync above.
+        tx.execute_batch("DELETE FROM playlists WHERE kind = 'curated';")?;
         tx.execute(
-            "UPDATE playlists AS p SET name = c.name, description = c.description
-             FROM cat.playlists AS c
-             WHERE c.kind = 'curated' AND p.kind = 'curated' AND p.slug = c.slug",
-            [],
-        )?;
-        // OR IGNORE: a user playlist may already own the curated name - the
-        // curated list is then skipped rather than failing the refresh.
-        tx.execute(
-            "INSERT OR IGNORE INTO playlists (name, kind, slug, description)
+            "INSERT INTO playlists (name, kind, slug, description)
              SELECT c.name, 'curated', c.slug, c.description
              FROM cat.playlists AS c
-             WHERE c.kind = 'curated' AND c.slug NOT IN
-                 (SELECT slug FROM playlists WHERE kind = 'curated' AND slug IS NOT NULL)",
+             WHERE c.kind = 'curated'",
             [],
         )?;
         tx.execute(
@@ -328,6 +316,40 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_playlist_games_game ON playlist_games(game_id)",
     )?;
+
+    // Name uniqueness is per KIND, not global: identity for curated rows is
+    // the slug, for user rows the name. A global UNIQUE(name) let a user
+    // playlist collide with a curated one, which made the curated sync in
+    // refresh_catalog either skip lists silently or fail the whole refresh.
+    // Rebuild the table when it still carries the old constraint (its
+    // CREATE sql lacks "UNIQUE (kind"). Copying preserves ids, so
+    // playlist_games FKs stay valid; foreign_keys is toggled off so the
+    // DROP doesn't trip the child table's references.
+    let playlists_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'playlists'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    if !playlists_sql.contains("UNIQUE (kind") {
+        conn.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             CREATE TABLE playlists_new (
+                 id          INTEGER PRIMARY KEY,
+                 name        TEXT NOT NULL,
+                 kind        TEXT NOT NULL DEFAULT 'user',
+                 slug        TEXT,
+                 description TEXT,
+                 UNIQUE (kind, name)
+             );
+             INSERT INTO playlists_new (id, name, kind, slug, description)
+                 SELECT id, name, kind, slug, description FROM playlists;
+             DROP TABLE playlists;
+             ALTER TABLE playlists_new RENAME TO playlists;
+             PRAGMA foreign_keys=ON;",
+        )?;
+    }
 
     // Force thumbnail_key recomputation whenever the hash or canonical-matcher
     // algorithms change. Bumped on every release that alters:
@@ -852,9 +874,12 @@ mod tests {
         // (stale membership) and one that vanished.
         let (_, mut installed) = mk_db(dir.path(), "installed.db");
         let id_a = insert_game(&installed, "Alpha", "eXo\\eXoDOS\\!dos\\AL\\dosbox.conf", 10, "old");
+        // 'Games with MT-32' as a USER playlist: with per-kind uniqueness the
+        // incoming curated list of the same name must coexist, not collide.
         installed
             .execute_batch(
                 "INSERT INTO playlists (name, kind) VALUES ('Mine', 'user');
+                 INSERT INTO playlists (name, kind) VALUES ('Games with MT-32', 'user');
                  INSERT INTO playlists (name, kind, slug, description)
                      VALUES ('MT-32 (old name)', 'curated', 'mt-32', 'old desc');
                  INSERT INTO playlists (name, kind, slug)
@@ -911,7 +936,8 @@ mod tests {
         assert_eq!(vanished, 0);
 
         // mt-32: renamed, description updated, membership rebuilt and
-        // remapped to the INSTALLED DB's Delta id via application_path.
+        // remapped to the INSTALLED DB's Delta id via application_path -
+        // even though a USER playlist owns the same display name.
         let (name, desc, pid): (String, String, i64) = installed
             .query_row(
                 "SELECT name, description, id FROM playlists WHERE slug = 'mt-32'",
@@ -921,6 +947,14 @@ mod tests {
             .unwrap();
         assert_eq!(name, "Games with MT-32");
         assert_eq!(desc, "new desc");
+        let same_name: i64 = installed
+            .query_row(
+                "SELECT COUNT(*) FROM playlists WHERE name = 'Games with MT-32'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(same_name, 2); // user + curated coexist
         let installed_delta: i64 = installed
             .query_row("SELECT id FROM games WHERE title = 'Delta'", [], |r| r.get(0))
             .unwrap();
