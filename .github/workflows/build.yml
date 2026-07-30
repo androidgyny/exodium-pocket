@@ -85,6 +85,38 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
 
+      # Tauri's linuxdeploy auto-bundles GPU-adjacent libs (libwayland, libgbm,
+      # libdrm, libEGL, libGL) from the jammy runner into the AppImage. These
+      # must ALWAYS come from the host: the bundled copies break EGL display
+      # creation against newer Mesa (Arch/Cosmic, Intel iris: "Could not create
+      # default EGL display: EGL_BAD_PARAMETER. Aborting..."). Strip them,
+      # repack, and re-sign the updater signature (it covers the file bytes).
+      - name: Strip host-only GPU libs from AppImage
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          wget -q -O /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          cd src-tauri/target/release/bundle/appimage
+          name=$(ls *.AppImage)
+          "./$name" --appimage-extract >/dev/null
+          rm -fv squashfs-root/usr/lib/libwayland* squashfs-root/usr/lib/libgbm* \
+                 squashfs-root/usr/lib/libdrm* squashfs-root/usr/lib/libEGL* \
+                 squashfs-root/usr/lib/libGL*
+          rm -f "$name" "$name.sig"
+          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run squashfs-root "$name"
+          rm -rf squashfs-root
+          ls -la "$name"
+          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            cd "$GITHUB_WORKSPACE"
+            pnpm tauri signer sign "src-tauri/target/release/bundle/appimage/$name"
+          fi
+
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos'
         uses: actions/upload-artifact@v4
