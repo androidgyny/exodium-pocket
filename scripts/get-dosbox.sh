@@ -15,7 +15,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINARIES_DIR="$REPO_ROOT/src-tauri/binaries"
-VERSION="${VERSION:-0.82.0}"
+VERSION="${VERSION:-0.82.2}"
 
 mkdir -p "$BINARIES_DIR"
 
