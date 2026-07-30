@@ -136,3 +136,14 @@ pub async fn check_for_updates(db_state: State<'_, DbState>) -> Result<UpdateInf
 
     Ok(UpdateInfo { updates })
 }
+
+#[cfg(test)]
+mod manifest_load_tests {
+    #[test]
+    fn manifest_parses_with_packs() {
+        let m = super::load_manifest().expect("load_manifest failed");
+        let ex = m.collections.get("eXoDOS").expect("no eXoDOS collection");
+        assert!(!ex.content_packs.is_empty(), "eXoDOS has no content packs");
+        println!("packs: {:?}", ex.content_packs.keys().collect::<Vec<_>>());
+    }
+}
