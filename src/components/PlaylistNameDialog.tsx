@@ -5,6 +5,11 @@ import {
   playlistDialog, setPlaylistDialog, createPlaylist, renamePlaylist,
   togglePlaylistMembership,
 } from "../stores/playlists";
+import { showToast } from "../stores/toasts";
+
+/** How long the exit animation runs before the dialog unmounts.
+ *  Must match the CSS animation duration on .closing. */
+const EXIT_MS = 180;
 
 /** App-wide create/rename playlist dialog, driven by the playlistDialog
  *  store signal. Mounted once in Library. */
@@ -12,6 +17,9 @@ export function PlaylistNameDialog() {
   const [name, setName] = createSignal("");
   const [error, setError] = createSignal("");
   const [saving, setSaving] = createSignal(false);
+  // Kept mounted with a .closing class while the exit animation plays -
+  // unmounting immediately would snap the modal away.
+  const [closing, setClosing] = createSignal(false);
   let inputRef: HTMLInputElement | undefined;
 
   const request = () => playlistDialog();
@@ -19,13 +27,21 @@ export function PlaylistNameDialog() {
   createEffect(() => {
     const req = request();
     if (!req) { return; }
+    setClosing(false);
     setName(req.mode === "rename" ? req.playlist.name : "");
     setError("");
     // Focus after the dialog content mounts.
     requestAnimationFrame(() => inputRef?.select());
   });
 
-  const close = () => setPlaylistDialog(null);
+  const close = () => {
+    if (closing()) { return; }
+    setClosing(true);
+    setTimeout(() => {
+      setClosing(false);
+      setPlaylistDialog(null);
+    }, EXIT_MS);
+  };
 
   const handleSave = async () => {
     const req = request();
@@ -38,9 +54,13 @@ export function PlaylistNameDialog() {
         const id = await createPlaylist(trimmed);
         if (req.gameId != null) {
           await togglePlaylistMembership(id, req.gameId, true);
+          showToast(`Created "${trimmed}" and added the game`, "success");
+        } else {
+          showToast(`Playlist "${trimmed}" created`, "success");
         }
       } else {
         await renamePlaylist(req.playlist.id, trimmed);
+        showToast(`Renamed to "${trimmed}"`, "success");
       }
       close();
     } catch (e) {
@@ -54,9 +74,9 @@ export function PlaylistNameDialog() {
     <Show when={request()}>
       <Dialog.Root open onOpenChange={(e) => { if (!e.open) { close(); } }}>
         <Portal>
-          <Dialog.Backdrop class="ark-dialog-backdrop" />
+          <Dialog.Backdrop class={`ark-dialog-backdrop${closing() ? " closing" : ""}`} />
           <Dialog.Positioner class="ark-dialog-positioner">
-            <Dialog.Content class="ark-dialog-content">
+            <Dialog.Content class={`ark-dialog-content playlist-dialog${closing() ? " closing" : ""}`}>
               <Dialog.Title class="ark-dialog-title">
                 {request()!.mode === "create" ? "New playlist" : "Rename playlist"}
               </Dialog.Title>

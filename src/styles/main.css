@@ -1375,6 +1375,44 @@ body {
   to   { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
 }
 
+/* Exit pair for dialogs that stay mounted during close (`.closing` is set
+   for the animation's duration, then the dialog unmounts - see
+   PlaylistNameDialog's EXIT_MS). `forwards` holds the faded-out end state
+   for the frame between animation end and unmount. */
+.ark-dialog-backdrop.closing {
+  animation: modalBackdropOut 0.18s ease forwards;
+}
+
+.ark-dialog-content.closing {
+  animation: modalContentOut 0.18s ease forwards;
+}
+
+@keyframes modalBackdropOut {
+  from { opacity: 1; }
+  to   { opacity: 0; backdrop-filter: blur(0); }
+}
+
+@keyframes modalContentOut {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(8px) scale(0.97); }
+}
+
+/* Playlist dialog gets a springier entry than the shared modalContentIn -
+   it's small and opened from a deliberate click, so a visible pop reads as
+   responsiveness rather than noise. */
+.playlist-dialog {
+  animation: playlistDialogIn 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.playlist-dialog.closing {
+  animation: modalContentOut 0.18s ease forwards;
+}
+
+@keyframes playlistDialogIn {
+  from { opacity: 0; transform: translateY(14px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 .ark-dialog-title {
   font-size: 16px;
   font-weight: 600;

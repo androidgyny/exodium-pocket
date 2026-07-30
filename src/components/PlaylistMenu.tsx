@@ -4,6 +4,7 @@ import { getGamePlaylists } from "../api/tauri";
 import {
   userPlaylists, togglePlaylistMembership, setPlaylistDialog,
 } from "../stores/playlists";
+import { showToast } from "../stores/toasts";
 
 interface PlaylistMenuProps {
   x: number;
@@ -27,6 +28,7 @@ export function PlaylistMenu(props: PlaylistMenuProps) {
 
   const toggle = async (playlistId: number) => {
     const isMember = memberOf().has(playlistId);
+    const playlistName = userPlaylists().find((p) => p.id === playlistId)?.name ?? "playlist";
     // Optimistic: flip locally, revert on failure.
     setMemberOf((prev) => {
       const next = new Set(prev);
@@ -35,8 +37,12 @@ export function PlaylistMenu(props: PlaylistMenuProps) {
     });
     try {
       await togglePlaylistMembership(playlistId, props.gameId, !isMember);
+      showToast(
+        isMember ? `Removed from "${playlistName}"` : `Added to "${playlistName}"`,
+        "success",
+      );
     } catch (e) {
-      console.error("[playlists] toggle failed:", e);
+      showToast(`Couldn't update "${playlistName}"`, "error", { detail: String(e) });
       setMemberOf((prev) => {
         const next = new Set(prev);
         if (isMember) { next.add(playlistId); } else { next.delete(playlistId); }

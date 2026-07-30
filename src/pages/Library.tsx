@@ -20,7 +20,9 @@ import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, ge
 import { GameCard } from "../components/GameCard";
 import { GameDetailPanel } from "../components/GameDetailPanel";
 import { PlaylistNameDialog } from "../components/PlaylistNameDialog";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Select } from "../components/Select";
+import { showToast } from "../stores/toasts";
 
 type Tab = "library" | "browse";
 
@@ -336,7 +338,7 @@ export function Library() {
   // lists) and kept fresh alongside the other shelves.
   const [playlistShelves, setPlaylistShelves] = createSignal<Map<number, Game[]>>(new Map());
   const [shelfMenu, setShelfMenu] = createSignal<{ playlist: Playlist; x: number; y: number } | null>(null);
-  const [confirmShelfDelete, setConfirmShelfDelete] = createSignal(false);
+  const [confirmDelete, setConfirmDelete] = createSignal<Playlist | null>(null);
 
   const refreshPlaylistShelves = async () => {
     const user = userPlaylists();
@@ -367,11 +369,12 @@ export function Library() {
     setShelfMenu(null);
     try {
       await deletePlaylist(playlist.id);
+      showToast(`Deleted "${playlist.name}"`, "success");
       if (playlistFilter() === playlist.id) {
         applyPlaylistFilter("");
       }
     } catch (e) {
-      console.warn("[Library] delete playlist failed:", e);
+      showToast(`Couldn't delete "${playlist.name}"`, "error", { detail: String(e) });
     }
   };
 
@@ -691,7 +694,6 @@ export function Library() {
                     title="Playlist options"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setConfirmShelfDelete(false);
                       setShelfMenu({ playlist, x: e.clientX, y: e.clientY });
                     }}
                   >⋯</button>
@@ -734,17 +736,25 @@ export function Library() {
               Rename
             </button>
             <button class="context-menu-item danger" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
-              if (confirmShelfDelete()) {
-                handleShelfDelete(shelfMenu()!.playlist);
-              } else {
-                setConfirmShelfDelete(true);
-              }
+              const playlist = shelfMenu()!.playlist;
+              setShelfMenu(null);
+              setConfirmDelete(playlist);
             }}>
-              {confirmShelfDelete() ? "Confirm delete?" : "Delete playlist"}
+              Delete playlist
             </button>
           </div>
         </Portal>
       </Show>
+
+      <ConfirmDialog
+        open={confirmDelete() != null}
+        title="Delete playlist"
+        message={`Delete "${confirmDelete()?.name}"? The games stay in your library.`}
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => { const p = confirmDelete(); if (p) { handleShelfDelete(p); } }}
+        onClose={() => setConfirmDelete(null)}
+      />
 
       <PlaylistNameDialog />
 
