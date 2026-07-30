@@ -178,16 +178,25 @@ pub struct DownloadManagerStatus {
 /// The torrent is only added to the session on first download request,
 /// avoiding the creation of 14,000+ placeholder files at startup.
 ///
-/// Lock-order convention: `handle` before `selected_files`, always. Mixed
-/// order deadlocks - tokio's write-preferring RwLock blocks new readers
-/// while a writer waits, so two tasks holding one lock each and waiting on
-/// the other freeze every download.
+/// Lock-order convention: `selection_apply` before `handle` before
+/// `selected_files`, always. Mixed order deadlocks - tokio's
+/// write-preferring RwLock blocks new readers while a writer waits, so two
+/// tasks holding one lock each and waiting on the other freeze every
+/// download.
 pub struct DownloadManager {
     session: Arc<Session>,
     handle: RwLock<Option<Arc<ManagedTorrent>>>,
     torrent_index: TorrentIndex,
     torrent_bytes: Arc<Vec<u8>>,
     selected_files: RwLock<HashSet<usize>>,
+    /// Serializes every `update_only_files` push into librqbit (including
+    /// its wait-for-check preamble). Two concurrent selection updates - or
+    /// one racing the re-check a previous update triggered - wedge
+    /// librqbit's checking task so hard that even `stats()` blocks forever,
+    /// freezing every progress poll (field report: three first downloads
+    /// clicked in quick succession on Linux 0.8.7, UI stuck on "Starting
+    /// download..." with a silent log).
+    selection_apply: tokio::sync::Mutex<()>,
     data_dir: PathBuf,
     /// Hex SHA1 info-hash of this manager's torrent, for finding it among
     /// the session's persisted (auto-resumed) torrents.
@@ -276,6 +285,7 @@ impl DownloadManager {
             torrent_index,
             torrent_bytes,
             selected_files: RwLock::new(HashSet::new()),
+            selection_apply: tokio::sync::Mutex::new(()),
             data_dir: data_dir.to_path_buf(),
             info_hash_hex,
             persistence_dir: persistence_dir.to_path_buf(),
@@ -383,10 +393,17 @@ impl DownloadManager {
     /// update raced the check. So: wait for the check to finish first. Must
     /// NOT be called while holding the handle lock - a full re-check takes
     /// minutes and progress polling reads that lock.
+    ///
+    /// The `selection_apply` mutex makes appliers mutually exclusive: an
+    /// update can also race the re-check that a PREVIOUS update triggered
+    /// (three games queued back-to-back on a fresh collection), which
+    /// wedges librqbit just the same. Each applier therefore re-runs the
+    /// wait loop while already holding the mutex.
     async fn wait_ready_then_apply_selection(
         &self,
         handle: &Arc<ManagedTorrent>,
     ) -> anyhow::Result<()> {
+        let _apply_guard = self.selection_apply.lock().await;
         const MAX_WAIT_SECS: u64 = 1800; // full check of a large selection on slow disks
         let start = std::time::Instant::now();
         let mut last_log = 0u64;
@@ -725,30 +742,25 @@ impl DownloadManager {
     }
 
     /// Remove a file from the active selection, telling librqbit to stop prioritising it.
-    /// Holds the write lock across the session update to keep selected_files and the
-    /// torrent session in sync - no other caller can observe a partially-updated state.
+    /// Mutates the set immediately, then pushes it to the session via the
+    /// serialized applier in the background: a direct update_only_files here
+    /// was the second unserialized caller (besides queueing) able to race a
+    /// check and wedge librqbit. The applier reads the CURRENT set at apply
+    /// time, so this reduced selection wins over any apply already in
+    /// flight, and cancel stays instant even while a long check runs.
     pub async fn deselect_file(self: &Arc<Self>, file_index: usize) {
-        // Lock order: handle before selected_files (see struct docs).
-        let handle_guard = self.handle.read().await;
-        let mut selected = self.selected_files.write().await;
-        selected.remove(&file_index);
-        if let Some(ref handle) = *handle_guard {
-            if let Err(e) = self.session.update_only_files(handle, &selected).await {
-                // Most commonly "can't update initializing torrent": a cancel
-                // during the (possibly long) initial check. Re-apply the
-                // reduced selection once the check finishes, otherwise the
-                // cancelled file keeps downloading invisibly.
-                log::info!("deselect deferred until torrent is ready: {}", e);
-                let mgr = Arc::clone(self);
-                let handle = Arc::clone(handle);
-                drop(selected);
-                drop(handle_guard);
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) = mgr.wait_ready_then_apply_selection(&handle).await {
-                        log::warn!("deferred deselect failed: {}", e);
-                    }
-                });
-            }
+        {
+            let mut selected = self.selected_files.write().await;
+            selected.remove(&file_index);
+        }
+        let handle = { self.handle.read().await.as_ref().map(Arc::clone) };
+        if let Some(handle) = handle {
+            let mgr = Arc::clone(self);
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = mgr.wait_ready_then_apply_selection(&handle).await {
+                    log::warn!("deselect apply failed: {}", e);
+                }
+            });
         }
     }
 
