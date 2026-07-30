@@ -8,6 +8,7 @@ import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from 
 import { thumbnailCandidates } from "../stores/thumbnails";
 import { downloads, cancelGameDownload } from "../stores/downloads";
 import { toggleFavorite } from "../stores/games";
+import { PlaylistMenu } from "./PlaylistMenu";
 
 interface GameCardProps {
   game: Game;
@@ -26,6 +27,7 @@ export function GameCard(props: GameCardProps) {
   const [favorited, setFavorited] = createSignal(props.game.favorited);
   const [variants, setVariants] = createSignal<Game[]>([]);
   const [contextMenu, setContextMenu] = createSignal<{x: number, y: number} | null>(null);
+  const [playlistMenu, setPlaylistMenu] = createSignal<{x: number, y: number} | null>(null);
   const [confirmUninstall, setConfirmUninstall] = createSignal(false);
   const [favAnimating, setFavAnimating] = createSignal(false);
   let favAnimTimeout: number | undefined;
@@ -86,14 +88,16 @@ export function GameCard(props: GameCardProps) {
   const dlState = () => dlEntry()?.state;
 
   const handleContextMenu = (e: MouseEvent) => {
-    if ((!props.game.installed && !props.game.in_library) || props.game.id == null) { return; }
-    // Don't offer uninstall while a download is in flight - performUninstall
-    // would cancel it first, but exposing both actions side-by-side is confusing.
-    if (isDownloading()) { return; }
+    if (props.game.id == null) { return; }
     e.preventDefault();
     setConfirmUninstall(false);
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
+
+  // Uninstall stays hidden while a download is in flight - performUninstall
+  // would cancel it first, but exposing both actions side-by-side is confusing.
+  const canUninstall = () =>
+    (props.game.installed || props.game.in_library) && !isDownloading();
 
   const handleContextUninstall = async () => {
     setContextMenu(null);
@@ -218,17 +222,35 @@ export function GameCard(props: GameCardProps) {
         <Portal>
           <div class="context-backdrop" onMouseDown={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />
           <div class="context-menu" style={{ left: `${contextMenu()!.x}px`, top: `${contextMenu()!.y}px` }}>
-            <button class="context-menu-item danger" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
-              if (confirmUninstall()) {
-                handleContextUninstall();
-              } else {
-                setConfirmUninstall(true);
-              }
+            <button class="context-menu-item" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
+              const pos = contextMenu()!;
+              setContextMenu(null);
+              setPlaylistMenu(pos);
             }}>
-              {confirmUninstall() ? "Confirm uninstall?" : "Uninstall"}
+              Add to playlist…
             </button>
+            <Show when={canUninstall()}>
+              <button class="context-menu-item danger" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
+                if (confirmUninstall()) {
+                  handleContextUninstall();
+                } else {
+                  setConfirmUninstall(true);
+                }
+              }}>
+                {confirmUninstall() ? "Confirm uninstall?" : "Uninstall"}
+              </button>
+            </Show>
           </div>
         </Portal>
+      </Show>
+
+      <Show when={playlistMenu()}>
+        <PlaylistMenu
+          x={playlistMenu()!.x}
+          y={playlistMenu()!.y}
+          gameId={props.game.id!}
+          onClose={() => setPlaylistMenu(null)}
+        />
       </Show>
     </div>
   );

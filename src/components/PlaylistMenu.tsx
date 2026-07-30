@@ -1,0 +1,84 @@
+import { createSignal, onMount, For, Show } from "solid-js";
+import { Portal } from "solid-js/web";
+import { getGamePlaylists } from "../api/tauri";
+import {
+  userPlaylists, togglePlaylistMembership, setPlaylistDialog,
+} from "../stores/playlists";
+
+interface PlaylistMenuProps {
+  x: number;
+  y: number;
+  gameId: number;
+  onClose: () => void;
+}
+
+/** Floating "Add to playlist" picker: user playlists with membership
+ *  checkmarks + a "New playlist…" entry. Opened from the game card's
+ *  context menu and the detail panel. Curated playlists are read-only and
+ *  intentionally absent. */
+export function PlaylistMenu(props: PlaylistMenuProps) {
+  const [memberOf, setMemberOf] = createSignal<Set<number>>(new Set());
+
+  onMount(() => {
+    getGamePlaylists(props.gameId)
+      .then((ids) => setMemberOf(new Set(ids)))
+      .catch(() => {});
+  });
+
+  const toggle = async (playlistId: number) => {
+    const isMember = memberOf().has(playlistId);
+    // Optimistic: flip locally, revert on failure.
+    setMemberOf((prev) => {
+      const next = new Set(prev);
+      if (isMember) { next.delete(playlistId); } else { next.add(playlistId); }
+      return next;
+    });
+    try {
+      await togglePlaylistMembership(playlistId, props.gameId, !isMember);
+    } catch (e) {
+      console.error("[playlists] toggle failed:", e);
+      setMemberOf((prev) => {
+        const next = new Set(prev);
+        if (isMember) { next.add(playlistId); } else { next.delete(playlistId); }
+        return next;
+      });
+    }
+  };
+
+  return (
+    <Portal>
+      <div
+        class="context-backdrop playlist-menu-backdrop"
+        onMouseDown={props.onClose}
+        onContextMenu={(e) => { e.preventDefault(); props.onClose(); }}
+      />
+      <div class="context-menu playlist-menu" style={{ left: `${props.x}px`, top: `${props.y}px` }}>
+        <Show when={userPlaylists().length > 0}>
+          <For each={userPlaylists()}>
+            {(p) => (
+              <button
+                class="context-menu-item playlist-menu-item"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => toggle(p.id)}
+              >
+                <span class={`playlist-menu-check ${memberOf().has(p.id) ? "checked" : ""}`}>✓</span>
+                <span class="playlist-menu-name">{p.name}</span>
+              </button>
+            )}
+          </For>
+          <div class="playlist-menu-divider" />
+        </Show>
+        <button
+          class="context-menu-item"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => {
+            props.onClose();
+            setPlaylistDialog({ mode: "create", gameId: props.gameId });
+          }}
+        >
+          ＋ New playlist…
+        </button>
+      </div>
+    </Portal>
+  );
+}

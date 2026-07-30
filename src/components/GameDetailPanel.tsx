@@ -5,6 +5,7 @@ import { AutoProgress } from "./ProgressBar";
 import { Lightbox } from "./Lightbox";
 import { ManualViewer } from "./ManualViewer";
 import { GameSettingsDialog } from "./GameSettingsDialog";
+import { PlaylistMenu } from "./PlaylistMenu";
 import type { Game, GameMetadata } from "../api/tauri";
 import { launchGame, getGameVariants } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
@@ -33,6 +34,7 @@ export function GameDetailPanel(props: Props) {
   const [lightboxStart, setLightboxStart] = createSignal(0);
   const [manualOpen, setManualOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [playlistMenu, setPlaylistMenu] = createSignal<{x: number, y: number} | null>(null);
   const [launchingId, setLaunchingId] = createSignal<number | null>(null);
   const [uninstallingId, setUninstallingId] = createSignal<number | null>(null);
   // Is the in-flight uninstall about THIS panel's game (primary or variant)?
@@ -121,6 +123,7 @@ export function GameDetailPanel(props: Props) {
     // itself - closing the panel underneath in the same press would yank
     // the user two levels at once.
     if (lightboxOpen() || manualOpen() || settingsOpen()) { return; }
+    if (playlistMenu()) { setPlaylistMenu(null); return; }
     props.onClose();
   };
 
@@ -446,6 +449,23 @@ export function GameDetailPanel(props: Props) {
               </div>
             </Show>
 
+            {/* Playlist: outside the single/multi-language split so every
+                game gets it (membership is per merged group either way). */}
+            <Show when={props.game!.id != null}>
+              <div class="game-detail-actions game-detail-actions-secondary">
+                <button
+                  class="game-detail-btn btn-playlist"
+                  title="Add to playlist"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setPlaylistMenu({ x: rect.left, y: rect.bottom + 4 });
+                  }}
+                >
+                  ＋ Playlist
+                </button>
+              </div>
+            </Show>
+
             {/* Detail fields - structured key/value rows for metadata that
                 doesn't fit in chips. */}
             <div class="game-detail-fields">
@@ -579,6 +599,14 @@ export function GameDetailPanel(props: Props) {
           open={settingsOpen()}
           onClose={() => setSettingsOpen(false)}
         />
+        <Show when={playlistMenu() && props.game?.id != null}>
+          <PlaylistMenu
+            x={playlistMenu()!.x}
+            y={playlistMenu()!.y}
+            gameId={props.game!.id!}
+            onClose={() => setPlaylistMenu(null)}
+          />
+        </Show>
       </Portal>
     </Show>
   );

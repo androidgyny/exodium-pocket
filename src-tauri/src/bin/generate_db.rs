@@ -184,6 +184,109 @@ fn match_torrent_indices(
     );
 }
 
+/// First text content of `<tag>` in `block`, or None for missing/empty tags.
+fn extract_tag<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = block.find(&open)? + open.len();
+    let end = block[start..].find(&close)? + start;
+    let val = block[start..end].trim();
+    if val.is_empty() { None } else { Some(val) }
+}
+
+fn slugify(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Parse metadata/Playlists.xml.gz and seed kind='curated' playlist rows.
+///
+/// The file is a concatenation of one LaunchBox XML document per playlist
+/// (each with its own <?xml?> declaration), so a strict XML parser rejects
+/// it - blocks are split on <LaunchBox> instead. Membership is the union of
+/// explicit <PlaylistGame> title entries and, for auto-populate playlists,
+/// games whose `series` field carries the playlist's "Playlist: X" tag
+/// (LaunchBox stores auto-populate rules as filters on Series).
+fn seed_curated_playlists(conn: &rusqlite::Connection, metadata_dir: &Path) {
+    let path = metadata_dir.join("Playlists.xml.gz");
+    let Ok(file) = std::fs::File::open(&path) else {
+        println!("WARN: {} not found, skipping curated playlists", path.display());
+        return;
+    };
+    let mut raw = String::new();
+    use std::io::Read;
+    if flate2::read::GzDecoder::new(file).read_to_string(&mut raw).is_err() {
+        println!("WARN: failed to decompress {}", path.display());
+        return;
+    }
+
+    println!("\nSeeding curated playlists:");
+    for block in raw.split("<LaunchBox>").skip(1) {
+        let Some(name) = extract_tag(block, "Name") else { continue };
+        // Dynamic install-state list - redundant with the app's My Library.
+        if name == "Installed eXoDOS Games" {
+            continue;
+        }
+
+        let display_name = name.strip_prefix("eXoDOS ").unwrap_or(name);
+        let description = extract_tag(block, "Notes").filter(|n| *n != ".");
+
+        conn.execute(
+            "INSERT INTO playlists (name, kind, slug, description)
+             VALUES (?1, 'curated', ?2, ?3)",
+            params![display_name, slugify(name), description],
+        )
+        .unwrap();
+        let pid = conn.last_insert_rowid();
+
+        // Auto-populate rules: every Series-keyed filter value.
+        let mut member_count = 0usize;
+        for filter_block in block.split("<PlaylistFilter>").skip(1) {
+            if extract_tag(filter_block, "FieldKey") != Some("Series") {
+                continue;
+            }
+            let Some(tag) = extract_tag(filter_block, "Value") else { continue };
+            member_count += conn
+                .execute(
+                    "INSERT OR IGNORE INTO playlist_games (playlist_id, game_id)
+                     SELECT ?1, id FROM games
+                     WHERE '; ' || series || '; ' LIKE '%; ' || ?2 || '; %'",
+                    params![pid, tag],
+                )
+                .unwrap();
+        }
+
+        // Explicit entries (manual playlists like Quality Freeware).
+        let mut unmatched: Vec<&str> = Vec::new();
+        for game_block in block.split("<PlaylistGame>").skip(1) {
+            let Some(title) = extract_tag(game_block, "GameTitle") else { continue };
+            let n = conn
+                .execute(
+                    "INSERT OR IGNORE INTO playlist_games (playlist_id, game_id)
+                     SELECT ?1, id FROM games WHERE title = ?2",
+                    params![pid, title],
+                )
+                .unwrap();
+            if n == 0 {
+                unmatched.push(title);
+            } else {
+                member_count += n;
+            }
+        }
+
+        println!("  {}: {} games", display_name, member_count);
+        if !unmatched.is_empty() {
+            println!("    WARN unmatched titles: {:?}", unmatched);
+        }
+    }
+}
+
 fn main() {
     let root = project_root();
     let metadata_dir = root.join("metadata");
@@ -579,6 +682,9 @@ fn main() {
     } else {
         println!("WARN: metadata/dosbox.txt not found, skipping variant mapping");
     }
+
+    // Seed curated playlists from the bundled LaunchBox playlist metadata.
+    seed_curated_playlists(&conn, &metadata_dir);
 
     // Final stats
     println!("\n--- Final Stats ---");

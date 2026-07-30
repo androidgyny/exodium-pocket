@@ -11,6 +11,8 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("Database not found at {0}")]
     NotFound(String),
+    #[error("Curated playlists cannot be modified")]
+    ReadOnlyPlaylist,
 }
 
 pub type DbResult<T> = Result<T, DbError>;
@@ -20,8 +22,9 @@ pub type DbResult<T> = Result<T, DbError>;
 /// corrected torrent indices, ...). At startup, an installed DB whose
 /// `catalog_version` config is older gets its catalog rows refreshed from
 /// the bundled DB via `refresh_catalog` - user state is preserved.
-/// History: 1 = pre-versioning (0.6.x), 2 = path-anchored torrent indices.
-pub const CATALOG_VERSION: i64 = 2;
+/// History: 1 = pre-versioning (0.6.x), 2 = path-anchored torrent indices,
+/// 3 = curated playlists shipped in the bundled DB.
+pub const CATALOG_VERSION: i64 = 3;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
@@ -155,6 +158,59 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
             );
         }
 
+        // ── Curated playlist sync ─────────────────────────────────────
+        // Curated rows are catalog content: rebuild them from the bundled DB
+        // on every refresh, keyed by slug so renames of the display name
+        // don't duplicate. kind='user' playlists are never touched. The
+        // membership remap goes through application_path (title+language for
+        // empty-path rows) - same keys, same planner-friendly split as the
+        // games sync above.
+        tx.execute_batch(
+            "DELETE FROM playlist_games WHERE playlist_id IN
+                 (SELECT id FROM playlists WHERE kind = 'curated');
+             DELETE FROM playlists WHERE kind = 'curated'
+                 AND (slug IS NULL OR slug NOT IN
+                     (SELECT slug FROM cat.playlists WHERE kind = 'curated'));",
+        )?;
+        tx.execute(
+            "UPDATE playlists AS p SET name = c.name, description = c.description
+             FROM cat.playlists AS c
+             WHERE c.kind = 'curated' AND p.kind = 'curated' AND p.slug = c.slug",
+            [],
+        )?;
+        // OR IGNORE: a user playlist may already own the curated name - the
+        // curated list is then skipped rather than failing the refresh.
+        tx.execute(
+            "INSERT OR IGNORE INTO playlists (name, kind, slug, description)
+             SELECT c.name, 'curated', c.slug, c.description
+             FROM cat.playlists AS c
+             WHERE c.kind = 'curated' AND c.slug NOT IN
+                 (SELECT slug FROM playlists WHERE kind = 'curated' AND slug IS NOT NULL)",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO playlist_games (playlist_id, game_id)
+             SELECT p.id, g.id
+             FROM cat.playlist_games AS cpg
+             JOIN cat.playlists AS cp ON cp.id = cpg.playlist_id AND cp.kind = 'curated'
+             JOIN playlists AS p ON p.slug = cp.slug AND p.kind = 'curated'
+             JOIN cat.games AS cg ON cg.id = cpg.game_id
+             JOIN games AS g ON g.application_path = cg.application_path
+             WHERE cg.application_path IS NOT NULL AND cg.application_path != ''",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO playlist_games (playlist_id, game_id)
+             SELECT p.id, g.id
+             FROM cat.playlist_games AS cpg
+             JOIN cat.playlists AS cp ON cp.id = cpg.playlist_id AND cp.kind = 'curated'
+             JOIN playlists AS p ON p.slug = cp.slug AND p.kind = 'curated'
+             JOIN cat.games AS cg ON cg.id = cpg.game_id
+             JOIN games AS g ON g.title = cg.title AND g.language = cg.language
+             WHERE cg.application_path IS NULL OR cg.application_path = ''",
+            [],
+        )?;
+
         tx.execute(
             "INSERT INTO config (key, value) VALUES ('catalog_version', ?1) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -250,6 +306,28 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     if !has_last_played {
         conn.execute_batch("ALTER TABLE games ADD COLUMN last_played TEXT")?;
     }
+
+    // Playlist support (curated eXo playlists + user playlists). The tables
+    // existed since 0.1 but were never populated, so plain ALTERs are safe.
+    let playlist_cols = table_columns(conn, "playlists")?;
+    if !playlist_cols.iter().any(|c| c == "kind") {
+        conn.execute_batch(
+            "ALTER TABLE playlists ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'",
+        )?;
+    }
+    if !playlist_cols.iter().any(|c| c == "slug") {
+        conn.execute_batch("ALTER TABLE playlists ADD COLUMN slug TEXT")?;
+    }
+    if !playlist_cols.iter().any(|c| c == "description") {
+        conn.execute_batch("ALTER TABLE playlists ADD COLUMN description TEXT")?;
+    }
+    let playlist_game_cols = table_columns(conn, "playlist_games")?;
+    if !playlist_game_cols.iter().any(|c| c == "position") {
+        conn.execute_batch("ALTER TABLE playlist_games ADD COLUMN position INTEGER")?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_playlist_games_game ON playlist_games(game_id)",
+    )?;
 
     // Force thumbnail_key recomputation whenever the hash or canonical-matcher
     // algorithms change. Bumped on every release that alters:
@@ -763,5 +841,96 @@ mod tests {
             .query_row("SELECT favorited FROM games WHERE id = ?1", [id_a], |r| r.get(0))
             .unwrap();
         assert_eq!(still_fav, 1);
+    }
+
+    #[test]
+    fn refresh_catalog_syncs_curated_playlists_preserves_user_playlists() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Installed DB: game Alpha, a user playlist holding it, plus two
+        // curated playlists from a previous catalog - one that still exists
+        // (stale membership) and one that vanished.
+        let (_, mut installed) = mk_db(dir.path(), "installed.db");
+        let id_a = insert_game(&installed, "Alpha", "eXo\\eXoDOS\\!dos\\AL\\dosbox.conf", 10, "old");
+        installed
+            .execute_batch(
+                "INSERT INTO playlists (name, kind) VALUES ('Mine', 'user');
+                 INSERT INTO playlists (name, kind, slug, description)
+                     VALUES ('MT-32 (old name)', 'curated', 'mt-32', 'old desc');
+                 INSERT INTO playlists (name, kind, slug)
+                     VALUES ('Vanished', 'curated', 'vanished');",
+            )
+            .unwrap();
+        let user_pid: i64 = installed
+            .query_row("SELECT id FROM playlists WHERE name = 'Mine'", [], |r| r.get(0))
+            .unwrap();
+        installed
+            .execute(
+                "INSERT INTO playlist_games (playlist_id, game_id)
+                 SELECT id, ?1 FROM playlists",
+                [id_a],
+            )
+            .unwrap();
+
+        // Bundled DB: Alpha + Delta; curated mt-32 now contains only Delta
+        // and carries a fresh name + description.
+        let (bundled_path, bundled) = mk_db(dir.path(), "bundled.db");
+        insert_game(&bundled, "Alpha", "eXo\\eXoDOS\\!dos\\AL\\dosbox.conf", 99, "new");
+        let cat_delta = insert_game(&bundled, "Delta", "eXo\\eXoDOS\\!dos\\DE\\dosbox.conf", 30, "new");
+        bundled
+            .execute_batch(
+                "INSERT INTO playlists (name, kind, slug, description)
+                     VALUES ('Games with MT-32', 'curated', 'mt-32', 'new desc');",
+            )
+            .unwrap();
+        bundled
+            .execute(
+                "INSERT INTO playlist_games (playlist_id, game_id)
+                 SELECT id, ?1 FROM playlists",
+                [cat_delta],
+            )
+            .unwrap();
+        drop(bundled);
+
+        refresh_catalog(&mut installed, &bundled_path).unwrap();
+
+        // User playlist untouched.
+        let user_games: Vec<i64> = installed
+            .prepare("SELECT game_id FROM playlist_games WHERE playlist_id = ?1")
+            .unwrap()
+            .query_map([user_pid], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(user_games, vec![id_a]);
+
+        // Vanished curated playlist removed entirely.
+        let vanished: i64 = installed
+            .query_row("SELECT COUNT(*) FROM playlists WHERE slug = 'vanished'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(vanished, 0);
+
+        // mt-32: renamed, description updated, membership rebuilt and
+        // remapped to the INSTALLED DB's Delta id via application_path.
+        let (name, desc, pid): (String, String, i64) = installed
+            .query_row(
+                "SELECT name, description, id FROM playlists WHERE slug = 'mt-32'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Games with MT-32");
+        assert_eq!(desc, "new desc");
+        let installed_delta: i64 = installed
+            .query_row("SELECT id FROM games WHERE title = 'Delta'", [], |r| r.get(0))
+            .unwrap();
+        let members: Vec<i64> = installed
+            .prepare("SELECT game_id FROM playlist_games WHERE playlist_id = ?1")
+            .unwrap()
+            .query_map([pid], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(members, vec![installed_delta]);
     }
 }

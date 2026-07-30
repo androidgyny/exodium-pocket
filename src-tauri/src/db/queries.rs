@@ -170,6 +170,7 @@ pub struct GameFilter<'a> {
     pub sort_by: &'a str,
     pub collection: &'a str,
     pub favorites_only: bool,
+    pub playlist_id: Option<i64>,
 }
 
 /// Build WHERE clause from filters.
@@ -208,6 +209,17 @@ fn build_where_clause(f: &GameFilter) -> (String, Vec<Box<dyn rusqlite::types::T
         variant_conds.push("v.favorited = 1".to_string());
     }
 
+    if let Some(pid) = f.playlist_id {
+        // Membership is stored on the primary row's id, but matching any
+        // variant keeps this robust if a variant id ever lands in the table.
+        params.push(Box::new(pid));
+        variant_conds.push(format!(
+            "EXISTS (SELECT 1 FROM playlist_games pg \
+             WHERE pg.playlist_id = ?{} AND pg.game_id = v.id)",
+            params.len()
+        ));
+    }
+
     let mut conditions = vec![PRIMARY_ROW_CONDITION.to_string()];
     if !variant_conds.is_empty() {
         conditions.push(format!(
@@ -234,7 +246,7 @@ fn order_clause(sort_by: &str) -> &str {
 
 /// Count total games with filters.
 pub fn count_games(conn: &Connection, query: &str) -> DbResult<usize> {
-    let f = GameFilter { query, genre: "", sort_by: "", collection: "", favorites_only: false };
+    let f = GameFilter { query, genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
     count_games_filtered(conn, &f)
 }
 
@@ -561,6 +573,126 @@ pub fn get_all_game_config(
     Ok(map)
 }
 
+// ── Playlists ──────────────────────────────────────────────────────────
+//
+// Two kinds share the same tables: kind='curated' rows ship inside the
+// bundled catalog DB (seeded by generate_db, re-synced by refresh_catalog)
+// and are read-only; kind='user' rows are created in-app and never touched
+// by catalog updates.
+
+/// All playlists with their visible-card count.
+///
+/// One grid card per shortcode group, so the count is the number of
+/// DISTINCT groups among the playlist's members - equivalent to counting
+/// primary rows that pass the Browse EXISTS-over-variants filter, but
+/// O(members) instead of O(all games x playlists). The naive primary-row
+/// formulation took ~4s over the full catalog and, called from the create
+/// flow while the 5s shelf polling queued behind the same DB mutex,
+/// stretched "Saving..." into the tens of seconds.
+/// ('#' can't appear in a shortcode, so the id fallback key can't collide.)
+pub fn fetch_playlists(conn: &Connection) -> DbResult<Vec<crate::models::Playlist>> {
+    let sql = "SELECT pl.id, pl.name, pl.kind, pl.description,
+            (SELECT COUNT(DISTINCT COALESCE(m.shortcode, 'id#' || m.id))
+             FROM playlist_games pg
+             JOIN games m ON m.id = pg.game_id
+             WHERE pg.playlist_id = pl.id)
+         FROM playlists pl
+         ORDER BY CASE pl.kind WHEN 'user' THEN 0 ELSE 1 END, pl.name";
+    let mut stmt = conn.prepare_cached(sql)?;
+    let playlists = stmt
+        .query_map([], |row| {
+            Ok(crate::models::Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                description: row.get(3)?,
+                game_count: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(playlists)
+}
+
+/// Create a user playlist. Fails on duplicate name (UNIQUE constraint).
+pub fn create_playlist(conn: &Connection, name: &str) -> DbResult<i64> {
+    conn.execute(
+        "INSERT INTO playlists (name, kind) VALUES (?1, 'user')",
+        params![name],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Guard shared by rename/delete: curated playlists are catalog content.
+fn ensure_user_playlist(conn: &Connection, id: i64) -> DbResult<()> {
+    let kind: String = conn.query_row(
+        "SELECT kind FROM playlists WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
+    if kind != "user" {
+        return Err(super::DbError::ReadOnlyPlaylist);
+    }
+    Ok(())
+}
+
+pub fn rename_playlist(conn: &Connection, id: i64, name: &str) -> DbResult<()> {
+    ensure_user_playlist(conn, id)?;
+    conn.execute(
+        "UPDATE playlists SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_playlist(conn: &Connection, id: i64) -> DbResult<()> {
+    ensure_user_playlist(conn, id)?;
+    conn.execute("DELETE FROM playlists WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// Add or remove a game from a user playlist. Adding is idempotent;
+/// position is append-order and only informational for now.
+pub fn set_playlist_membership(
+    conn: &Connection,
+    playlist_id: i64,
+    game_id: i64,
+    member: bool,
+) -> DbResult<()> {
+    ensure_user_playlist(conn, playlist_id)?;
+    if member {
+        conn.execute(
+            "INSERT OR IGNORE INTO playlist_games (playlist_id, game_id, position)
+             VALUES (?1, ?2,
+                (SELECT COALESCE(MAX(position), 0) + 1 FROM playlist_games
+                 WHERE playlist_id = ?1))",
+            params![playlist_id, game_id],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM playlist_games WHERE playlist_id = ?1 AND game_id = ?2",
+            params![playlist_id, game_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Playlist ids a game belongs to (any variant of its shortcode group, so
+/// the check works no matter which variant row the caller holds).
+pub fn fetch_game_playlist_ids(conn: &Connection, game_id: i64) -> DbResult<Vec<i64>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT pg.playlist_id FROM playlist_games pg
+         WHERE pg.game_id = ?1
+            OR pg.game_id IN (
+                SELECT v.id FROM games v
+                JOIN games me ON me.id = ?1
+                WHERE me.shortcode IS NOT NULL AND v.shortcode = me.shortcode)",
+    )?;
+    let ids = stmt
+        .query_map(params![game_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
 /// Trait extension to make `.optional()` work on rusqlite results.
 trait OptionalRow<T> {
     fn optional(self) -> Result<Option<T>, rusqlite::Error>;
@@ -660,7 +792,7 @@ mod tests {
         ).unwrap();
 
         // Grid: one merged card (EN primary) + one standalone = 2, not 3.
-        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false };
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
         assert_eq!(count_games_filtered(&conn, &f).unwrap(), 2);
         let games = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(games.len(), 2);
@@ -671,13 +803,13 @@ mod tests {
         assert_eq!(solo.available_languages, None);
 
         // Searching the localized title surfaces the merged EN primary.
-        let f = GameFilter { query: "11te Stunde", genre: "", sort_by: "", collection: "", favorites_only: false };
+        let f = GameFilter { query: "11te Stunde", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
         let hits = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].language, "EN");
 
         // Filtering by the LP collection also surfaces the EN primary.
-        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "GLP", favorites_only: false };
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "GLP", favorites_only: false, playlist_id: None };
         let hits = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].language, "EN");
@@ -737,7 +869,7 @@ mod tests {
             make_game("Doom"),
         ]).unwrap();
 
-        let f = GameFilter { query: "Space", genre: "", sort_by: "", collection: "", favorites_only: false };
+        let f = GameFilter { query: "Space", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
         let results = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|g| g.title.contains("Space")));
@@ -752,7 +884,7 @@ mod tests {
         action.genre = Some("Action;Shooter".to_string());
         insert_games(&conn, &[rpg, action]).unwrap();
 
-        let f = GameFilter { query: "", genre: "Role-Playing", sort_by: "", collection: "", favorites_only: false };
+        let f = GameFilter { query: "", genre: "Role-Playing", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
         let results = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Baldur's Gate");
@@ -768,7 +900,7 @@ mod tests {
         conn.execute("UPDATE games SET torrent_source = 'eXoDOS' WHERE title = 'Doom'", []).unwrap();
         conn.execute("UPDATE games SET torrent_source = 'eXoDOS_GLP' WHERE title = 'Doom DE'", []).unwrap();
 
-        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "eXoDOS_GLP", favorites_only: false };
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "eXoDOS_GLP", favorites_only: false, playlist_id: None };
         let results = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Doom DE");
@@ -781,10 +913,81 @@ mod tests {
         let id: i64 = conn.query_row("SELECT id FROM games WHERE title = 'Doom'", [], |r| r.get(0)).unwrap();
         toggle_favorite(&conn, id).unwrap();
 
-        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: true };
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: true, playlist_id: None };
         let results = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Doom");
+    }
+
+    #[test]
+    fn playlist_filter_merges_variants_and_counts_cards() {
+        let conn = open_test_db();
+        let mut en = make_game("The 11th Hour");
+        en.shortcode = Some("11thHour".to_string());
+        let mut de = make_game("Die 11te Stunde");
+        de.language = "DE".to_string();
+        de.shortcode = Some("11thHour".to_string());
+        insert_games(&conn, &[en, de, make_game("Doom")]).unwrap();
+
+        let pid = create_playlist(&conn, "Backlog").unwrap();
+        // Membership on the DE variant row: the merged EN card must still
+        // surface (EXISTS-over-variants), and the count must be 1 card.
+        let de_id: i64 = conn
+            .query_row("SELECT id FROM games WHERE language = 'DE'", [], |r| r.get(0))
+            .unwrap();
+        set_playlist_membership(&conn, pid, de_id, true).unwrap();
+
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: Some(pid) };
+        let results = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].language, "EN");
+
+        let playlists = fetch_playlists(&conn).unwrap();
+        let backlog = playlists.iter().find(|p| p.name == "Backlog").unwrap();
+        assert_eq!(backlog.kind, "user");
+        assert_eq!(backlog.game_count, 1);
+
+        // Membership lookup works from any variant of the group.
+        let en_id: i64 = conn
+            .query_row("SELECT id FROM games WHERE language = 'EN' AND shortcode = '11thHour'", [], |r| r.get(0))
+            .unwrap();
+
+        // Both variants of the group in the playlist -> still ONE card.
+        set_playlist_membership(&conn, pid, en_id, true).unwrap();
+        let playlists = fetch_playlists(&conn).unwrap();
+        assert_eq!(playlists.iter().find(|p| p.name == "Backlog").unwrap().game_count, 1);
+        assert_eq!(count_games_filtered(&conn, &f).unwrap(), 1);
+        set_playlist_membership(&conn, pid, en_id, false).unwrap();
+        assert_eq!(fetch_game_playlist_ids(&conn, en_id).unwrap(), vec![pid]);
+        assert_eq!(fetch_game_playlist_ids(&conn, de_id).unwrap(), vec![pid]);
+
+        // Remove: filter goes empty.
+        set_playlist_membership(&conn, pid, de_id, false).unwrap();
+        assert_eq!(count_games_filtered(&conn, &f).unwrap(), 0);
+    }
+
+    #[test]
+    fn curated_playlists_are_read_only() {
+        let conn = open_test_db();
+        insert_games(&conn, &[make_game("Doom")]).unwrap();
+        let game_id: i64 = conn.query_row("SELECT id FROM games", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO playlists (name, kind, slug) VALUES ('MT-32', 'curated', 'mt-32')",
+            [],
+        )
+        .unwrap();
+        let pid: i64 = conn.query_row("SELECT id FROM playlists", [], |r| r.get(0)).unwrap();
+
+        assert!(rename_playlist(&conn, pid, "Hijacked").is_err());
+        assert!(delete_playlist(&conn, pid).is_err());
+        assert!(set_playlist_membership(&conn, pid, game_id, true).is_err());
+
+        // User playlists: full CRUD, duplicate names rejected.
+        let upid = create_playlist(&conn, "Mine").unwrap();
+        assert!(create_playlist(&conn, "Mine").is_err());
+        rename_playlist(&conn, upid, "Renamed").unwrap();
+        delete_playlist(&conn, upid).unwrap();
+        assert_eq!(fetch_playlists(&conn).unwrap().len(), 1);
     }
 
     #[test]
@@ -793,7 +996,7 @@ mod tests {
         let games: Vec<Game> = (1..=10).map(|i| make_game(&format!("Game {:02}", i))).collect();
         insert_games(&conn, &games).unwrap();
 
-        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false };
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
         let page1 = fetch_games_filtered(&conn, 1, 4, &f).unwrap();
         let page2 = fetch_games_filtered(&conn, 2, 4, &f).unwrap();
         let total = count_games_filtered(&conn, &f).unwrap();
@@ -871,7 +1074,7 @@ mod tests {
             .collect();
         insert_games(&conn, &games).unwrap();
 
-        let f = GameFilter { query: "a", genre: "", sort_by: "", collection: "", favorites_only: false };
+        let f = GameFilter { query: "a", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
         let count = count_games_filtered(&conn, &f).unwrap();
         let fetched = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(count, fetched.len(), "count must match number of fetched rows");

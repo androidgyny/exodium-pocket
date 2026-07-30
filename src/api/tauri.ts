@@ -53,9 +53,10 @@ export async function getGames(
   genre?: string,
   sortBy?: string,
   collection?: string,
-  favoritesOnly?: boolean
+  favoritesOnly?: boolean,
+  playlistId?: number | null
 ): Promise<GameList> {
-  return invoke("get_games", { page, perPage, query, genre, sortBy, collection, favoritesOnly });
+  return invoke("get_games", { page, perPage, query, genre, sortBy, collection, favoritesOnly, playlistId });
 }
 
 export async function toggleFavorite(id: number): Promise<boolean> {
@@ -76,8 +77,48 @@ export async function getSectionKeys(
   genre?: string,
   collection?: string,
   favoritesOnly?: boolean,
+  playlistId?: number | null,
 ): Promise<string[]> {
-  return invoke("get_section_keys", { sortBy, query, genre, collection, favoritesOnly });
+  return invoke("get_section_keys", { sortBy, query, genre, collection, favoritesOnly, playlistId });
+}
+
+// ── Playlists ────────────────────────────────────────────────────────────────
+
+export interface Playlist {
+  id: number;
+  name: string;
+  /** "curated" (shipped with the catalog, read-only) or "user". */
+  kind: "curated" | "user";
+  description: string | null;
+  game_count: number;
+}
+
+export async function getPlaylists(): Promise<Playlist[]> {
+  return invoke("get_playlists");
+}
+
+export async function createPlaylist(name: string): Promise<number> {
+  return invoke("create_playlist", { name });
+}
+
+export async function renamePlaylist(id: number, name: string): Promise<void> {
+  return invoke("rename_playlist", { id, name });
+}
+
+export async function deletePlaylist(id: number): Promise<void> {
+  return invoke("delete_playlist", { id });
+}
+
+export async function setPlaylistMembership(
+  playlistId: number,
+  gameId: number,
+  member: boolean,
+): Promise<void> {
+  return invoke("set_playlist_membership", { playlistId, gameId, member });
+}
+
+export async function getGamePlaylists(gameId: number): Promise<number[]> {
+  return invoke("get_game_playlists", { gameId });
 }
 
 export async function getThumbnailDir(collection: string): Promise<string> {

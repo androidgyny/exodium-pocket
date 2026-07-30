@@ -21,6 +21,8 @@ use commands::{
     get_game_metadata, get_game_settings, get_log_dir, get_poster_dir, get_preview_dir,
     get_game_variants, get_games, get_genres, get_installed_games, get_recently_played,
     get_section_keys, set_game_settings,
+    create_playlist, delete_playlist, get_game_playlists, get_playlists, rename_playlist,
+    set_playlist_membership,
     get_setup_status, get_thumbnail_dir, get_torrent_info, init_download_manager,
     init_log_dir, init_resource_dir, install_content_pack, launch_game, list_content_packs,
     open_log_folder, open_manual, scan_installed_games, set_config, set_seeding_enabled, setup_from_local, setup_import,
@@ -570,6 +572,12 @@ pub fn run() {
             get_log_dir,
             open_log_folder,
             open_manual,
+            get_playlists,
+            create_playlist,
+            rename_playlist,
+            delete_playlist,
+            set_playlist_membership,
+            get_game_playlists,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

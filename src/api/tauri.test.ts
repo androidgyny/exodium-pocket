@@ -17,6 +17,9 @@ import {
   initDownloadManager,
   getAvailableCollections,
   getThumbnailDir,
+  setPlaylistMembership,
+  getGamePlaylists,
+  createPlaylist,
 } from "./tauri";
 
 const mockInvoke = vi.mocked(invoke);
@@ -39,6 +42,28 @@ describe("API invoke mapping", () => {
       collection: "eXoDOS",
       favoritesOnly: false,
     });
+  });
+
+  it("getGames passes playlistId in camelCase", async () => {
+    mockInvoke.mockResolvedValue({ games: [], total: 0 });
+    await getGames(1, 50, "", "", "title", "", false, 7);
+    expect(mockInvoke).toHaveBeenCalledWith("get_games", expect.objectContaining({ playlistId: 7 }));
+  });
+
+  it("playlist commands pass camelCase args", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+    await setPlaylistMembership(3, 42, true);
+    expect(mockInvoke).toHaveBeenCalledWith("set_playlist_membership", {
+      playlistId: 3,
+      gameId: 42,
+      member: true,
+    });
+    mockInvoke.mockResolvedValue([]);
+    await getGamePlaylists(42);
+    expect(mockInvoke).toHaveBeenCalledWith("get_game_playlists", { gameId: 42 });
+    mockInvoke.mockResolvedValue(1);
+    await createPlaylist("Backlog");
+    expect(mockInvoke).toHaveBeenCalledWith("create_playlist", { name: "Backlog" });
   });
 
   it("getGame passes id", async () => {

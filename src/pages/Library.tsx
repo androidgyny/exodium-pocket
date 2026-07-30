@@ -8,12 +8,18 @@ import {
   genreFilter, setGenreFilter,
   sortBy, setSortBy,
   collectionFilter, setCollectionFilter,
+  playlistFilter, setPlaylistFilter,
   getFavoriteGames,
   lastGameLibraryChange,
 } from "../stores/games";
-import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, getAvailableCollections, getSectionKeys, type Game } from "../api/tauri";
+import {
+  playlists, userPlaylists, curatedPlaylists, loadPlaylists,
+  lastPlaylistChange, setPlaylistDialog, deletePlaylist,
+} from "../stores/playlists";
+import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, getAvailableCollections, getSectionKeys, getGames, type Game, type Playlist } from "../api/tauri";
 import { GameCard } from "../components/GameCard";
 import { GameDetailPanel } from "../components/GameDetailPanel";
+import { PlaylistNameDialog } from "../components/PlaylistNameDialog";
 import { Select } from "../components/Select";
 
 type Tab = "library" | "browse";
@@ -171,7 +177,7 @@ export function Library() {
 
   const refreshSectionKeys = async () => {
     try {
-      const keys = await getSectionKeys(sortBy(), searchQuery(), genreFilter(), collectionFilter(), false);
+      const keys = await getSectionKeys(sortBy(), searchQuery(), genreFilter(), collectionFilter(), false, playlistFilter());
       setSectionLabels(keys);
     } catch (e) {
       console.warn("[sectionKeys] failed:", e);
@@ -294,6 +300,81 @@ export function Library() {
     return result;
   });
 
+  // Dropdown: All Games, then user playlists, then eXo's curated lists.
+  // Headers are display-only rows (skipped by keyboard nav / matching).
+  const playlistOptions = createMemo(() => {
+    type Opt = { value: string; label: string; triggerLabel?: string; header?: boolean };
+    const result: Opt[] = [{ value: "", label: "All Games" }];
+    const user = userPlaylists();
+    const curated = curatedPlaylists();
+    if (user.length > 0) {
+      result.push({ value: "__user", label: "My Playlists", header: true });
+      for (const p of user) {
+        result.push({ value: String(p.id), label: `${p.name} (${p.game_count})`, triggerLabel: p.name });
+      }
+    }
+    if (curated.length > 0) {
+      result.push({ value: "__curated", label: "Curated", header: true });
+      for (const p of curated) {
+        result.push({ value: String(p.id), label: `${p.name} (${p.game_count})`, triggerLabel: p.name });
+      }
+    }
+    return result;
+  });
+
+  const activePlaylist = createMemo(() =>
+    playlists().find((p) => p.id === playlistFilter()) ?? null
+  );
+
+  const applyPlaylistFilter = (value: string) => {
+    setPlaylistFilter(value ? Number(value) : null);
+    fetchGames();
+    refreshSectionKeys();
+  };
+
+  // My Library: one shelf per user playlist. Fetched per-playlist (small
+  // lists) and kept fresh alongside the other shelves.
+  const [playlistShelves, setPlaylistShelves] = createSignal<Map<number, Game[]>>(new Map());
+  const [shelfMenu, setShelfMenu] = createSignal<{ playlist: Playlist; x: number; y: number } | null>(null);
+  const [confirmShelfDelete, setConfirmShelfDelete] = createSignal(false);
+
+  const refreshPlaylistShelves = async () => {
+    const user = userPlaylists();
+    try {
+      const entries = await Promise.all(user.map(async (p) => {
+        const result = await getGames(1, 500, "", "", "title", "", false, p.id);
+        return [p.id, result.games] as const;
+      }));
+      setPlaylistShelves((prev) => {
+        const next = new Map<number, Game[]>();
+        for (const [id, fresh] of entries) {
+          next.set(id, mergeShelfList(prev.get(id) ?? [], fresh));
+        }
+        return next;
+      });
+    } catch (e) {
+      console.warn("[Library] refreshPlaylistShelves failed:", e);
+    }
+  };
+
+  // Refetch shelves + dropdown counts on any playlist mutation.
+  createEffect(() => {
+    lastPlaylistChange();
+    refreshPlaylistShelves();
+  });
+
+  const handleShelfDelete = async (playlist: Playlist) => {
+    setShelfMenu(null);
+    try {
+      await deletePlaylist(playlist.id);
+      if (playlistFilter() === playlist.id) {
+        applyPlaylistFilter("");
+      }
+    } catch (e) {
+      console.warn("[Library] delete playlist failed:", e);
+    }
+  };
+
   const refreshRecent = async () => {
     try {
       const fresh = await getRecentlyPlayed(12);
@@ -363,7 +444,7 @@ export function Library() {
 
     if (sentinelRef) { observer.observe(sentinelRef); }
 
-    const interval = setInterval(() => { refreshRecent(); refreshInstalled(); refreshFavorites(); }, 5000);
+    const interval = setInterval(() => { refreshRecent(); refreshInstalled(); refreshFavorites(); refreshPlaylistShelves(); }, 5000);
     onCleanup(() => { clearInterval(interval); observer.disconnect(); });
 
     (async () => {
@@ -376,6 +457,7 @@ export function Library() {
 
       refreshInstalled();
       refreshFavorites();
+      loadPlaylists().then(refreshPlaylistShelves);
 
       try {
         const [colStr, available] = await Promise.all([
@@ -464,6 +546,15 @@ export function Library() {
               placeholder="All Genres"
             />
           </Show>
+          <Show when={playlists().length > 0}>
+            <Select
+              class="select-wide"
+              options={playlistOptions()}
+              value={playlistFilter() != null ? String(playlistFilter()) : ""}
+              onChange={applyPlaylistFilter}
+              placeholder="Playlists"
+            />
+          </Show>
           <Select
             options={sortOptions}
             value={sortBy()}
@@ -474,6 +565,27 @@ export function Library() {
             <span class="results-count">{totalGames().toLocaleString()} games</span>
           </Show>
         </div>
+
+        <Show when={activePlaylist()}>
+          <div class="playlist-hero">
+            <div class="playlist-hero-text">
+              <div class="playlist-hero-title">
+                {activePlaylist()!.name}
+                <span class="playlist-hero-count">
+                  {activePlaylist()!.game_count.toLocaleString()} games
+                </span>
+              </div>
+              <Show when={activePlaylist()!.description}>
+                <div class="playlist-hero-desc">{activePlaylist()!.description}</div>
+              </Show>
+            </div>
+            <button
+              class="playlist-hero-clear"
+              title="Show all games"
+              onClick={() => applyPlaylistFilter("")}
+            >✕</button>
+          </div>
+        </Show>
 
         <Show when={error()}>
           <div class="error">{error()}</div>
@@ -525,7 +637,7 @@ export function Library() {
       <Show when={activeTab() === "library"}>
         <div class={`tab-pane tab-pane-${tabSlideDir()}`}>
         <Show
-          when={recentGames().length > 0 || favoriteGames().length > 0 || installedGames().length > 0}
+          when={recentGames().length > 0 || favoriteGames().length > 0 || installedGames().length > 0 || userPlaylists().length > 0}
           fallback={
             <div class="lib-empty">
               <div class="lib-empty-icon">🎮</div>
@@ -567,9 +679,74 @@ export function Library() {
               </div>
             </div>
           </Show>
+
+          <For each={userPlaylists()}>
+            {(playlist) => (
+              <div class="library-section">
+                <h2 class="section-title">
+                  {playlist.name}
+                  <span class="section-count">{playlist.game_count}</span>
+                  <button
+                    class="shelf-menu-btn"
+                    title="Playlist options"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmShelfDelete(false);
+                      setShelfMenu({ playlist, x: e.clientX, y: e.clientY });
+                    }}
+                  >⋯</button>
+                </h2>
+                <Show
+                  when={(playlistShelves().get(playlist.id) ?? []).length > 0}
+                  fallback={
+                    <div class="playlist-shelf-empty">
+                      Right-click any game and choose "Add to playlist"
+                    </div>
+                  }
+                >
+                  <div class="game-grid">
+                    <For each={playlistShelves().get(playlist.id) ?? []}>
+                      {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+            )}
+          </For>
+
+          <button
+            class="playlist-new-btn"
+            onClick={() => setPlaylistDialog({ mode: "create" })}
+          >＋ New playlist</button>
         </Show>
         </div>
       </Show>
+
+      <Show when={shelfMenu()}>
+        <Portal>
+          <div class="context-backdrop" onMouseDown={() => setShelfMenu(null)} onContextMenu={(e) => { e.preventDefault(); setShelfMenu(null); }} />
+          <div class="context-menu" style={{ left: `${shelfMenu()!.x}px`, top: `${shelfMenu()!.y}px` }}>
+            <button class="context-menu-item" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
+              const playlist = shelfMenu()!.playlist;
+              setShelfMenu(null);
+              setPlaylistDialog({ mode: "rename", playlist });
+            }}>
+              Rename
+            </button>
+            <button class="context-menu-item danger" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
+              if (confirmShelfDelete()) {
+                handleShelfDelete(shelfMenu()!.playlist);
+              } else {
+                setConfirmShelfDelete(true);
+              }
+            }}>
+              {confirmShelfDelete() ? "Confirm delete?" : "Delete playlist"}
+            </button>
+          </div>
+        </Portal>
+      </Show>
+
+      <PlaylistNameDialog />
 
       {/* Infinite scroll sentinel - always mounted */}
       <div ref={sentinelRef} class="scroll-sentinel">

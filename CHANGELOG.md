@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Playlists**: eXo's 11 curated playlists (MT-32, Sound Canvas, 3dfx,
+  CGA Composite, GUS, PCjr, Quality Freeware, ...) ship with the catalog
+  and are browsable via a new Playlists filter with a description banner;
+  own playlists can be created from any game's right-click menu or the
+  detail panel and appear as shelves in My Library (rename/delete via the
+  shelf menu). Curated lists update automatically with catalog upgrades;
+  user playlists survive them.
+
 ## 0.8.3 - 2026-07-27
 
 ### Added

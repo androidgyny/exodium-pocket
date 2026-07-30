@@ -33,6 +33,7 @@ const [searchQuery, setSearchQuery] = createSignal("");
 const [genreFilter, setGenreFilter] = createSignal("");
 const [sortBy, setSortBy] = createSignal("title");
 const [collectionFilter, setCollectionFilter] = createSignal("");
+const [playlistFilter, setPlaylistFilter] = createSignal<number | null>(null);
 const [currentPage, setCurrentPage] = createSignal(1);
 const [hasMore, setHasMore] = createSignal(true);
 
@@ -51,6 +52,7 @@ export {
   genreFilter, setGenreFilter,
   sortBy, setSortBy,
   collectionFilter, setCollectionFilter,
+  playlistFilter, setPlaylistFilter,
 };
 
 /// Fetch the first page (resets the list).
@@ -61,7 +63,7 @@ export async function fetchGames() {
   setCurrentPage(1);
   try {
     const result: GameList = await getGames(
-      1, PER_PAGE, searchQuery(), genreFilter(), sortBy(), collectionFilter()
+      1, PER_PAGE, searchQuery(), genreFilter(), sortBy(), collectionFilter(), false, playlistFilter()
     );
     if (epoch !== fetchEpoch) { return; }
     setGames(result.games);
@@ -92,7 +94,7 @@ export async function refreshLoadedGames() {
   const epoch = ++fetchEpoch;
   try {
     const result: GameList = await getGames(
-      1, Math.max(count, PER_PAGE), searchQuery(), genreFilter(), sortBy(), collectionFilter()
+      1, Math.max(count, PER_PAGE), searchQuery(), genreFilter(), sortBy(), collectionFilter(), false, playlistFilter()
     );
     if (epoch !== fetchEpoch) { return; }
     setGames(result.games);
@@ -112,7 +114,7 @@ export async function fetchMoreGames() {
   const nextPage = currentPage() + 1;
   try {
     const result: GameList = await getGames(
-      nextPage, PER_PAGE, searchQuery(), genreFilter(), sortBy(), collectionFilter()
+      nextPage, PER_PAGE, searchQuery(), genreFilter(), sortBy(), collectionFilter(), false, playlistFilter()
     );
     if (epoch !== fetchEpoch) { return; }
     setGames((prev) => [...prev, ...result.games]);
@@ -131,7 +133,7 @@ export async function fetchAllGames() {
   const epoch = ++fetchEpoch;
   setLoading(true);
   try {
-    const result: GameList = await getGames(1, totalGames() || 9999, searchQuery(), genreFilter(), sortBy(), collectionFilter());
+    const result: GameList = await getGames(1, totalGames() || 9999, searchQuery(), genreFilter(), sortBy(), collectionFilter(), false, playlistFilter());
     if (epoch !== fetchEpoch) { return; }
     setGames(result.games);
     setHasMore(false);

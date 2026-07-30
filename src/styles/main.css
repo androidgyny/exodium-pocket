@@ -566,6 +566,67 @@ body {
   top: 80px;
 }
 
+/* ── Playlist hero (active playlist banner above the Browse grid) ── */
+.playlist-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 2px 0 12px;
+  padding: 14px 16px;
+  background: linear-gradient(120deg, rgba(124, 92, 252, 0.14), rgba(124, 92, 252, 0.04));
+  border: 1px solid rgba(124, 92, 252, 0.25);
+  border-radius: var(--border-radius-lg);
+}
+
+.playlist-hero-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.playlist-hero-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+
+.playlist-hero-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.playlist-hero-desc {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.playlist-hero-clear {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.playlist-hero-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 /* ============================================
    Ark UI Select
    ============================================ */
@@ -676,6 +737,23 @@ body {
 .ark-select-indicator {
   font-size: 10px;
   color: var(--accent);
+}
+
+/* Non-selectable section header inside a Select dropdown (e.g. the
+   "My Playlists" / "Curated" groups of the playlist picker). */
+.ark-select-group-label {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  cursor: default;
+}
+.ark-select-group-label:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 /* ============================================
@@ -953,6 +1031,49 @@ body {
 
 .context-menu-item.danger {
   color: var(--danger);
+}
+
+/* ── Playlist picker (context-menu variant with membership checkmarks) ── */
+/* Opens from the game detail panel too (panel z 150, its backdrop 149) -
+   the default context-menu layer (60/61) would put it BEHIND the panel,
+   invisible but swallowing the click. Sits above every overlay except the
+   window resize edges (9999). */
+.playlist-menu {
+  min-width: 180px;
+  z-index: 401;
+}
+
+.playlist-menu-backdrop {
+  z-index: 400;
+}
+
+.playlist-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.playlist-menu-check {
+  width: 14px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  visibility: hidden;
+}
+
+.playlist-menu-check.checked {
+  visibility: visible;
+}
+
+.playlist-menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playlist-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 
@@ -1408,6 +1529,76 @@ body {
   padding: 1px 7px;
   text-transform: none;
   letter-spacing: 0;
+}
+
+/* ── User playlist shelves (My Library) ── */
+.shelf-menu-btn {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.shelf-menu-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.playlist-shelf-empty {
+  padding: 20px 6px 8px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.playlist-new-btn {
+  display: block;
+  margin: 8px 0 24px;
+  padding: 10px 18px;
+  background: transparent;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: var(--border-radius);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.playlist-new-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.playlist-name-input {
+  width: 100%;
+  padding: 9px 12px;
+  margin-bottom: 8px;
+  background: var(--bg-card);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--border-radius);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.playlist-name-input:focus {
+  border-color: var(--accent);
+}
+
+.playlist-name-error {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--danger);
 }
 
 .scroll-sentinel {
@@ -2391,6 +2582,28 @@ body {
   color: var(--danger);
   background: rgba(233, 69, 96, 0.1);
   border-color: rgba(233, 69, 96, 0.3);
+}
+
+.btn-playlist {
+  background: none;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Playlist row below the main actions / versions list - visually quieter
+   than the primary action bar. */
+.game-detail-actions-secondary {
+  margin-top: 8px;
+}
+
+.game-detail-actions-secondary .btn-playlist {
+  flex: 0 0 auto;
+}
+
+.btn-playlist:hover {
+  color: var(--text-primary);
+  background: rgba(124, 92, 252, 0.12);
+  border-color: rgba(124, 92, 252, 0.35);
 }
 
 .game-detail-langs {

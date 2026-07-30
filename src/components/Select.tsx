@@ -12,6 +12,8 @@ interface SelectOption {
       "Sports" parent) but the trigger should show full context
       ("Sports / Baseball") once selected. */
   triggerLabel?: string;
+  /** Render as a non-selectable section header instead of an item. */
+  header?: boolean;
 }
 
 interface SelectProps {
@@ -25,7 +27,9 @@ interface SelectProps {
 export function Select(props: SelectProps) {
   const collection = () =>
     createListCollection({
-      items: props.options,
+      // Headers are display-only rows; keeping them out of the collection
+      // means keyboard navigation and value matching skip them entirely.
+      items: props.options.filter((o) => !o.header),
       itemToValue: (item) => item.value,
       itemToString: (item) => item.triggerLabel ?? item.label,
     });
@@ -51,17 +55,21 @@ export function Select(props: SelectProps) {
         <ArkSelect.Positioner>
           <ArkSelect.Content class="ark-select-content">
             <For each={props.options}>
-              {(option) => (
-                <ArkSelect.Item
-                  item={option}
-                  class={`ark-select-item${option.depth ? ` depth-${option.depth}` : ""}`}
-                >
-                  <ArkSelect.ItemText>{option.label}</ArkSelect.ItemText>
-                  <ArkSelect.ItemIndicator class="ark-select-indicator">
-                    &#10003;
-                  </ArkSelect.ItemIndicator>
-                </ArkSelect.Item>
-              )}
+              {(option) =>
+                option.header ? (
+                  <div class="ark-select-group-label">{option.label}</div>
+                ) : (
+                  <ArkSelect.Item
+                    item={option}
+                    class={`ark-select-item${option.depth ? ` depth-${option.depth}` : ""}`}
+                  >
+                    <ArkSelect.ItemText>{option.label}</ArkSelect.ItemText>
+                    <ArkSelect.ItemIndicator class="ark-select-indicator">
+                      &#10003;
+                    </ArkSelect.ItemIndicator>
+                  </ArkSelect.Item>
+                )
+              }
             </For>
           </ArkSelect.Content>
         </ArkSelect.Positioner>

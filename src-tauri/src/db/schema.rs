@@ -62,15 +62,21 @@ pub fn create_tables(conn: &Connection) -> DbResult<()> {
         );
 
         CREATE TABLE IF NOT EXISTS playlists (
-            id   INTEGER PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE
+            id          INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            kind        TEXT NOT NULL DEFAULT 'user',
+            slug        TEXT,
+            description TEXT
         );
 
         CREATE TABLE IF NOT EXISTS playlist_games (
             playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
             game_id     INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+            position    INTEGER,
             PRIMARY KEY (playlist_id, game_id)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_playlist_games_game ON playlist_games(game_id);
 
         CREATE TABLE IF NOT EXISTS config (
             key   TEXT PRIMARY KEY,

@@ -74,6 +74,7 @@ pub async fn get_games(
     sort_by: Option<String>,
     collection: Option<String>,
     favorites_only: Option<bool>,
+    playlist_id: Option<i64>,
 ) -> Result<GameList, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let page = page.unwrap_or(1);
@@ -89,6 +90,7 @@ pub async fn get_games(
         sort_by: &sort_by,
         collection: &collection,
         favorites_only: favorites_only.unwrap_or(false),
+        playlist_id,
     };
 
     let total = queries::count_games_filtered(&conn, &f).map_err(|e| e.to_string())?;
@@ -112,6 +114,7 @@ pub async fn get_section_keys(
     genre: Option<String>,
     collection: Option<String>,
     favorites_only: Option<bool>,
+    playlist_id: Option<i64>,
 ) -> Result<Vec<String>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let sort_by = sort_by.unwrap_or_default();
@@ -124,6 +127,7 @@ pub async fn get_section_keys(
         sort_by: &sort_by,
         collection: &collection,
         favorites_only: favorites_only.unwrap_or(false),
+        playlist_id,
     };
     let result = queries::get_section_keys(&conn, &f).map_err(|e| e.to_string());
     log::debug!("get_section_keys: sort_by={:?} collection={:?} → {:?} keys", sort_by, collection, result.as_ref().map(|v| v.len()));
