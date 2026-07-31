@@ -58,6 +58,64 @@
   shelf menu). Curated lists update automatically with catalog upgrades;
   user playlists survive them.
 
+## 0.8.8 - 2026-07-30
+
+### Fixed
+
+- **Downloads could freeze at "Starting download..."** when several were
+  queued in quick succession - two concurrent selection updates wedged the
+  torrent engine so hard that even progress polls stopped returning.
+- **AppImage failed to start on rolling-release distros** (Arch, Cosmic): the
+  bundled Ubuntu copies of the GPU libraries broke EGL on newer Mesa, so they
+  are no longer shipped inside the image.
+- Download-sheet rows no longer re-animate on every poll tick, and variant
+  downloads are labelled with their language.
+
+## 0.8.7 - 2026-07-29
+
+### Fixed
+
+- Language variants of the same game no longer appear as duplicate cards on
+  the Installed and Recently Played shelves.
+- The cancel button on a card now targets the variant that is actually
+  downloading.
+
+## 0.8.6 - 2026-07-29
+
+### Fixed
+
+- **macOS: adding the eXoDOS torrent failed with EMFILE** on Macs whose
+  per-process descriptor cap is scaled to installed RAM and sits below
+  65,536. The limit is now raised to the kernel maximum instead of a fixed
+  target (see 0.8.2 for why the engine needs that many).
+
+## 0.8.5 - 2026-07-29
+
+### Fixed
+
+- **Linux: the AppImage aborted at startup on Wayland/NVIDIA**
+  (`EGL_BAD_PARAMETER`) - WebKitGTK's DMA-BUF renderer is now disabled.
+
+## 0.8.4 - 2026-07-29
+
+### Fixed
+
+- **macOS: fresh installs crashed on game launch** - the bundled DOSBox
+  shaders now sit at the path DOSBox Staging actually looks in.
+- **Multi-language games showed one card per language again**, with dead
+  language badges; the merged rows from 0.8.3 are restored.
+- Uninstalling a language variant no longer touches the other variants' save
+  backups, and extraction/uninstall no longer race each other.
+- Setup could end up with two torrent sessions that disagreed about state.
+- SQLite writes now wait instead of failing when the database is busy.
+- The CRT-shader toggle in Settings reflects the actual backend default, and
+  the library no longer leaks a timer on every reload.
+
+### Changed
+
+- Windows ships the NSIS installer only; the MSI target is gone (the updater
+  supports NSIS).
+
 ## 0.8.3 - 2026-07-27
 
 ### Added
