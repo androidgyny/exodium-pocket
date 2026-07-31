@@ -7,12 +7,14 @@ import { ManualViewer } from "./ManualViewer";
 import { GameSettingsDialog } from "./GameSettingsDialog";
 import { PlaylistMenu } from "./PlaylistMenu";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame, getGameVariants } from "../api/tauri";
+import { launchGame } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
 import { downloads, startGameDownload, getDownloadState, cancelGameDownload, watchExtrasIfPending } from "../stores/downloads";
 import { loadGameMetadata } from "../stores/metadata";
+import { isOffline } from "../stores/network";
+import { loadVariants } from "../stores/variants";
 
 interface Props {
   game: Game | null;
@@ -22,6 +24,16 @@ interface Props {
 
 const isWindows = typeof navigator !== "undefined"
   && /Win/i.test(navigator.platform || navigator.userAgent || "");
+
+/** Language codes seen in the eXoDOS catalogue, spelled out for prose like
+ *  "no German description". Unknown codes fall back to the raw code. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  EN: "English", DE: "German", PL: "Polish", ES: "Spanish",
+  FR: "French", IT: "Italian", RU: "Russian", CZ: "Czech",
+  NL: "Dutch", PT: "Portuguese", SV: "Swedish", HU: "Hungarian",
+};
+const languageName = (code: string | null | undefined) =>
+  (code && LANGUAGE_NAMES[code]) || code || "";
 
 export function GameDetailPanel(props: Props) {
   const [variants, setVariants] = createSignal<Game[]>([]);
@@ -41,22 +53,105 @@ export function GameDetailPanel(props: Props) {
   };
   const [launchingId, setLaunchingId] = createSignal<number | null>(null);
   const [uninstallingId, setUninstallingId] = createSignal<number | null>(null);
-  // Is the in-flight uninstall about THIS panel's game (primary or variant)?
-  // Without the scoping, switching to another game mid-uninstall showed the
-  // "Uninstalling" label / disabled buttons on the wrong panel.
-  const uninstallingHere = () => {
-    const uid = uninstallingId();
-    if (uid == null) { return false; }
-    return uid === props.game?.id || variants().some((v) => v.id === uid);
-  };
+  // The panel always describes exactly ONE row. Multi-language cards are a
+  // merged group, so the user picks which language everything below the title
+  // refers to - actions, description, manual, screenshots. Before this, the
+  // header described the EN row while the Versions list acted on variant rows,
+  // and nothing said which one the description or the manual belonged to.
+  const [selectedId, setSelectedId] = createSignal<number | null>(null);
   let launchTimer: number | undefined;
   onCleanup(() => { if (launchTimer) { clearTimeout(launchTimer); } });
+
+  const langEntries = () => props.game ? parseLangEntries(props.game) : [];
+  const isMultiLang = () => langEntries().length > 1;
+
+
+  // ── Selected variant ───────────────────────────────────────────────────
+  // Single-language games have exactly one row (the game itself), so every
+  // rule below collapses to it - the panel has ONE rendering path, which is
+  // what previously drifted apart (the Manual button existed only on the
+  // single-language branch).
+  const rows = (): Game[] => {
+    const v = variants();
+    if (v.length > 0) { return v; }
+    return props.game ? [props.game] : [];
+  };
+  const selected = (): Game | null => {
+    const list = rows();
+    return list.find((r) => r.id === selectedId()) ?? list[0] ?? null;
+  };
+  /** Default pick when a game opens: whatever the user can act on right now -
+   *  an installed version first (EN among equals), then one being fetched,
+   *  then the English row. */
+  const defaultVariant = (list: Game[]): Game | undefined =>
+    list.find((v) => v.installed && v.language === "EN")
+    ?? list.find((v) => v.installed)
+    ?? list.find((v) => v.in_library)
+    ?? list.find((v) => v.language === "EN")
+    ?? list[0];
+
+  const selectedDl = () => {
+    const id = selected()?.id;
+    return id != null ? downloads()[id] : undefined;
+  };
+  const selectedDownloading = () => selectedDl()?.downloading ?? false;
+  const selectedInstalled = () =>
+    (selected()?.installed ?? false) || (selectedDl()?.installed ?? false);
+
+  /** LP rows carry almost no catalogue text of their own (developer, genre and
+   *  friends live on the EN row), so every field falls back to the primary. */
+  const field = <K extends keyof Game>(key: K): Game[K] | undefined => {
+    const v = selected()?.[key];
+    if (v !== null && v !== undefined && v !== "") { return v; }
+    return props.game?.[key];
+  };
+
+  /** Which row's description we're showing, and whether that's a fallback.
+   *  Only 98 of 648 German rows have their own text; Polish and Spanish have
+   *  none - so saying "English text, no German available" beats silently
+   *  showing English under a DE badge. */
+  const descriptionSource = () => {
+    const sel = selected();
+    const primary = props.game;
+    if (sel?.description) {
+      return { text: sel.description, notes: sel.notes, fallbackFrom: null as string | null };
+    }
+    if (primary?.description) {
+      const differs = sel?.language && primary.language && sel.language !== primary.language;
+      return {
+        text: primary.description,
+        notes: primary.notes,
+        fallbackFrom: differs ? sel!.language : null,
+      };
+    }
+    return null;
+  };
+
+  /** The manual to open for the selected variant: its own if the catalogue
+   *  lists one, otherwise the English manual (the backend's metadata scan
+   *  already falls back to the eXoDOS pack for assets). */
+  const manualRow = (): Game | null => {
+    const sel = selected();
+    if (sel?.manual_path) { return sel; }
+    return props.game?.manual_path ? props.game : null;
+  };
+  const manualIsFallback = () => {
+    const sel = selected();
+    const row = manualRow();
+    return !!row && !!sel?.language && !!row.language && row.language !== sel.language;
+  };
+  // Download progress used to be echoed here too; the action bar now renders
+  // it for the selected variant and the chips show it for the others, so this
+  // line is only for launch/uninstall messages.
+  const currentStatus = () => status();
+
 
   // Reset media state only when the DISPLAYED GAME changes - background
   // library refreshes (install/uninstall completing) replace the game object
   // with a fresh one for the same id, and resetting on those made the cover
   // image and media strip flicker on every state change.
   let lastGameId: number | null | undefined = undefined;
+  let lastMetaKey: string | null = null;
   createEffect(() => {
     const g = props.game;
     if (!g) { lastGameId = null; return; }
@@ -74,23 +169,42 @@ export function GameDetailPanel(props: Props) {
     setBrokenImages(new Set<number>());
     setLightboxOpen(false);
     setManualOpen(false);
+    setSelectedId(g.id ?? null);
+    // Force a metadata refetch: the cache key below would otherwise match the
+    // previous visit to this same game and leave the panel with the null
+    // metadata this reset just wrote (no screenshots, no manual).
+    lastMetaKey = null;
     if (g.shortcode && isMultiLang()) {
       const shortcode = g.shortcode;
-      getGameVariants(shortcode).then((v) => {
+      loadVariants(shortcode).then((v) => {
         // Guard: game may have changed while the async call was in flight
-        if (props.game?.shortcode === shortcode) { setVariants(v); }
+        if (props.game?.shortcode !== shortcode) { return; }
+        setVariants(v);
+        setSelectedId(defaultVariant(v)?.id ?? g.id ?? null);
       }).catch(() => {});
     }
-    // Fetch metadata for the detail panel's Media section. Returns null
-    // silently when no pack is installed or the title has no entry in the
-    // extracted metadata zip.
-    if (g.title && g.torrent_source) {
-      const gameId = g.id;
-      setMetadataLoading(true);
-      loadGameMetadata(g.torrent_source, g.title, g.shortcode ?? null, g.manual_path ?? null)
-        .then((m) => { if (props.game?.id === gameId) { setMetadata(m); } })
-        .finally(() => setMetadataLoading(false));
-    }
+  });
+
+  // Metadata (screenshots + manual) belongs to the SELECTED variant, not to
+  // the group: an LP metadata pack can ship its own screenshots, and the
+  // manual differs per language where one exists. Keyed on id+source+manual so
+  // the background variant refresh (same rows, new objects) doesn't refetch.
+  createEffect(() => {
+    const v = selected();
+    const row = manualRow();
+    if (!v?.title || !v.torrent_source) { return; }
+    const key = `${v.id}:${v.torrent_source}:${row?.manual_path ?? ""}`;
+    if (key === lastMetaKey) { return; }
+    lastMetaKey = key;
+    setMetadata(null);
+    setBrokenImages(new Set<number>());
+    // The previous variant's cover may have 404'd; the new one gets a fresh
+    // chance rather than inheriting the placeholder.
+    setImgError(false);
+    setMetadataLoading(true);
+    loadGameMetadata(v.torrent_source, v.title, v.shortcode ?? null, row?.manual_path ?? null)
+      .then((m) => { if (selected()?.id === v.id) { setMetadata(m); } })
+      .finally(() => setMetadataLoading(false));
   });
 
   // Refresh variant list when a download transitions to installed so
@@ -116,7 +230,7 @@ export function GameDetailPanel(props: Props) {
     const g = props.game;
     if (!g?.shortcode || !isMultiLang()) { return; }
     const shortcode = g.shortcode;
-    getGameVariants(shortcode).then((v) => {
+    loadVariants(shortcode, true).then((v) => {
       if (props.game?.shortcode === shortcode) { setVariants(v); }
     }).catch(() => {});
   });
@@ -141,39 +255,14 @@ export function GameDetailPanel(props: Props) {
   });
 
   const thumbSrc = () => {
-    const g = props.game;
+    const g = selected() ?? props.game;
     if (!g) { return null; }
-    const path = bestThumbnailPath(g.torrent_source, g.thumbnail_key);
+    // LP rows usually inherit the EN thumbnail_key, but fall back explicitly
+    // for the ones whose key never got propagated.
+    const path = bestThumbnailPath(g.torrent_source, g.thumbnail_key)
+      ?? bestThumbnailPath(props.game?.torrent_source, props.game?.thumbnail_key);
     if (!path) { return null; }
     return convertFileSrc(path);
-  };
-
-  const langEntries = () => props.game ? parseLangEntries(props.game) : [];
-  const isMultiLang = () => langEntries().length > 1;
-
-  const dlState = () => {
-    const g = props.game;
-    if (!g) { return undefined; }
-    const dl = downloads();
-    if (g.id != null && dl[g.id]) { return dl[g.id]; }
-    for (const v of variants()) {
-      if (v.id != null && dl[v.id]?.downloading) { return dl[v.id]; }
-    }
-    return undefined;
-  };
-
-  const isDownloading = () => dlState()?.downloading ?? false;
-  const isInstalled = () => (props.game?.installed ?? false) || (dlState()?.installed ?? false);
-  const currentProgress = () => dlState()?.progress ?? 0;
-  const currentStatus = () => {
-    const dl = dlState();
-    if (dl) {
-      if (dl.status === "Installed!") { return "Installed!"; }
-      if (dl.status === "Extracting...") { return "Installing…"; }
-      if (dl.downloading) { return "Downloading…"; }
-      return dl.status; // error messages
-    }
-    return status();
   };
 
   const handleDownload = (gameId: number, title?: string) => {
@@ -187,13 +276,13 @@ export function GameDetailPanel(props: Props) {
     }
     // Unresolved manual: the GameData ZIP may have finished downloading
     // since the last check - retry with the cache bypassed.
-    const g = props.game;
+    const g = selected();
     if (!g?.title || !g.torrent_source) { return; }
     setMetadataLoading(true);
     const fresh = await loadGameMetadata(
-      g.torrent_source, g.title, g.shortcode ?? null, g.manual_path ?? null, true
+      g.torrent_source, g.title, g.shortcode ?? null, manualRow()?.manual_path ?? null, true
     ).finally(() => setMetadataLoading(false));
-    if (props.game?.id !== g.id) { return; }
+    if (selected()?.id !== g.id) { return; }
     setMetadata(fresh);
     if (fresh?.manual_path) {
       setManualOpen(true);
@@ -242,7 +331,7 @@ export function GameDetailPanel(props: Props) {
     try {
       await performUninstall(gameId, statusSink, async () => {
         if (shortcode) {
-          const v = await getGameVariants(shortcode).catch(() => []);
+          const v = await loadVariants(shortcode, true).catch(() => []);
           setVariants(v);
         }
       }, title);
@@ -258,6 +347,37 @@ export function GameDetailPanel(props: Props) {
     const empty = 5 - full;
     return "★".repeat(full) + "☆".repeat(empty);
   };
+
+  // Manual: shown iff the catalogue lists one for the selected variant or, as
+  // a fallback, for the English row - in which case the label says so, because
+  // "Manual" on a DE selection silently opening the English PDF is exactly the
+  // ambiguity this panel is meant to remove. Unresolved = its GameData ZIP is
+  // still downloading; clicking retries the lookup, so it self-heals.
+  const ManualButton = () => (
+    <button
+      class="game-detail-btn btn-manual"
+      onClick={handleManualClick}
+      disabled={metadataLoading()}
+      title={
+        !metadataLoading() && !metadata()?.manual_path
+          ? "The manual arrives with the game's extras download - click to check again"
+          : manualIsFallback()
+            ? `Only the ${languageName(manualRow()?.language)} manual is in the catalogue`
+            : undefined
+      }
+    >
+      <Show when={metadataLoading()} fallback={
+        <Show when={metadata()?.manual_path} fallback={<>Manual…</>}>
+          Manual
+          <Show when={manualIsFallback()}>
+            <span class="btn-suffix">{manualRow()?.language}</span>
+          </Show>
+        </Show>
+      }>
+        <span class="btn-spinner" /> Manual
+      </Show>
+    </button>
+  );
 
   // Shared "Play" button - same disabled+spinner UX whether it's the main
   // single-language action or one row of the multi-language variant list.
@@ -309,7 +429,7 @@ export function GameDetailPanel(props: Props) {
               <div class="game-detail-thumb-placeholder" />
             </Show>
             <div class="game-detail-hero-info">
-              <div class="game-detail-title">{props.game!.title}</div>
+              <div class="game-detail-title">{selected()?.title ?? props.game!.title}</div>
               <div class="game-detail-chips">
                 {props.game!.year && <span class="badge">{props.game!.year}</span>}
                 {primaryGenre() && <span class="badge badge-genre">{primaryGenre()}</span>}
@@ -333,216 +453,203 @@ export function GameDetailPanel(props: Props) {
               </div>
             </Show>
 
-            {/* Single-language action */}
-            <Show when={!isMultiLang()}>
-              <Show when={!uninstallingHere()} fallback={
-                <div class="game-detail-actions fade-swap">
-                  <div class="game-detail-btn btn-uninstalling">
-                    <span class="btn-spinner" /> Uninstalling…
-                  </div>
-                </div>
-              }>
-              <div class="game-detail-actions fade-swap">
-                <Show when={isInstalled()}>
-                  <PlayButton id={props.game!.id!} class="game-detail-btn btn-play" />
-                </Show>
-                {/* Manual: shown iff the catalog says this game HAS one
-                    (game.manual_path). Unresolved = its GameData ZIP is
-                    still downloading - clicking retries the lookup, so the
-                    button self-heals once the download lands. */}
-                <Show when={isInstalled() && props.game?.manual_path}>
-                  <button
-                    class="game-detail-btn btn-manual"
-                    onClick={handleManualClick}
-                    disabled={metadataLoading()}
-                    title={
-                      !metadataLoading() && !metadata()?.manual_path
-                        ? "The manual arrives with the game's extras download - click to check again"
-                        : undefined
-                    }
-                  >
-                    <Show when={metadataLoading()} fallback={
-                      <Show when={metadata()?.manual_path} fallback={<>Manual…</>}>
-                        Manual
-                      </Show>
-                    }>
-                      <span class="btn-spinner" /> Manual
-                    </Show>
-                  </button>
-                </Show>
-                <Show when={isInstalled()}>
-                  <button class="game-detail-btn btn-settings" onClick={() => setSettingsOpen(true)}>
-                    ⚙
-                  </button>
-                </Show>
-                <Show when={!isInstalled() && isDownloading()}>
-                  <div class="game-detail-btn btn-downloading">
-                    <AutoProgress
-                      value={currentProgress()}
-                      class="mini"
-                      indeterminate={dlState()?.status?.startsWith("Waiting") || dlState()?.status?.startsWith("Extracting") || undefined}
-                    />
-                    <span>{dlState()?.status}</span>
-                  </div>
-                  <button class="game-detail-btn btn-cancel" onClick={() => cancelGameDownload(props.game!.id!)}>
-                    ✕ Cancel
-                  </button>
-                </Show>
-                <Show when={!isInstalled() && !isDownloading() && props.game!.game_torrent_index != null}>
-                  <button class="game-detail-btn btn-download" onClick={() => handleDownload(props.game!.id!)}>
-                    {props.game!.in_library
-                      ? "↓ Re-download"
-                      : `↓ Download ${props.game!.download_size ? formatBytes(props.game!.download_size) : ""}`}
-                  </button>
-                </Show>
-                <Show when={!isDownloading() && (isInstalled() || props.game!.in_library) && props.game!.id != null}>
-                  <button
-                    class="game-detail-btn btn-uninstall"
-                    disabled={launchingId() != null}
-                    onClick={() => handleUninstall(props.game!.id!)}
-                  >
-                    Uninstall
-                  </button>
-                </Show>
-                <Show when={props.game!.id != null}>
-                  <button
-                    class="game-detail-btn btn-playlist"
-                    title="Add to playlist"
-                    onClick={openPlaylistMenu}
-                  >
-                    ＋ Playlist
-                  </button>
-                </Show>
-              </div>
-              </Show>
-            </Show>
-
-            {/* Multi-language variant list */}
+            {/* Language switcher: picking a chip re-points the whole panel -
+                actions, description, manual and screenshots all follow it. */}
             <Show when={isMultiLang()}>
-              <div class="game-detail-langs">
-                <div class="game-detail-section-label">Versions</div>
-                <Show when={variants().length === 0}>
-                  <div class="game-detail-loading">Loading…</div>
+              <div class="variant-switcher" role="group" aria-label="Language versions">
+                <Show when={rows().length < 2}>
+                  <div class="game-detail-loading">Loading versions…</div>
                 </Show>
-                <For each={variants()}>
+                <For each={rows()}>
                   {(variant) => {
                     const vId = () => variant.id;
                     const vDl = () => vId() != null ? getDownloadState(vId()!) : undefined;
+                    const state = () => variant.installed ? 2 : variant.in_library ? 1 : 0;
                     return (
-                      <div class="game-detail-lang-row">
-                        <span class={`badge badge-lang ${langBadgeClass(variant.installed ? 2 : variant.in_library ? 1 : 0)}`}>
+                      <button
+                        class={`variant-chip${selected()?.id === vId() ? " is-selected" : ""}`}
+                        onClick={() => { if (vId() != null) { setSelectedId(vId()!); } }}
+                        title={languageName(variant.language)}
+                      >
+                        <span class={`badge badge-lang ${langBadgeClass(state())}`}>
                           {variant.language}
                         </span>
-                        <span class="game-detail-lang-title">{variant.title}</span>
-                        <Show when={uninstallingId() === vId()}>
-                          <span class="lang-uninstalling fade-swap"><span class="btn-spinner" /> Uninstalling…</span>
-                        </Show>
-                        <Show when={uninstallingId() !== vId() && vDl()?.downloading}>
-                          <div class="game-detail-lang-progress">
-                            <AutoProgress value={vDl()?.progress ?? 0} class="mini" />
-                          </div>
-                          <button class="lang-picker-btn action-cancel" onClick={() => cancelGameDownload(vId()!)}>✕</button>
-                        </Show>
-                        <Show when={uninstallingId() !== vId() && !vDl()?.downloading && variant.installed}>
-                          <PlayButton id={vId()!} class="lang-picker-btn action-play" disabled={uninstallingHere()} />
-                          <button class="lang-picker-btn action-uninstall" disabled={uninstallingHere()} onClick={() => handleUninstall(vId()!)}>✕</button>
-                        </Show>
-                        <Show when={uninstallingId() !== vId() && !vDl()?.downloading && !variant.installed}>
-                          <button
-                            class="lang-picker-btn action-download"
-                            onClick={() => { if (variant.game_torrent_index != null) { handleDownload(vId()!, `${variant.title} [${variant.language}]`); } }}
-                          >
-                            {variant.game_torrent_index != null ? `↓ ${formatBytes(variant.download_size ?? 0)}` : "-"}
-                          </button>
-                        </Show>
-                      </div>
+                        <span class="variant-chip-state">
+                          <Show when={vDl()?.downloading} fallback={
+                            <Show when={variant.installed} fallback={
+                              <Show when={!isOffline() && variant.game_torrent_index != null} fallback={<>Not installed</>}>
+                                ↓ {formatBytes(variant.download_size ?? 0)}
+                              </Show>
+                            }>
+                              ✓ Installed
+                            </Show>
+                          }>
+                            {Math.round((vDl()?.progress ?? 0) * 100)}%
+                          </Show>
+                        </span>
+                      </button>
                     );
                   }}
                 </For>
               </div>
             </Show>
 
-            {/* Multi-language games render the Versions list instead of the
-                action bar, so they get the playlist button as its own row.
-                Single-language games have it inline in the action bar above. */}
-            <Show when={isMultiLang() && props.game!.id != null}>
-              <div class="game-detail-actions game-detail-actions-secondary">
-                <button
-                  class="game-detail-btn btn-playlist"
-                  title="Add to playlist"
-                  onClick={openPlaylistMenu}
-                >
-                  ＋ Playlist
-                </button>
-              </div>
+            {/* One action bar for every game. Everything here targets the
+                SELECTED row, so a merged card can play the German version and
+                open the German manual without a second code path. */}
+            <Show when={selected()}>
+              {(sel) => (
+                <Show when={uninstallingId() !== sel().id} fallback={
+                  <div class="game-detail-actions fade-swap">
+                    <div class="game-detail-btn btn-uninstalling">
+                      <span class="btn-spinner" /> Uninstalling…
+                    </div>
+                  </div>
+                }>
+                  <div class="game-detail-actions fade-swap">
+                    <Show when={selectedInstalled() && sel().id != null}>
+                      <PlayButton id={sel().id!} class="game-detail-btn btn-play" />
+                    </Show>
+                    <Show when={selectedInstalled() && manualRow()}>
+                      <ManualButton />
+                    </Show>
+                    <Show when={selectedInstalled()}>
+                      <button class="game-detail-btn btn-settings" title="Game settings" onClick={() => setSettingsOpen(true)}>
+                        ⚙
+                      </button>
+                    </Show>
+                    <Show when={!selectedInstalled() && selectedDownloading()}>
+                      <div class="game-detail-btn btn-downloading">
+                        <AutoProgress
+                          value={selectedDl()?.progress ?? 0}
+                          class="mini"
+                          indeterminate={selectedDl()?.status?.startsWith("Waiting") || selectedDl()?.status?.startsWith("Extracting") || undefined}
+                        />
+                        <span>{selectedDl()?.status}</span>
+                      </div>
+                      <button class="game-detail-btn btn-cancel" onClick={() => cancelGameDownload(sel().id!)}>
+                        ✕ Cancel
+                      </button>
+                    </Show>
+                    <Show when={!selectedInstalled() && !selectedDownloading() && sel().game_torrent_index != null && !isOffline()}>
+                      <button
+                        class="game-detail-btn btn-download"
+                        onClick={() => handleDownload(sel().id!, isMultiLang() ? `${sel().title} [${sel().language}]` : sel().title)}
+                      >
+                        {sel().in_library
+                          ? "↓ Re-download"
+                          : `↓ Download ${sel().download_size ? formatBytes(sel().download_size!) : ""}`}
+                      </button>
+                    </Show>
+                    <Show when={!selectedInstalled() && !selectedDownloading() && isOffline()}>
+                      <div class="game-detail-btn btn-offline" title="Enable downloads in Settings → Network">
+                        Not installed - offline mode
+                      </div>
+                    </Show>
+                    <Show when={!selectedDownloading() && (selectedInstalled() || sel().in_library) && sel().id != null}>
+                      <button
+                        class="game-detail-btn btn-uninstall"
+                        disabled={launchingId() != null}
+                        onClick={() => handleUninstall(sel().id!)}
+                      >
+                        Uninstall
+                      </button>
+                    </Show>
+                    <Show when={props.game!.id != null}>
+                      <button
+                        class="game-detail-btn btn-playlist"
+                        title="Add to playlist"
+                        onClick={openPlaylistMenu}
+                      >
+                        ＋ Playlist
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
+              )}
             </Show>
 
-            {/* Detail fields - structured key/value rows for metadata that
-                doesn't fit in chips. */}
-            <div class="game-detail-fields">
-              <Show when={props.game!.developer}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Developer</span>
-                  <span>{props.game!.developer}</span>
-                </div>
-              </Show>
-              <Show when={props.game!.publisher}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Publisher</span>
-                  <span>{props.game!.publisher}</span>
-                </div>
-              </Show>
-              <Show when={props.game!.series}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Series</span>
-                  <span>{props.game!.series}</span>
-                </div>
-              </Show>
-              <Show when={allGenres()}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Genre</span>
-                  <span>{allGenres()}</span>
-                </div>
-              </Show>
-              <Show when={props.game!.play_mode}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Mode</span>
-                  <span>{props.game!.play_mode}</span>
-                </div>
-              </Show>
-              <Show when={props.game!.region}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Region</span>
-                  <span>{props.game!.region}</span>
-                </div>
-              </Show>
-              <Show when={props.game!.max_players != null}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Players</span>
-                  <span>{props.game!.max_players}</span>
-                </div>
-              </Show>
-              <Show when={props.game!.rating != null}>
-                <div class="game-detail-field">
-                  <span class="game-detail-field-label">Rating</span>
-                  <span class="game-detail-stars">{ratingStars(props.game!.rating)}</span>
-                </div>
-              </Show>
-            </div>
-
-            {/* Scrollable section: long-form text. Pinned between fixed fields
-                above and screenshots below so the gallery is always reachable
-                without scrolling past the description first. */}
+            {/* Two columns side by side on a wide panel, stacked when it's
+                narrow (flex-wrap, no breakpoint) - the pair is what keeps the
+                screenshots on screen without scrolling. */}
             <div class="game-detail-scroll">
-              <Show when={props.game!.description}>
-                <div class="game-detail-description">{props.game!.description}</div>
-              </Show>
-              <Show when={props.game!.notes}>
-                <div class="game-detail-notes">{props.game!.notes}</div>
-              </Show>
-              <Show when={metadataLoading()}>
-                <div class="game-detail-loading">Loading media…</div>
-              </Show>
+              <div class="game-detail-columns">
+                {/* Catalogue fields. Values come from the selected row where it
+                    has them and from the English row otherwise - LP rows carry
+                    little more than a title. */}
+                <div class="game-detail-fields">
+                  <Show when={field("developer")}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Developer</span>
+                      <span>{field("developer")}</span>
+                    </div>
+                  </Show>
+                  <Show when={field("publisher")}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Publisher</span>
+                      <span>{field("publisher")}</span>
+                    </div>
+                  </Show>
+                  <Show when={field("series")}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Series</span>
+                      <span>{field("series")}</span>
+                    </div>
+                  </Show>
+                  <Show when={allGenres()}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Genre</span>
+                      <span>{allGenres()}</span>
+                    </div>
+                  </Show>
+                  <Show when={field("play_mode")}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Mode</span>
+                      <span>{field("play_mode")}</span>
+                    </div>
+                  </Show>
+                  <Show when={field("region")}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Region</span>
+                      <span>{field("region")}</span>
+                    </div>
+                  </Show>
+                  <Show when={field("max_players") != null}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Players</span>
+                      <span>{field("max_players")}</span>
+                    </div>
+                  </Show>
+                  <Show when={field("rating") != null}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Rating</span>
+                      <span class="game-detail-stars">{ratingStars(field("rating") as number)}</span>
+                    </div>
+                  </Show>
+                </div>
+
+                <div class="game-detail-text">
+                  <Show when={descriptionSource()}>
+                    {(src) => (
+                      <>
+                        <Show when={src().fallbackFrom}>
+                          <div class="game-detail-fallback-note">
+                            English description - the catalogue has no{" "}
+                            {languageName(src().fallbackFrom)} text for this game.
+                          </div>
+                        </Show>
+                        <div class="game-detail-description">{src().text}</div>
+                        <Show when={src().notes}>
+                          <div class="game-detail-notes">{src().notes}</div>
+                        </Show>
+                      </>
+                    )}
+                  </Show>
+                  <Show when={metadataLoading()}>
+                    <div class="game-detail-loading">Loading media…</div>
+                  </Show>
+                </div>
+              </div>
             </div>
 
             {/* Media: screenshots/art - only renders if the metadata content
@@ -562,7 +669,9 @@ export function GameDetailPanel(props: Props) {
                         <For each={metadata()!.images}>
                           {(path, i) => (
                             <img
-                              src={convertFileSrc(path)}
+                              // Strip shows the cached 160px copy; the lightbox
+                              // opens the full-resolution file behind it.
+                              src={convertFileSrc(metadata()!.thumbnails[i()] ?? path)}
                               class="gallery-thumb"
                               loading="lazy"
                               alt=""
@@ -605,8 +714,8 @@ export function GameDetailPanel(props: Props) {
           onClose={() => setManualOpen(false)}
         />
         <GameSettingsDialog
-          gameId={props.game?.id ?? null}
-          gameTitle={props.game?.title ?? ""}
+          gameId={selected()?.id ?? null}
+          gameTitle={selected()?.title ?? props.game?.title ?? ""}
           open={settingsOpen()}
           onClose={() => setSettingsOpen(false)}
         />

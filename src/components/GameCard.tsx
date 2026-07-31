@@ -1,12 +1,14 @@
-import { createSignal, createEffect, on, onCleanup, Show, For } from "solid-js";
+import { createSignal, createEffect, on, onCleanup, onMount, Show, For } from "solid-js";
 import { Portal } from "solid-js/web";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { CircularProgress } from "./ProgressBar";
 import type { Game } from "../api/tauri";
-import { getGameVariants } from "../api/tauri";
+import { loadVariants } from "../stores/variants";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { thumbnailCandidates } from "../stores/thumbnails";
+import { observeNearViewport, unobserveNearViewport } from "../nearViewport";
 import { downloads, cancelGameDownload } from "../stores/downloads";
+import { isOffline } from "../stores/network";
 import { toggleFavorite } from "../stores/games";
 import { PlaylistMenu } from "./PlaylistMenu";
 
@@ -46,13 +48,24 @@ export function GameCard(props: GameCardProps) {
   createEffect(() => {
     const shortcode = props.game.shortcode;
     if (!isMultiLang() || !shortcode) { return; }
-    getGameVariants(shortcode)
+    loadVariants(shortcode)
       .then((v) => { if (props.game.shortcode === shortcode) { setVariants(v); } })
       .catch(() => {});
   });
 
+  // Covers load once the card is within ~2 screens of the viewport instead of
+  // when it nearly enters it - see nearViewport.ts. Sticky once true: a card
+  // scrolled back into view must not refetch.
+  const [nearViewport, setNearViewport] = createSignal(false);
+  let cardRef: HTMLDivElement | undefined;
+  onMount(() => {
+    if (cardRef) { observeNearViewport(cardRef, () => setNearViewport(true)); }
+  });
+  onCleanup(() => { if (cardRef) { unobserveNearViewport(cardRef); } });
+
   const thumbCandidates = () => thumbnailCandidates(props.game.torrent_source, props.game.thumbnail_key);
   const thumbSrc = () => {
+    if (!nearViewport()) { return null; }
     const path = thumbCandidates()[thumbIdx()];
     if (!path) { return null; }
     return convertFileSrc(path);
@@ -136,14 +149,13 @@ export function GameCard(props: GameCardProps) {
   const isDownloading = () => dlState()?.downloading ?? false;
 
   return (
-    <div class={`game-card ${props.game.installed || props.game.in_library ? "installed" : ""}`} onContextMenu={handleContextMenu} data-game-id={props.game.id != null ? String(props.game.id) : undefined}>
+    <div ref={cardRef} class={`game-card ${props.game.installed || props.game.in_library ? "installed" : ""}`} onContextMenu={handleContextMenu} data-game-id={props.game.id != null ? String(props.game.id) : undefined}>
       <div onClick={handleClick}>
         <Show when={thumbSrc() && !imgError()}>
           <img
             class="game-card-thumb"
             src={thumbSrc()!}
             alt=""
-            loading="lazy"
             onError={handleImgError}
           />
         </Show>
@@ -191,8 +203,10 @@ export function GameCard(props: GameCardProps) {
                 <span class="card-action-label action-incomplete">⚠ Incomplete</span>
               </Show>
               <Show when={!isDownloading() && !props.game.installed && !props.game.in_library}>
-                <span class="card-action-label action-download">
-                  {props.game.download_size ? `↓ ${formatBytes(props.game.download_size)}` : "↓ Download"}
+                <span class={`card-action-label ${isOffline() ? "action-offline" : "action-download"}`}>
+                  <Show when={!isOffline()} fallback="Not installed">
+                    {props.game.download_size ? `↓ ${formatBytes(props.game.download_size)}` : "↓ Download"}
+                  </Show>
                 </span>
               </Show>
             </Show>

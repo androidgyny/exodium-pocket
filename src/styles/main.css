@@ -1081,56 +1081,6 @@ body {
 }
 
 
-.lang-picker-btn {
-  padding: 3px 8px;
-  border: none;
-  border-radius: 4px;
-  font-size: 10px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.1s;
-}
-
-.lang-picker-btn.action-play {
-  background: rgba(74, 222, 128, 0.15);
-  color: #4ade80;
-}
-
-.lang-picker-btn.action-play:hover {
-  background: rgba(74, 222, 128, 0.25);
-}
-
-.lang-picker-btn.action-download {
-  background: rgba(124, 92, 252, 0.1);
-  color: var(--accent-hover);
-}
-
-.lang-picker-btn.action-download:hover {
-  background: rgba(124, 92, 252, 0.2);
-}
-
-.lang-picker-btn.action-uninstall {
-  background: none;
-  color: var(--text-muted);
-  padding: 3px 5px;
-}
-
-.lang-picker-btn.action-uninstall:hover {
-  color: var(--danger);
-  background: rgba(233, 69, 96, 0.1);
-}
-
-.lang-picker-btn.action-cancel {
-  background: none;
-  color: var(--text-muted);
-  padding: 3px 5px;
-}
-
-.lang-picker-btn.action-cancel:hover {
-  color: var(--danger);
-  background: rgba(233, 69, 96, 0.1);
-}
-
 
 .game-card-status {
   font-size: 10px;
@@ -2396,12 +2346,15 @@ body {
   top: 0;
   right: 0;
   bottom: 0;
-  width: 380px;
+  /* Wide enough for fields and description to sit side by side on a normal
+     window; falls back to the old single-column width on small ones, where
+     .game-detail-columns wraps by itself. */
+  width: clamp(380px, 40vw, 560px);
   z-index: 150;
   background: var(--bg-secondary);
   border-left: 1px solid rgba(255, 255, 255, 0.08);
-  /* Panel itself does NOT scroll - it's a flex column with hero/actions/fields
-     fixed and the description region scrolling internally. Keeps the
+  /* Panel itself does NOT scroll - it's a flex column with hero/actions fixed
+     and the fields+description region scrolling internally. Keeps the
      screenshots strip pinned at the bottom regardless of description length. */
   overflow: hidden;
   display: flex;
@@ -2447,6 +2400,9 @@ body {
 .game-detail-thumb {
   width: 100%;
   aspect-ratio: 16 / 9;
+  /* Cap the height so a wider panel doesn't spend its extra pixels on box art
+     that then pushes everything else below the fold. */
+  max-height: 240px;
   object-fit: cover;
   display: block;
   cursor: pointer;
@@ -2483,6 +2439,10 @@ body {
   gap: 10px;
   flex: 1;
   min-height: 0; /* required for nested .game-detail-scroll to size + scroll */
+  /* Escape hatch for very short windows: once the pinned blocks (actions or
+     Versions list + media strip) plus the scroll region's min-height exceed
+     the panel, the body scrolls instead of clipping the gallery. */
+  overflow-y: auto;
 }
 
 /* Scroll region for description + notes - squeezed between fixed fields
@@ -2490,7 +2450,10 @@ body {
    actually shrinks; default flex auto-min keeps content from being squeezed. */
 .game-detail-scroll {
   flex: 1;
-  min-height: 0;
+  /* Floor, not 0: with min-height: 0 the flex solver was free to squeeze this
+     region out of existence when the fixed siblings filled the panel, which
+     hid the description entirely instead of making it scrollable. */
+  min-height: 120px;
   overflow-y: auto;
   overscroll-behavior: contain;
   display: flex;
@@ -2644,27 +2607,57 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* Playlist row below the main actions / versions list - visually quieter
-   than the primary action bar. */
-.game-detail-actions-secondary {
-  margin-top: 8px;
-}
-
-.game-detail-actions-secondary .btn-playlist {
-  flex: 0 0 auto;
-}
-
 .btn-playlist:hover {
   color: var(--text-primary);
   background: rgba(124, 92, 252, 0.12);
   border-color: rgba(124, 92, 252, 0.35);
 }
 
-.game-detail-langs {
+/* Language switcher: one chip per variant, the selected one scopes the whole
+   panel (actions, description, manual, screenshots). */
+.variant-switcher {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-wrap: wrap;
+  gap: 6px;
   flex-shrink: 0;
+}
+
+.variant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.variant-chip:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.variant-chip.is-selected {
+  background: rgba(124, 92, 252, 0.14);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.variant-chip-state {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Language qualifier on a button label, e.g. Manual [EN] on a DE selection. */
+.btn-suffix {
+  font-size: 10px;
+  opacity: 0.75;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 2px;
 }
 
 .game-detail-section-label {
@@ -2681,37 +2674,40 @@ body {
   padding: 4px 0;
 }
 
-.game-detail-lang-row {
+/* Fields + description as a wrapping pair: side by side while the panel is
+   wide, stacked below ~460px of content width. No media query - the flex
+   basis values decide, so it also holds if the panel width changes. */
+.game-detail-columns {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.game-detail-text {
+  flex: 2 1 250px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 5px 6px;
-  border-radius: 4px;
-  transition: background 0.1s;
 }
 
-.game-detail-lang-row:hover {
-  background: var(--bg-hover);
-}
-
-.game-detail-lang-title {
-  flex: 1;
-  font-size: 12px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.game-detail-lang-progress {
-  flex: 1;
+/* Says which language the description below actually is, when the selected
+   variant has no text of its own (true for all PL/ES rows). */
+.game-detail-fallback-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--border-radius);
+  padding: 5px 8px;
 }
 
 .game-detail-fields {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex-shrink: 0;
+  flex: 1 1 200px;
+  min-width: 0;
   padding: 6px 10px;
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid rgba(255, 255, 255, 0.04);
@@ -3416,14 +3412,6 @@ body {
   gap: 8px;
   color: var(--text-secondary);
   cursor: default;
-}
-
-.lang-uninstalling {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
 }
 
 .update-pill {
