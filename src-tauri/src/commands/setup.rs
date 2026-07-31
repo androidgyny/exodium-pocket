@@ -339,6 +339,10 @@ pub async fn init_download_manager(
 
     let metadata_dir = bundled_metadata_dir().ok();
 
+    // Startup is the natural place to bound the gallery cache: nothing else
+    // deletes from it, and doing it here keeps it off the panel-open path.
+    prune_gallery_cache(&gallery_cache_dir(&data_dir), GALLERY_CACHE_MAX_BYTES);
+
     // Offline mode: no session, no torrents, no swarm traffic - the app is a
     // launcher for whatever is already on disk. Bundled emulator configs are
     // still extracted; they are shipped with Exodium, not with the torrent.
@@ -853,6 +857,145 @@ pub struct GameMetadata {
     pub manual_path: Option<String>,
     pub manual_kind: Option<String>,
     pub images: Vec<String>,
+    /// Small cached copies of `images`, same order and length. The gallery
+    /// strip renders these; the lightbox keeps using `images`. Entries fall
+    /// back to the full-size path when a thumbnail can't be produced.
+    pub thumbnails: Vec<String>,
+}
+
+/// Long edge of a cached gallery thumbnail. The strip draws them at 64x48 CSS
+/// px, so 160 covers 2x displays with room to spare.
+const THUMB_MAX_EDGE: u32 = 160;
+
+/// Where cached gallery thumbnails live. Inside the content dir so a factory
+/// reset that clears content also clears the cache.
+fn gallery_cache_dir(data_dir: &str) -> PathBuf {
+    PathBuf::from(data_dir).join("content").join(".thumbcache")
+}
+
+/// Cache filename for a source image: content-addressed by path + size +
+/// mtime, so a re-downloaded or updated metadata pack misses the cache
+/// instead of serving a stale thumbnail.
+fn gallery_cache_name(source: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let meta = std::fs::metadata(source).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut hasher = Sha256::new();
+    hasher.update(source.to_string_lossy().as_bytes());
+    hasher.update(meta.len().to_le_bytes());
+    hasher.update(mtime.to_le_bytes());
+    let hex = format!("{:x}", hasher.finalize());
+    Some(format!("{}.jpg", &hex[..24]))
+}
+
+/// Upper bound for the gallery cache. At ~5 KB per thumbnail this is far more
+/// than any real browsing session produces (opening all 7,600 games would
+/// reach ~180 MB), so pruning is a backstop, not a routine event.
+const GALLERY_CACHE_MAX_BYTES: u64 = 250 * 1024 * 1024;
+
+/// Counter for temp filenames. Two threads (or two overlapping panel opens)
+/// thumbnailing the same source would otherwise write the same `.part` file.
+static GALLERY_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Return a small cached JPEG for `source`, generating it on first use.
+/// Returns None (caller falls back to the original) on any failure - a broken
+/// or exotic image must not cost the user their gallery.
+fn gallery_thumbnail(source: &Path, cache_dir: &Path) -> Option<PathBuf> {
+    let name = gallery_cache_name(source)?;
+    let cached = cache_dir.join(name);
+    if cached.is_file() {
+        return Some(cached);
+    }
+    // Decoding is why this exists: some of these are 18 MB PNGs. Doing it here
+    // (inside the command's spawn_blocking) costs the first open of a game and
+    // saves every later one - and every one on any other machine start.
+    let img = image::open(source).ok()?;
+    let thumb = img.thumbnail(THUMB_MAX_EDGE, THUMB_MAX_EDGE);
+    std::fs::create_dir_all(cache_dir).ok()?;
+    // Write to a unique temp name first: a half-written JPEG left by a crash
+    // or a full disk would otherwise be cached forever as a valid-looking
+    // file, and a shared temp name would let two writers clobber each other.
+    let seq = GALLERY_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = cache_dir.join(format!("{}.{}.{}.part", cached.file_stem()?.to_string_lossy(), std::process::id(), seq));
+    thumb.to_rgb8().save_with_format(&tmp, image::ImageFormat::Jpeg).ok()?;
+    if std::fs::rename(&tmp, &cached).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    Some(cached)
+}
+
+/// Thumbnail a game's gallery, falling back to the full-size path per image.
+/// Spread over a few threads: the first open of a game can mean decoding a
+/// dozen multi-megabyte PNGs, and that is the one time the user waits.
+fn generate_gallery_thumbnails(images: &[String], cache_dir: &Path) -> Vec<String> {
+    const MAX_THREADS: usize = 4;
+    let mut out: Vec<String> = images.to_vec();
+    if images.len() < 2 {
+        for (full, slot) in images.iter().zip(out.iter_mut()) {
+            if let Some(p) = gallery_thumbnail(Path::new(full), cache_dir) {
+                *slot = path_to_fwd_slash(&p);
+            }
+        }
+        return out;
+    }
+    let chunk = images.len().div_ceil(MAX_THREADS).max(1);
+    std::thread::scope(|scope| {
+        for (sources, slots) in images.chunks(chunk).zip(out.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for (full, slot) in sources.iter().zip(slots.iter_mut()) {
+                    if let Some(p) = gallery_thumbnail(Path::new(full), cache_dir) {
+                        *slot = path_to_fwd_slash(&p);
+                    }
+                }
+            });
+        }
+    });
+    out
+}
+
+/// Drop the oldest thumbnails when the cache grows past its cap. Nothing else
+/// ever deletes from it, so without this it only grows - and it also sweeps
+/// up `.part` files orphaned by a crash mid-write.
+fn prune_gallery_cache(cache_dir: &Path, max_bytes: u64) {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else { return };
+    let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        total += meta.len();
+        files.push((entry.path(), meta.len(), modified));
+    }
+    if total <= max_bytes {
+        return;
+    }
+    // Oldest first, and delete down to 80% so pruning isn't triggered again
+    // by the very next thumbnail.
+    files.sort_by_key(|(_, _, modified)| *modified);
+    let target = max_bytes / 5 * 4;
+    let mut removed = 0u64;
+    for (path, len, _) in files {
+        if total - removed <= target {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            removed += len;
+        }
+    }
+    log::info!(
+        "Gallery cache pruned: {:.1} MB freed (was {:.1} MB)",
+        removed as f64 / 1_048_576.0,
+        total as f64 / 1_048_576.0
+    );
 }
 
 /// Category-priority for the gallery strip. Ordered by typical visual impact
@@ -1077,10 +1220,16 @@ fn scan_game_metadata(
         (None, None)
     };
 
+    // Gallery thumbnails: cheap after the first open of a game, and the strip
+    // then loads ~5 KB per image instead of up to 18 MB.
+    let cache_dir = gallery_cache_dir(data_dir);
+    let thumbnails = generate_gallery_thumbnails(&images, &cache_dir);
+
     Ok(GameMetadata {
         manual_path: resolved_manual,
         manual_kind,
         images,
+        thumbnails,
     })
 }
 
@@ -2230,6 +2379,158 @@ fn bundled_torrent_path(filename: &str) -> Result<PathBuf, String> {
 }
 
 #[cfg(test)]
+mod real_pack_tests {
+    use super::*;
+
+    /// Opt-in check against a REAL installed metadata pack, because synthetic
+    /// fixtures cannot model what actually costs time here: eXo's box art is
+    /// photographic PNGs up to 18 MB, which compress and decode nothing like a
+    /// generated test image.
+    ///
+    ///   EXODIUM_REAL_DATA_DIR=/path/to/data cargo test real_pack -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn scan_against_a_real_metadata_pack() {
+        let Ok(data_dir) = std::env::var("EXODIUM_REAL_DATA_DIR") else {
+            eprintln!("set EXODIUM_REAL_DATA_DIR to run this");
+            return;
+        };
+        let title = std::env::var("EXODIUM_REAL_TITLE")
+            .unwrap_or_else(|_| "Magic Carpet Plus".to_string());
+
+        // Cold: whatever this game costs on its first open.
+        let cold_start = std::time::Instant::now();
+        let meta = scan_game_metadata(&data_dir, "eXoDOS", &title, None).expect("scan");
+        let cold = cold_start.elapsed();
+
+        assert!(!meta.images.is_empty(), "no art found for {} - wrong title?", title);
+        assert_eq!(meta.images.len(), meta.thumbnails.len());
+
+        let full: u64 = meta.images.iter()
+            .map(|p| std::fs::metadata(Path::new(p)).map(|m| m.len()).unwrap_or(0)).sum();
+        let thumbs: u64 = meta.thumbnails.iter()
+            .map(|p| std::fs::metadata(Path::new(p)).map(|m| m.len()).unwrap_or(0)).sum();
+
+        // Warm: every later open, and every open after a restart.
+        let warm_start = std::time::Instant::now();
+        let again = scan_game_metadata(&data_dir, "eXoDOS", &title, None).expect("rescan");
+        let warm = warm_start.elapsed();
+        assert_eq!(again.thumbnails, meta.thumbnails);
+
+        eprintln!(
+            "\n{}: {} images\n  payload  {:.0} KB -> {:.0} KB  ({:.0}x smaller)\n  cold scan {:?}\n  warm scan {:?}\n",
+            title, meta.images.len(),
+            full as f64 / 1024.0, thumbs as f64 / 1024.0,
+            full as f64 / thumbs.max(1) as f64, cold, warm,
+        );
+
+        assert!(thumbs < full / 5, "expected a big reduction on real art: {} vs {}", thumbs, full);
+        assert!(warm < cold, "a cached scan must be faster than a decoding one");
+    }
+}
+
+#[cfg(test)]
+mod metadata_scan_tests {
+    use super::*;
+
+    /// Build a data dir shaped like a real install with the metadata pack
+    /// extracted: <data>/content/metadata/<collection>/Images/MS-DOS/<cat>/…
+    fn make_pack(data: &Path, collection: &str, title: &str, categories: &[&str]) {
+        for (i, cat) in categories.iter().enumerate() {
+            let dir = data.join("content").join("metadata").join(collection)
+                .join("Images").join("MS-DOS").join(cat);
+            std::fs::create_dir_all(&dir).unwrap();
+            // Big enough that a 160px thumbnail is unambiguously smaller.
+            let img = image::RgbImage::from_fn(1200, 900, |x, y| {
+                image::Rgb([(x % 251) as u8, (y % 253) as u8, (i * 40) as u8])
+            });
+            img.save(dir.join(format!("{}-01.png", title))).unwrap();
+        }
+    }
+
+    fn temp_data(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("exodium_scan_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The whole point of the cache: the gallery strip must be served small
+    /// copies while the lightbox keeps the originals.
+    #[test]
+    fn scan_returns_cached_thumbnails_alongside_full_images() {
+        let data = temp_data("thumbs");
+        make_pack(&data, "eXoDOS", "Magic Carpet Plus",
+                  &["Box - 3D", "Screenshot - Gameplay", "Clear Logo"]);
+
+        let meta = scan_game_metadata(data.to_str().unwrap(), "eXoDOS", "Magic Carpet Plus", None)
+            .expect("scan");
+
+        assert_eq!(meta.images.len(), 3, "one image per category");
+        assert_eq!(meta.thumbnails.len(), meta.images.len(), "arrays must stay aligned");
+
+        let mut full_total = 0u64;
+        let mut thumb_total = 0u64;
+        for (full, thumb) in meta.images.iter().zip(meta.thumbnails.iter()) {
+            assert_ne!(full, thumb, "strip must not be handed the full-size file");
+            assert!(thumb.contains(".thumbcache"), "thumbnail should live in the cache dir");
+            let (w, h) = image::image_dimensions(Path::new(thumb)).unwrap();
+            assert!(w <= THUMB_MAX_EDGE && h <= THUMB_MAX_EDGE, "{}x{}", w, h);
+            full_total += std::fs::metadata(Path::new(full)).unwrap().len();
+            thumb_total += std::fs::metadata(Path::new(thumb)).unwrap().len();
+        }
+        // Absolute, not a ratio: a synthetic fixture's PNG/JPEG behaviour says
+        // nothing about real box art (measured there: a 2.7 MB gallery -> 39 KB).
+        // What the cache guarantees is a small bounded payload per image.
+        assert!(thumb_total < 30_000, "gallery payload too large: {} bytes", thumb_total);
+        assert!(full_total > thumb_total, "{} vs {}", full_total, thumb_total);
+
+        // Second open must reuse the cache rather than decode again.
+        let before: Vec<_> = meta.thumbnails.iter()
+            .map(|t| std::fs::metadata(Path::new(t)).unwrap().modified().unwrap())
+            .collect();
+        let again = scan_game_metadata(data.to_str().unwrap(), "eXoDOS", "Magic Carpet Plus", None)
+            .expect("second scan");
+        assert_eq!(again.thumbnails, meta.thumbnails);
+        for (t, was) in again.thumbnails.iter().zip(before) {
+            assert_eq!(std::fs::metadata(Path::new(t)).unwrap().modified().unwrap(), was,
+                       "cached file must not be rewritten");
+        }
+
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// LP collections fall back to the eXoDOS pack, and that fallback has to
+    /// keep working now that thumbnails sit in between.
+    #[test]
+    fn lp_collection_falls_back_to_the_english_pack() {
+        let data = temp_data("lpfallback");
+        make_pack(&data, "eXoDOS", "Das Amt", &["Box - Front"]);
+
+        let meta = scan_game_metadata(data.to_str().unwrap(), "eXoDOS_GLP", "Das Amt", None)
+            .expect("scan");
+
+        assert_eq!(meta.images.len(), 1);
+        assert!(meta.images[0].contains("/eXoDOS/"), "resolved from the EN pack");
+        assert!(meta.thumbnails[0].contains(".thumbcache"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_game_without_art_returns_empty_arrays() {
+        let data = temp_data("noart");
+        make_pack(&data, "eXoDOS", "Some Other Game", &["Box - 3D"]);
+
+        let meta = scan_game_metadata(data.to_str().unwrap(), "eXoDOS", "Nothing Here", None)
+            .expect("scan");
+
+        assert!(meta.images.is_empty());
+        assert!(meta.thumbnails.is_empty());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+}
+
+#[cfg(test)]
 mod network_mode_tests {
     use super::*;
     use std::sync::Mutex;
@@ -2322,3 +2623,161 @@ mod network_mode_tests {
     }
 }
 
+#[cfg(test)]
+mod gallery_cache_tests {
+    use super::*;
+
+    /// Write a deliberately oversized PNG, the shape of the real problem: the
+    /// metadata pack's gallery images run to 18 MB while the strip draws them
+    /// at 64x48.
+    fn write_source(dir: &Path, name: &str, w: u32, h: u32) -> PathBuf {
+        let path = dir.join(name);
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+        img.save(&path).unwrap();
+        path
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("exodium_thumbtest_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn generates_a_much_smaller_thumbnail() {
+        let dir = temp_dir("small");
+        let cache = dir.join("cache");
+        let src = write_source(&dir, "big.png", 1600, 1200);
+
+        let thumb = gallery_thumbnail(&src, &cache).expect("thumbnail");
+        assert!(thumb.is_file());
+
+        let (sw, sh) = image::image_dimensions(&src).unwrap();
+        let (tw, th) = image::image_dimensions(&thumb).unwrap();
+        assert!(tw <= THUMB_MAX_EDGE && th <= THUMB_MAX_EDGE, "got {}x{}", tw, th);
+        // Aspect ratio preserved (thumbnail() fits inside the box).
+        assert_eq!(sw / sh, tw / th);
+        // Absolute, not a ratio against the source: a synthetic gradient PNG
+        // compresses far better than the pack's real box art, so a ratio test
+        // would measure the fixture instead of the thumbnail. On real assets
+        // this comes out around 5 KB (measured: a 2.7 MB gallery -> 39 KB).
+        let thumb_bytes = std::fs::metadata(&thumb).unwrap().len();
+        assert!(thumb_bytes < 30_000, "thumbnail too large: {} bytes", thumb_bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reuses_the_cached_file_on_the_second_call() {
+        let dir = temp_dir("reuse");
+        let cache = dir.join("cache");
+        let src = write_source(&dir, "img.png", 800, 600);
+
+        let first = gallery_thumbnail(&src, &cache).unwrap();
+        let stamp = std::fs::metadata(&first).unwrap().modified().unwrap();
+        let second = gallery_thumbnail(&src, &cache).unwrap();
+
+        assert_eq!(first, second);
+        // Same file, untouched - a regenerated one would carry a newer mtime.
+        assert_eq!(stamp, std::fs::metadata(&second).unwrap().modified().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A replaced metadata pack must not keep serving the old thumbnail: the
+    /// cache key includes the source's size and mtime, not just its path.
+    #[test]
+    fn a_changed_source_misses_the_cache() {
+        let dir = temp_dir("changed");
+        let cache = dir.join("cache");
+        let src = write_source(&dir, "img.png", 800, 600);
+        let first = gallery_thumbnail(&src, &cache).unwrap();
+
+        std::fs::remove_file(&src).unwrap();
+        write_source(&dir, "img.png", 400, 400);
+        let second = gallery_thumbnail(&src, &cache).unwrap();
+
+        assert_ne!(first, second, "different source content must map to a different cache entry");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pruning_drops_the_oldest_entries_when_over_the_cap() {
+        let dir = temp_dir("prune");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Five 10 KB files written oldest-first. A few ms apart so the mtime
+        // ordering is unambiguous on filesystems with coarse timestamps.
+        let mut paths = Vec::new();
+        for i in 0..5 {
+            let p = dir.join(format!("thumb{}.jpg", i));
+            std::fs::write(&p, vec![0u8; 10 * 1024]).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            paths.push(p);
+        }
+
+        // Cap at 30 KB: pruning targets 80% of that, so it must free at least
+        // 26 KB - the three oldest files.
+        prune_gallery_cache(&dir, 30 * 1024);
+
+        assert!(!paths[0].exists(), "oldest should be gone");
+        assert!(!paths[1].exists());
+        assert!(paths[4].exists(), "newest must survive");
+        let left: u64 = std::fs::read_dir(&dir).unwrap()
+            .flatten()
+            .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+            .sum();
+        assert!(left <= 30 * 1024 / 5 * 4, "still over target: {} bytes", left);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pruning_leaves_a_cache_under_the_cap_alone() {
+        let dir = temp_dir("prune_noop");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("thumb.jpg");
+        std::fs::write(&p, vec![0u8; 1024]).unwrap();
+
+        prune_gallery_cache(&dir, 1024 * 1024);
+
+        assert!(p.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole gallery is thumbnailed in parallel; every slot must line up
+    /// with its source, and an undecodable file keeps its full-size path.
+    #[test]
+    fn parallel_generation_preserves_order_and_falls_back() {
+        let dir = temp_dir("parallel");
+        let cache = dir.join("cache");
+        let mut sources = Vec::new();
+        for i in 0..6 {
+            sources.push(path_to_fwd_slash(&write_source(&dir, &format!("img{}.png", i), 200 + i * 10, 150)));
+        }
+        let broken = dir.join("broken.png");
+        std::fs::write(&broken, b"nope").unwrap();
+        sources.push(path_to_fwd_slash(&broken));
+
+        let out = generate_gallery_thumbnails(&sources, &cache);
+
+        assert_eq!(out.len(), sources.len());
+        for (i, thumb) in out.iter().take(6).enumerate() {
+            assert_ne!(thumb, &sources[i], "image {} should have been thumbnailed", i);
+            let (w, h) = image::image_dimensions(Path::new(thumb)).unwrap();
+            assert!(w <= THUMB_MAX_EDGE && h <= THUMB_MAX_EDGE);
+        }
+        assert_eq!(out[6], sources[6], "undecodable source keeps its own path");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_image_falls_back_instead_of_failing() {
+        let dir = temp_dir("broken");
+        let cache = dir.join("cache");
+        let src = dir.join("not-an-image.png");
+        std::fs::write(&src, b"this is not a PNG").unwrap();
+
+        assert!(gallery_thumbnail(&src, &cache).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

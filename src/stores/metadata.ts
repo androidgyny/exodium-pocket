@@ -6,7 +6,7 @@ import { lastGameLibraryChange } from "./games";
 // Cache keyed "<collection>:<title>". Invalidated whenever the set of
 // installed packs changes (install/uninstall) OR a game's library state
 // changes (download/uninstall - manual becomes available/unavailable).
-const EMPTY: GameMetadata = { manual_path: null, manual_kind: null, images: [] };
+const EMPTY: GameMetadata = { manual_path: null, manual_kind: null, images: [], thumbnails: [] };
 const cache = new Map<string, GameMetadata>();
 
 createEffect(() => {

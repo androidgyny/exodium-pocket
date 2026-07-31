@@ -66,6 +66,12 @@ futures-util = "0.3"
 # Cryptographic hashing (sha256 verification of downloaded packs)
 sha2 = "0.10"
 
+# Gallery thumbnail cache. The metadata pack ships 36k full-resolution images
+# (avg 145 KB, up to 18 MB) that the detail panel renders at 64x48 - decoding
+# those in the webview on every open is the "screenshots appear late" delay.
+# Only the three formats the pack actually contains: 25k png, 17k jpg, 799 gif.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] }
+
 # Tar extraction (content pack archives)
 tar = "0.4"
 
