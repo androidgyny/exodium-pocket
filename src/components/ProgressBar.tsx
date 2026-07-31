@@ -1,32 +1,5 @@
-import { createSignal, createEffect, onCleanup } from "solid-js";
 import { Progress } from "@ark-ui/solid/progress";
-
-// ── Shared "stall detection" hook ───────────────────────────────────────────
-// Returns a signal that flips true when `value` hasn't changed for stallMs.
-// Used by both linear and circular progress to auto-switch to indeterminate.
-function createStallDetector(value: () => number, stallMs = 3000) {
-  const [stalled, setStalled] = createSignal(false);
-  let lastValue = value();
-  let lastChangeAt = Date.now();
-
-  createEffect(() => {
-    const v = value();
-    if (v !== lastValue) {
-      lastValue = v;
-      lastChangeAt = Date.now();
-      setStalled(false);
-    }
-  });
-
-  const id = setInterval(() => {
-    if (value() < 1 && Date.now() - lastChangeAt > stallMs) {
-      setStalled(true);
-    }
-  }, 500);
-  onCleanup(() => clearInterval(id));
-
-  return stalled;
-}
+import { createStallDetector } from "../stallDetector";
 
 /** True when either explicitly requested, value is 0, or progress has stalled. */
 function useIndeterminate(
