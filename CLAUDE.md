@@ -212,6 +212,84 @@ In dev, `check_for_updates` reads the local `manifest.json`. In production it wi
 
 Thumbnail packs for production are hosted separately (GitHub Releases or similar). `manifest.json` contains the URL, sha256, and size so the setup flow can download and verify them. This is not yet implemented in the UI - just the backend command and schema exist.
 
+### 11. Network mode and opt-in seeding
+
+Two config keys, both answered during setup and changeable in Settings → Network:
+
+- `network_mode` = `live` (default when unset) | `offline`. Offline means **no
+  librqbit session is ever created**: `init_download_manager` extracts the
+  bundled emulator configs and returns early, and `setup_from_local` parses the
+  bundled `.torrent` files into `TorrentIndex` values for index matching but
+  builds no managers. Exodium becomes a launcher for what is already on disk.
+  Offline is only offered on the *import* route in setup - a from-scratch
+  install has nothing to launch. Switching modes at runtime just writes the key
+  and calls `init_download_manager` again; going offline drops every manager,
+  which releases the last `Arc` to the session and stops all traffic.
+- `seeding_enabled` = only an explicit `"1"` enables uploading. Distributing
+  copyrighted game data is a legal risk in some jurisdictions, so it must never
+  start without the user having seen the question (issue #1). The setup
+  checkbox is pre-checked but shown with its implications, so consent is
+  informed rather than silent. `apply_seeding_preference` treats anything but
+  `"1"` as off; `migrateSeedingToOptIn` in `App.tsx` pins `"0"` for pre-existing
+  installs that never chose, with a one-time toast.
+
+The invariant from `collections` applies here too: **both keys must be written
+before `initDownloadManager()`**, because Rust reads them there to decide
+whether to start a session at all. Frontend gating lives in
+`stores/network.ts` (`isOffline()`), used by `GameDetailPanel` and `GameCard`
+to hide download affordances; `download_game` and torrent-sourced content-pack
+installs also fail with an explicit offline message rather than a missing-manager one.
+
+### 12. The detail panel is scoped to ONE variant
+
+`GameDetailPanel` renders exactly one row at a time. For merged multi-language
+cards a chip switcher (`variant-switcher`) picks which one, and *everything*
+follows the selection: play/download/uninstall/settings target it, and the
+description, manual and screenshots are loaded for it. Single-language games
+are the same code path with one row - do not reintroduce a separate
+multi-language branch, which is how the Manual and Settings buttons ended up
+existing only for single-language games.
+
+Catalogue coverage drives the fallbacks: LP rows carry a title and little else
+(own description: GLP 98/648, PLP 0/238, SLP 0/642; own manual: GLP 56/648).
+So `field()` falls back to the EN row per field, `descriptionSource()` falls
+back to EN text with a visible "English description - no German text" note, and
+the Manual button appends the language of the manual it will actually open.
+
+Layout: the panel is `clamp(380px, 40vw, 560px)` and `.game-detail-columns`
+wraps fields and description side by side via flex-basis (no media query), so
+the screenshot strip stays on screen. Never give the flexible middle region
+`min-height: 0` again - that let the flex solver collapse the description to
+an invisible 0px and clip the gallery.
+
+### 13. Image performance: cache on disk, load ahead of the viewport
+
+The metadata pack is 36k images / 5.0 GB (avg 145 KB, max 18.6 MB) rendered in
+a 64x48 strip, so `scan_game_metadata` downscales each to 160 px once into
+`<data_dir>/content/.thumbcache/` and returns them as `GameMetadata.thumbnails`
+(same order as `images`; falls back to the full path when a file can't be
+decoded). The strip renders thumbnails, the lightbox keeps the originals. Cache
+keys hash path + size + mtime, so a re-downloaded pack misses rather than
+serving stale art, and the dir sits under `content/` which `factory_reset`
+already deletes. Measured: one game's gallery 2.7 MB -> 39 KB.
+
+Variant lookups go through `stores/variants.ts`, a shortcode-keyed promise
+cache invalidated on `lastGameLibraryChange`. Every multi-language card asks
+for its group from an effect, so rendering the whole catalogue used to burst
+~734 `get_game_variants` calls. Pass `force` after an uninstall - install state
+is baked into the cached rows.
+
+The gallery cache is pruned at startup (`prune_gallery_cache`, 250 MB cap,
+oldest first) since nothing else ever deletes from it, and thumbnails for one
+game are generated across up to 4 threads - the first open of a game can mean
+decoding a dozen multi-megabyte PNGs.
+
+Covers use `nearViewport.ts` (one shared IntersectionObserver, 1200px margin),
+not `loading="lazy"` - lazy starts fetching too late and pop-in was the result.
+Keep the CSS rule that gives a card without `.game-card-thumb` `aspect-ratio:
+3/4`: without it, unloaded cards collapse, the grid shrinks, and every card
+lands inside the observer margin at once.
+
 ## Conventions
 
 - **Every Tauri command that touches the DB, filesystem, or network MUST be

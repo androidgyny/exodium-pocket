@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Offline mode**: setup now asks how Exodium should use the network. When
+  importing an existing eXoDOS installation you can pick "Offline" - the
+  torrent client is never started, and Exodium acts as a pure launcher for
+  the games already on disk. Switchable any time in Settings → Network.
+
+### Changed
+
+- **Sharing (seeding) is now an explicit choice.** Setup asks before it
+  finishes (pre-checked, with the upload implications spelled out) instead of
+  silently starting; existing installs that never made a choice have it turned
+  off with a one-time notice. Changeable in Settings → Network.
+
+- **Game detail panel reworked.** The panel is wider (scaled to the window)
+  and puts the catalogue fields next to the description instead of below it,
+  so art, actions, text and screenshots fit without scrolling. Multi-language
+  games gained a language switcher: picking EN/DE/PL re-points the whole panel
+  - play, download, uninstall, settings, manual, description and screenshots
+  all refer to the selected version. Where a language has no text or manual of
+  its own, the English one is shown and labelled as such.
+
+### Fixed
+
+- Multi-language games showed no description and their screenshot strip was
+  cut off: the Versions list pushed the panel's flexible region to zero height.
+- Multi-language games had no Manual or Settings button - both lived only in
+  the single-language action bar, which the Versions list replaced.
+- Screenshots in the detail panel appear immediately. The metadata pack ships
+  full-resolution art (up to 18 MB per image) that the strip draws at 64x48;
+  those are now downscaled once and cached on disk, so a gallery loads ~39 KB
+  instead of ~2.7 MB. The lightbox still opens the originals.
+- Covers no longer pop in while scrolling: they start loading about two screens
+  ahead of the viewport instead of just before entering it.
+- Search now applies to My Library. The search box is visible on both tabs but
+  only ever filtered Browse; typing while on My Library did nothing. Shelves
+  (Recently Played, Favorites, Installed, playlists) now filter as you type,
+  the jump bar follows, and a no-hits search offers to search the full
+  collection instead.
+- Download bars no longer flip between the percentage and the indeterminate
+  sweep every few seconds. Torrent progress advances one piece at a time, so
+  short flat stretches are normal; the bar now only sweeps after 15 seconds
+  without data, matching the "waiting for peers…" status text.
+
 ## 0.9.0 - 2026-07-31
 
 ### Added
