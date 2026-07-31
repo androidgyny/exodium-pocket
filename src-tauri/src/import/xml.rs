@@ -142,6 +142,7 @@ fn xml_game_to_game(x: XmlGame, shortcode_segment: &str) -> Game {
         language,
         shortcode,
         available_languages: None,
+        variant_titles: None,
         torrent_source: None,
         in_library: false,
         installed: false,

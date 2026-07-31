@@ -24,6 +24,9 @@ export interface Game {
   language: string;
   shortcode: string | null;
   available_languages: string | null;
+  /** Titles of the other language variants, unit-separated. Present only on
+   *  merged multi-language rows; lets a local search match a localized title. */
+  variant_titles: string | null;
   torrent_source: string | null;
   in_library: boolean;
   installed: boolean;

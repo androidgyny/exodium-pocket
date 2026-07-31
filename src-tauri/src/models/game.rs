@@ -25,6 +25,11 @@ pub struct Game {
     pub language: String,
     pub shortcode: Option<String>,
     pub available_languages: Option<String>,
+    /// Titles of the OTHER language variants in this group, unit-separated.
+    /// Lets a client-side search over already-loaded rows match a localized
+    /// title, the way the Browse SQL filter does. None for single-variant
+    /// games.
+    pub variant_titles: Option<String>,
     pub torrent_source: Option<String>,
     pub in_library: bool,
     pub installed: bool,

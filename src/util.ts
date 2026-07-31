@@ -67,3 +67,21 @@ export function langBadgeClass(state: number): string {
   if (state === 1) { return "lang-downloading"; }
   return "";
 }
+
+/** Client-side title match for the My Library shelves, which are already in
+ *  memory and would otherwise ignore the shared search box entirely.
+ *
+ *  Matches the merged card's own title AND the titles of its other language
+ *  variants (attached by `attach_language_maps`), so searching a German title
+ *  finds the English-titled card here the same way the Browse SQL filter does.
+ */
+export function matchesLibraryQuery(
+  game: { title?: string | null; sort_title?: string | null; variant_titles?: string | null },
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) { return true; }
+  return (game.title ?? "").toLowerCase().includes(q)
+    || (game.sort_title ?? "").toLowerCase().includes(q)
+    || (game.variant_titles ?? "").toLowerCase().includes(q);
+}

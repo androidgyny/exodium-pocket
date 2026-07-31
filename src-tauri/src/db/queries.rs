@@ -36,6 +36,7 @@ fn row_to_game(row: &Row) -> rusqlite::Result<Game> {
         language: row.get::<_, Option<String>>(20)?.unwrap_or_else(|| "EN".to_string()),
         shortcode: row.get(21)?,
         available_languages: None, // populated by merged query
+        variant_titles: None,
         torrent_source: row.get(22)?,
         in_library: row.get::<_, i32>(23).unwrap_or(0) != 0,
         installed: row.get::<_, i32>(24).unwrap_or(0) != 0,
@@ -310,24 +311,32 @@ fn attach_language_maps(conn: &Connection, games: &mut [Game]) -> DbResult<()> {
 
     let placeholders: Vec<String> = (1..=shortcodes.len()).map(|i| format!("?{}", i)).collect();
     let sql = format!(
-        "SELECT shortcode, language, installed, in_library FROM games \
+        "SELECT shortcode, language, installed, in_library, title FROM games \
          WHERE shortcode IN ({}) \
          ORDER BY CASE WHEN language = 'EN' THEN 0 ELSE 1 END, language",
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
     let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    // Localized titles of the group, so a client-side search over already
+    // loaded rows (My Library) can match "Zauberteppich" the way the Browse
+    // SQL filter does. Only multi-variant groups get one attached.
+    let mut titles: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     let rows = stmt.query_map(rusqlite::params_from_iter(shortcodes.iter()), |row| {
         let sc: String = row.get(0)?;
         let lang: Option<String> = row.get(1)?;
         let installed: i32 = row.get::<_, i32>(2).unwrap_or(0);
         let in_library: i32 = row.get::<_, i32>(3).unwrap_or(0);
-        Ok((sc, lang.unwrap_or_else(|| "EN".to_string()), installed, in_library))
+        let title: String = row.get::<_, Option<String>>(4)?.unwrap_or_default();
+        Ok((sc, lang.unwrap_or_else(|| "EN".to_string()), installed, in_library, title))
     })?;
     for row in rows {
-        let (sc, lang, installed, in_library) = row?;
+        let (sc, lang, installed, in_library, title) = row?;
         let state = if installed != 0 { 2 } else if in_library != 0 { 1 } else { 0 };
-        map.entry(sc).or_default().push(format!("{}:{}", lang, state));
+        map.entry(sc.clone()).or_default().push(format!("{}:{}", lang, state));
+        if !title.is_empty() {
+            titles.entry(sc).or_default().push(title);
+        }
     }
 
     for game in games.iter_mut() {
@@ -335,6 +344,16 @@ fn attach_language_maps(conn: &Connection, games: &mut [Game]) -> DbResult<()> {
             if let Some(entries) = map.get(sc) {
                 if entries.len() > 1 {
                     game.available_languages = Some(entries.join(","));
+                    if let Some(group_titles) = titles.get(sc) {
+                        let others: Vec<&str> = group_titles
+                            .iter()
+                            .map(|t| t.as_str())
+                            .filter(|t| *t != game.title)
+                            .collect();
+                        if !others.is_empty() {
+                            game.variant_titles = Some(others.join("\u{1f}"));
+                        }
+                    }
                 }
             }
         }
@@ -761,6 +780,7 @@ mod tests {
             language: "EN".to_string(),
             shortcode: None,
             available_languages: None,
+            variant_titles: None,
             torrent_source: None,
             in_library: false,
             installed: false,
@@ -788,6 +808,40 @@ mod tests {
         assert_eq!(fetched.language, "EN");
         assert!(!fetched.installed);
         assert!(!fetched.favorited);
+    }
+
+    /// My Library filters already-loaded rows client-side, so the localized
+    /// titles have to travel with the merged row - otherwise searching the
+    /// German name works in Browse (SQL, across variants) and silently fails
+    /// on the library tab.
+    #[test]
+    fn merged_rows_carry_their_variant_titles() {
+        let conn = open_test_db();
+        let mut en = make_game("The 11th Hour");
+        en.shortcode = Some("11thHour".to_string());
+        let mut de = make_game("Die 11te Stunde");
+        de.language = "DE".to_string();
+        de.shortcode = Some("11thHour".to_string());
+        let mut es = make_game("La Undecima Hora");
+        es.language = "ES".to_string();
+        es.shortcode = Some("11thHour".to_string());
+        let solo = make_game("Bloxit");
+        insert_games(&conn, &[en, de, es, solo]).unwrap();
+
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
+        let games = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+
+        let merged = games.iter().find(|g| g.shortcode.as_deref() == Some("11thHour")).unwrap();
+        let titles = merged.variant_titles.as_deref().expect("merged row needs variant titles");
+        let parts: Vec<&str> = titles.split('\u{1f}').collect();
+        assert!(parts.contains(&"Die 11te Stunde"), "got {:?}", parts);
+        assert!(parts.contains(&"La Undecima Hora"), "got {:?}", parts);
+        assert!(!parts.contains(&"The 11th Hour"), "own title must not be repeated: {:?}", parts);
+
+        // A game with no siblings carries nothing - the field is a multi-language
+        // marker as much as a search aid.
+        let solo = games.iter().find(|g| g.title == "Bloxit").unwrap();
+        assert_eq!(solo.variant_titles, None);
     }
 
     #[test]

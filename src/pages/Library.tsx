@@ -23,6 +23,7 @@ import { PlaylistNameDialog } from "../components/PlaylistNameDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Select } from "../components/Select";
 import { showToast } from "../stores/toasts";
+import { matchesLibraryQuery } from "../util";
 
 type Tab = "library" | "browse";
 
@@ -374,15 +375,45 @@ export function Library() {
     refreshPlaylistShelves();
   });
 
+  // ── Search on My Library ────────────────────────────────────────────────
+  // The search box lives in the app's top bar and is visible on both tabs, but
+  // it only drove the Browse query - typing while on My Library did nothing.
+  // These shelves are already fully in memory, so the filter is a local title
+  // match instead of another round trip. Matching is on the merged card's own
+  // title; a localized variant title (the German name of an EN-titled card) is
+  // not searchable here, unlike Browse where the backend checks every variant.
+  const librarySearch = () => searchQuery().trim();
+  const filterShelf = (list: Game[]) => {
+    const q = librarySearch();
+    return q ? list.filter((g) => matchesLibraryQuery(g, q)) : list;
+  };
+
+  const shownRecent = createMemo(() => filterShelf(recentGames()));
+  const shownFavorites = createMemo(() => filterShelf(favoriteGames()));
+  const shownInstalled = createMemo(() => filterShelf(installedGames()));
+  const shownPlaylistGames = (playlistId: number) =>
+    filterShelf(playlistShelves().get(playlistId) ?? []);
+  /** Playlist shelves render even when empty (they carry the "add games" hint),
+   *  but a shelf with no search hits is noise - hide it while searching. */
+  const shownPlaylists = createMemo(() =>
+    librarySearch()
+      ? userPlaylists().filter((p) => shownPlaylistGames(p.id).length > 0)
+      : userPlaylists()
+  );
+  const libraryHasMatches = () =>
+    shownRecent().length > 0 || shownFavorites().length > 0
+    || shownInstalled().length > 0 || shownPlaylists().length > 0;
+
   // My Library jump bar: one entry per rendered shelf, playlist shelves
   // included - the shelf list can outgrow a screen, and scrolling past
-  // three fixed shelves to reach a playlist gets old fast.
+  // three fixed shelves to reach a playlist gets old fast. Tracks the
+  // search-filtered lists so it never points at a shelf that isn't there.
   const libraryShelves = createMemo<{ key: string; label: string }[]>(() => {
     const shelves: { key: string; label: string }[] = [];
-    if (recentGames().length > 0) { shelves.push({ key: "recent", label: "Recent" }); }
-    if (favoriteGames().length > 0) { shelves.push({ key: "favorites", label: "Favorites" }); }
-    if (installedGames().length > 0) { shelves.push({ key: "installed", label: "Installed" }); }
-    for (const p of userPlaylists()) {
+    if (shownRecent().length > 0) { shelves.push({ key: "recent", label: "Recent" }); }
+    if (shownFavorites().length > 0) { shelves.push({ key: "favorites", label: "Favorites" }); }
+    if (shownInstalled().length > 0) { shelves.push({ key: "installed", label: "Installed" }); }
+    for (const p of shownPlaylists()) {
       shelves.push({ key: `pl-${p.id}`, label: p.name });
     }
     return shelves;
@@ -675,55 +706,72 @@ export function Library() {
       <Show when={activeTab() === "library"}>
         <div class={`tab-pane tab-pane-${tabSlideDir()}`}>
         <Show
-          when={recentGames().length > 0 || favoriteGames().length > 0 || installedGames().length > 0 || userPlaylists().length > 0}
+          when={libraryHasMatches()}
           fallback={
-            <div class="lib-empty">
-              <div class="lib-empty-icon">🎮</div>
-              <div class="lib-empty-text">No games yet</div>
-              <div class="lib-empty-sub">Switch to Browse to find and download games</div>
-              <button class="lib-empty-btn" onClick={() => switchTab("browse")}>Browse games</button>
-            </div>
+            <Show
+              when={librarySearch()}
+              fallback={
+                <div class="lib-empty">
+                  <div class="lib-empty-icon">🎮</div>
+                  <div class="lib-empty-text">No games yet</div>
+                  <div class="lib-empty-sub">Switch to Browse to find and download games</div>
+                  <button class="lib-empty-btn" onClick={() => switchTab("browse")}>Browse games</button>
+                </div>
+              }
+            >
+              {/* Searching with no hits is a different situation from an empty
+                  library - offer the whole catalogue instead of "download
+                  something first". The query carries over to Browse. */}
+              <div class="lib-empty">
+                <div class="lib-empty-icon">🔍</div>
+                <div class="lib-empty-text">Nothing in your library matches "{searchQuery()}"</div>
+                <div class="lib-empty-sub">It may still be in the full collection</div>
+                <button class="lib-empty-btn" onClick={() => switchTab("browse")}>Search all games</button>
+              </div>
+            </Show>
           }
         >
-          <Show when={recentGames().length > 0}>
+          <Show when={shownRecent().length > 0}>
             <div class="library-section" data-shelf-key="recent">
-              <h2 class="section-title">Recently Played <span class="section-count">{recentGames().length}</span></h2>
+              <h2 class="section-title">Recently Played <span class="section-count">{shownRecent().length}</span></h2>
               <div class="game-grid">
-                <For each={recentGames()}>
+                <For each={shownRecent()}>
                   {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
                 </For>
               </div>
             </div>
           </Show>
 
-          <Show when={favoriteGames().length > 0}>
+          <Show when={shownFavorites().length > 0}>
             <div class="library-section" data-shelf-key="favorites">
-              <h2 class="section-title">Favorites <span class="section-count">{favoriteGames().length}</span></h2>
+              <h2 class="section-title">Favorites <span class="section-count">{shownFavorites().length}</span></h2>
               <div class="game-grid">
-                <For each={favoriteGames()}>
+                <For each={shownFavorites()}>
                   {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
                 </For>
               </div>
             </div>
           </Show>
 
-          <Show when={installedGames().length > 0}>
+          <Show when={shownInstalled().length > 0}>
             <div class="library-section" data-shelf-key="installed">
-              <h2 class="section-title">Installed <span class="section-count">{installedGames().length}</span></h2>
+              <h2 class="section-title">Installed <span class="section-count">{shownInstalled().length}</span></h2>
               <div class="game-grid">
-                <For each={installedGames()}>
+                <For each={shownInstalled()}>
                   {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} showFavoriteBtn={false} onDetail={setDetailGame} />}
                 </For>
               </div>
             </div>
           </Show>
 
-          <For each={userPlaylists()}>
+          <For each={shownPlaylists()}>
             {(playlist) => (
               <div class="library-section" data-shelf-key={`pl-${playlist.id}`}>
                 <h2 class="section-title">
                   {playlist.name}
-                  <span class="section-count">{playlist.game_count}</span>
+                  <span class="section-count">
+                    {librarySearch() ? shownPlaylistGames(playlist.id).length : playlist.game_count}
+                  </span>
                   <button
                     class="shelf-menu-btn"
                     title="Playlist options"
@@ -734,7 +782,7 @@ export function Library() {
                   >⋯</button>
                 </h2>
                 <Show
-                  when={(playlistShelves().get(playlist.id) ?? []).length > 0}
+                  when={shownPlaylistGames(playlist.id).length > 0}
                   fallback={
                     <div class="playlist-shelf-empty">
                       Right-click any game and choose "Add to playlist"
@@ -742,7 +790,7 @@ export function Library() {
                   }
                 >
                   <div class="game-grid">
-                    <For each={playlistShelves().get(playlist.id) ?? []}>
+                    <For each={shownPlaylistGames(playlist.id)}>
                       {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
                     </For>
                   </div>
