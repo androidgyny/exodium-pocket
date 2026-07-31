@@ -25,6 +25,7 @@ import {
 } from "./api/tauri";
 import { updateState, checkForAppUpdate, startUpdate, restartToUpdate } from "./stores/updater";
 import { fetchGames } from "./stores/games";
+import { applyNetworkMode, isOffline, loadNetworkMode } from "./stores/network";
 import { loadThumbnailDir } from "./stores/thumbnails";
 import { refreshInstalledPacks } from "./stores/contentPacks";
 import { showToast } from "./stores/toasts";
@@ -71,6 +72,24 @@ async function notifyCatalogUpdates() {
   }
 }
 
+/** Installs made before seeding became opt-in have no `seeding_enabled` key,
+ *  and used to seed anyway. The backend now treats "unset" as off, so pin the
+ *  choice explicitly and tell the user once - silently flipping a setting they
+ *  may have relied on (and silently uploading for the ones who didn't know)
+ *  are both worse than a one-time notice. */
+async function migrateSeedingToOptIn() {
+  try {
+    if ((await getConfig("seeding_enabled")) != null) { return; }
+    await setConfig("seeding_enabled", "0");
+    showToast("Sharing with other players (seeding) is now off", "info", {
+      detail: "Uploading game data is opt-in from this version on. Turn it back on in Settings → Network.",
+      durationMs: 12000,
+    });
+  } catch (e) {
+    console.warn("[settings] seeding opt-in migration failed:", e);
+  }
+}
+
 function App() {
   const [phase, setPhase] = createSignal<AppPhase>("loading");
   const [showSettings, setShowSettings] = createSignal(false);
@@ -111,6 +130,8 @@ function App() {
       const status = await getSetupStatus();
       if (status.ready) {
         setPhase("ready");
+        await loadNetworkMode();
+        await migrateSeedingToOptIn();
         try {
           await initDownloadManager();
         } catch (e) {
@@ -132,6 +153,7 @@ function App() {
 
   const handleSetupComplete = async () => {
     setPhase("ready");
+    await loadNetworkMode();
     const dir = await getConfig("data_dir");
     if (dir) { setDataDir(dir); }
     loadThumbnailDir();
@@ -182,7 +204,7 @@ function App() {
   const [crtAuto, setCrtAuto] = createSignal(true);
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
 
-  const [seeding, setSeeding] = createSignal(true);
+  const [seeding, setSeeding] = createSignal(false);
   const loadGameDefaults = async () => {
     try {
       const [shader, fs, seed] = await Promise.all([
@@ -192,7 +214,8 @@ function App() {
       ]);
       setCrtAuto(shader == null || shader === "crt-auto");
       setDefaultFullscreen(fs === "fullscreen");
-      setSeeding(seed !== "0");
+      // Opt-in: only an explicit "1" means sharing (mirrors the Rust side).
+      setSeeding(seed === "1");
     } catch (e) {
       console.warn("[settings] failed to load game defaults:", e);
     }
@@ -203,9 +226,36 @@ function App() {
   // when we flip the controlled `open` prop, so init logic there never ran.
   const openSettings = () => {
     loadGameDefaults();
+    loadNetworkMode();
     setLogOpenError("");
+    setModeError("");
     setSettingsTab("general");
     setShowSettings(true);
+  };
+
+  const [switchingMode, setSwitchingMode] = createSignal(false);
+  const [modeError, setModeError] = createSignal("");
+
+  /** Flipping this rebuilds the torrent state: going offline drops every
+   *  manager (which shuts the librqbit session down), going online creates a
+   *  fresh session and re-adopts any interrupted downloads. */
+  const handleToggleOnline = async (online: boolean) => {
+    setModeError("");
+    setSwitchingMode(true);
+    try {
+      const stopped = await applyNetworkMode(online ? "live" : "offline");
+      showToast(
+        online ? "Online mode - downloads enabled" : "Offline mode - torrent client stopped",
+        "info",
+        stopped > 0
+          ? { detail: `${stopped} download${stopped === 1 ? "" : "s"} paused - they resume when you go back online.` }
+          : {},
+      );
+    } catch (e) {
+      setModeError(`Could not switch mode: ${e}`);
+    } finally {
+      setSwitchingMode(false);
+    }
   };
 
   const handleToggleSeeding = async (next: boolean) => {
@@ -403,16 +453,34 @@ function App() {
 
                       <section class="settings-section">
                         <h3 class="settings-section-title">Network</h3>
-                        <p class="settings-section-hint">Games are downloaded from the eXoDOS BitTorrent swarm. While Exodium runs, it also uploads pieces you already have to other players.</p>
+                        <p class="settings-section-hint">Games are downloaded from the eXoDOS BitTorrent swarm. Both settings below are off by default - nothing is downloaded or uploaded until you ask for it.</p>
                         <label class="setting-toggle">
                           <input
                             type="checkbox"
-                            checked={seeding()}
+                            checked={!isOffline()}
+                            disabled={switchingMode()}
+                            onChange={(e) => handleToggleOnline(e.currentTarget.checked)}
+                          />
+                          <span class="setting-toggle-info">
+                            <span class="setting-toggle-label">Download games (torrent client)</span>
+                            <span class="setting-toggle-hint">Off means offline mode: the torrent client never starts and Exodium only launches games already on disk.</span>
+                          </span>
+                        </label>
+                        <Show when={modeError()}>
+                          <div class="setting-hint" style="margin-top:4px">{modeError()}</div>
+                        </Show>
+                        <label class="setting-toggle">
+                          <input
+                            type="checkbox"
+                            checked={seeding() && !isOffline()}
+                            disabled={isOffline()}
                             onChange={(e) => handleToggleSeeding(e.currentTarget.checked)}
                           />
                           <span class="setting-toggle-info">
                             <span class="setting-toggle-label">Share with other players (seeding)</span>
-                            <span class="setting-toggle-hint">Keeps the collection alive for everyone. Turning this off caps upload at 1 KB/s.</span>
+                            <span class="setting-toggle-hint">
+                              Uploads parts of the games you have to other users while Exodium runs. Keeps the collection alive - but distributing game files carries legal risk in some countries. Off caps upload at 1 KB/s.
+                            </span>
                           </span>
                         </label>
                       </section>

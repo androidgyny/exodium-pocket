@@ -393,7 +393,26 @@ async fn do_install_full(
         }
     }
 
-    if pack_info.torrent_file_path.is_some() {
+    // Offline mode has no torrent session, so a torrent-sourced pack has to
+    // fall back to its HTTP mirror - and say so plainly when there is none,
+    // instead of failing later with "no torrent manager for collection".
+    let offline = {
+        use tauri::Manager;
+        let db: State<DbState> = app_handle.state();
+        crate::commands::setup::is_offline(&db.0)
+    };
+    let http_usable = !pack_info.url.is_empty()
+        && !pack_info.url.starts_with("TODO")
+        && !pack_info.sha256.starts_with("TODO");
+    if offline && pack_info.torrent_file_path.is_some() && !http_usable {
+        return Err(format!(
+            "Offline mode is on - '{}' is only available over the torrent. \
+             Switch to online mode in Settings → Network.",
+            pack_info.display_name
+        ));
+    }
+
+    if pack_info.torrent_file_path.is_some() && !offline {
         do_install_torrent(jobs, app_handle, data_dir, collection, pack_info, key, cancel).await
     } else {
         do_install(jobs, data_dir, pack_info, key, cancel).await

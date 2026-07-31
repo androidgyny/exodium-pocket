@@ -327,6 +327,19 @@ export function stopGameDownloadTracking(gameId: number) {
   });
 }
 
+/** Stop tracking every in-flight download and report how many there were.
+ *  Going offline drops the torrent managers, after which `getDownloadProgress`
+ *  returns null forever - the poll loop would read that as the silent-stuck
+ *  bug and label a perfectly healthy download "Download didn't start". The
+ *  torrent selection stays in the DB, so switching back online resumes it. */
+export function stopAllDownloadTracking(): number {
+  const active = Object.keys(downloads()).map(Number).filter((id) => downloads()[id]?.downloading);
+  for (const id of active) {
+    stopGameDownloadTracking(id);
+  }
+  return active.length;
+}
+
 /** Restart-resume for the extras phase: an installed game whose GameData
  *  was still downloading when the app quit resumes invisibly (librqbit
  *  session restore) - poll it so the phase stays visible and the completion

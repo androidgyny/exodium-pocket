@@ -1163,6 +1163,12 @@ body {
   color: var(--text-muted);
 }
 
+/* Offline mode: no download affordance, just a state label. */
+.action-offline {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
 .card-cancel-btn {
   background: none;
   border: none;
@@ -2538,10 +2544,16 @@ body {
   gap: 6px;
 }
 
-.game-detail-btn:disabled,
-.lang-picker-btn:disabled {
+.game-detail-btn:disabled {
   cursor: default;
   opacity: 0.75;
+}
+
+/* Offline mode stand-in for the download button - a label, not an action. */
+.game-detail-btn.btn-offline {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  cursor: default;
 }
 
 /* Inline button spinner - used for "Starting…" and similar in-flight states.

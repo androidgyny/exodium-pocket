@@ -74,6 +74,47 @@ pub fn collection_def(id: &str) -> Option<&'static CollectionDef> {
     COLLECTION_MAP.iter().find(|c| c.id == id)
 }
 
+/// Config value of `network_mode` that keeps the torrent engine shut down.
+pub(crate) const OFFLINE_MODE: &str = "offline";
+
+/// True when the user picked "offline" during setup (or later in Settings):
+/// no librqbit session is created, nothing is downloaded, nothing is shared.
+/// A missing key means "live" so installs from before this setting keep
+/// behaving as they did.
+pub(crate) fn is_offline(db: &std::sync::Mutex<rusqlite::Connection>) -> bool {
+    db.lock()
+        .ok()
+        .and_then(|conn| queries::get_config(&conn, "network_mode").ok().flatten())
+        .as_deref()
+        == Some(OFFLINE_MODE)
+}
+
+/// Sharing is opt-in: only an explicit "1" counts. Split out from
+/// `apply_seeding_preference` so the rule can be tested without a session.
+pub(crate) fn seeding_enabled(db: &std::sync::Mutex<rusqlite::Connection>) -> bool {
+    db.lock()
+        .ok()
+        .and_then(|conn| queries::get_config(&conn, "seeding_enabled").ok().flatten())
+        .as_deref()
+        == Some("1")
+}
+
+/// Extract the bundled emulator configs for every enabled collection. This is
+/// all `init_download_manager` does in offline mode, so it is the whole offline
+/// path in one testable place.
+fn extract_all_bundled_configs(
+    collections: &[&str],
+    metadata_dir: Option<&PathBuf>,
+    data_path: &Path,
+) {
+    for col in COLLECTION_MAP {
+        if !collections.contains(&col.id) {
+            continue;
+        }
+        extract_bundled_configs(col, metadata_dir, &data_path.join(col.inner_folder));
+    }
+}
+
 /// Serialisable summary returned by the `get_available_collections` command.
 #[derive(Debug, Serialize)]
 pub struct CollectionInfo {
@@ -298,6 +339,17 @@ pub async fn init_download_manager(
 
     let metadata_dir = bundled_metadata_dir().ok();
 
+    // Offline mode: no session, no torrents, no swarm traffic - the app is a
+    // launcher for whatever is already on disk. Bundled emulator configs are
+    // still extracted; they are shipped with Exodium, not with the torrent.
+    // Managers were cleared above, so a live -> offline switch at runtime
+    // drops the last Arc to the session and shuts librqbit down.
+    if is_offline(&db_state.0) {
+        extract_all_bundled_configs(&collections, metadata_dir.as_ref(), &data_path);
+        log::info!("Offline mode: torrent engine not started (data_dir: {})", data_dir);
+        return Ok(false);
+    }
+
     // All collections share one librqbit session and the same data directory.
     // Session state (.librqbit/) is stored in the app config dir, not the game data dir.
     let config_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -348,37 +400,7 @@ pub async fn init_download_manager(
                         Err(e) => log::warn!("Failed to compute infohash for {}: {}", col.id, e),
                     }
 
-                    // Extract bundled emulator configs if available
-                    if let Some(cfg_zip) = col.configs_zip {
-                        if let Some(ref md) = metadata_dir {
-                            let cfg_path = md.join(cfg_zip);
-                            let torrent_root = mgr.torrent_root();
-                            if cfg_path.exists() {
-                                let lock = torrent_root.join(format!(".{}_configs_extracted", col.id));
-                                if !lock.exists() {
-                                    log::info!("Extracting {} configs to {}", col.id, torrent_root.display());
-                                    // Write the lock ONLY on success - latching a
-                                    // failed extract (disk full, permissions) left
-                                    // the configs permanently missing with no retry.
-                                    let extracted = std::fs::File::open(&cfg_path)
-                                        .map_err(|e| e.to_string())
-                                        .and_then(|f| zip::ZipArchive::new(f).map_err(|e| e.to_string()))
-                                        .and_then(|mut a| a.extract(&torrent_root).map_err(|e| e.to_string()));
-                                    match extracted {
-                                        Ok(()) => {
-                                            if let Err(e) = std::fs::write(&lock, "") {
-                                                log::warn!("Could not write configs lock for {}: {}", col.id, e);
-                                            }
-                                        }
-                                        Err(e) => log::error!(
-                                            "Failed to extract {} configs (will retry next startup): {}",
-                                            col.id, e
-                                        ),
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    extract_bundled_configs(col, metadata_dir.as_ref(), &mgr.torrent_root());
                     log::info!("Initialized download manager: {}", col.id);
                     new_managers.push((col.id.to_string(), Arc::new(mgr)));
                 }
@@ -420,17 +442,49 @@ pub async fn init_download_manager(
     Ok(count > 0)
 }
 
+/// Extract a collection's bundled emulator-config ZIP into the torrent root,
+/// once (a lock file marks success). Called for every enabled collection in
+/// BOTH network modes - an offline install still needs the DOSBox configs
+/// that would otherwise arrive with the torrent.
+fn extract_bundled_configs(col: &CollectionDef, metadata_dir: Option<&PathBuf>, torrent_root: &Path) {
+    let (Some(cfg_zip), Some(md)) = (col.configs_zip, metadata_dir) else {
+        return;
+    };
+    let cfg_path = md.join(cfg_zip);
+    if !cfg_path.exists() {
+        return;
+    }
+    let lock = torrent_root.join(format!(".{}_configs_extracted", col.id));
+    if lock.exists() {
+        return;
+    }
+    log::info!("Extracting {} configs to {}", col.id, torrent_root.display());
+    // Write the lock ONLY on success - latching a failed extract (disk full,
+    // permissions) left the configs permanently missing with no retry.
+    let extracted = std::fs::File::open(&cfg_path)
+        .map_err(|e| e.to_string())
+        .and_then(|f| zip::ZipArchive::new(f).map_err(|e| e.to_string()))
+        .and_then(|mut a| a.extract(torrent_root).map_err(|e| e.to_string()));
+    match extracted {
+        Ok(()) => {
+            if let Err(e) = std::fs::write(&lock, "") {
+                log::warn!("Could not write configs lock for {}: {}", col.id, e);
+            }
+        }
+        Err(e) => log::error!(
+            "Failed to extract {} configs (will retry next startup): {}",
+            col.id, e
+        ),
+    }
+}
+
 /// Apply the persisted seeding preference to a freshly created session.
-/// Default is seeding ON (keeps the eXoDOS swarm healthy); "0" caps upload
-/// at 1 KB/s - see DownloadManager::set_seeding.
+/// Sharing is OPT-IN: only an explicit "1" lifts the upload cap, anything
+/// else (including an unset key) caps upload at 1 KB/s - see
+/// DownloadManager::set_seeding. Uploading copyrighted material is a legal
+/// risk in some jurisdictions, so it must never start without consent.
 fn apply_seeding_preference(session: &Arc<librqbit::Session>, db_state: &State<'_, DbState>) {
-    let enabled = db_state
-        .0
-        .lock()
-        .ok()
-        .and_then(|conn| queries::get_config(&conn, "seeding_enabled").ok().flatten())
-        .as_deref()
-        != Some("0");
+    let enabled = seeding_enabled(&db_state.0);
     if !enabled {
         session
             .ratelimits
@@ -1609,25 +1663,43 @@ pub async fn setup_from_local(
     let collection_ids: Vec<&str> = COLLECTION_MAP.iter().map(|c| c.id).collect();
     seed_fastresume_bitvs(&persistence_dir, &collection_ids, &data_path);
 
-    let session = DownloadManager::create_session(&config_dir, &persistence_dir)
-        .await
-        .map_err(|e| format!("Failed to init session: {}", e))?;
-    evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
-    apply_seeding_preference(&session, &db_state);
-
-    let mut new_managers = Vec::new();
+    // The torrent file lists are needed in BOTH network modes: the LP backfill
+    // below wires game_torrent_index from them, and an offline user who later
+    // switches to live must find those indices already populated.
+    let mut torrent_indices: Vec<(String, TorrentIndex)> = Vec::new();
     for col in COLLECTION_MAP {
         if let Ok(col_torrent_path) = bundled_torrent_path(col.torrent_file) {
-            match DownloadManager::new_with_session(Arc::clone(&session), &col_torrent_path, &data_path, &persistence_dir) {
-                Ok(mgr) => new_managers.push((col.id.to_string(), Arc::new(mgr))),
-                Err(e) => log::warn!("Failed to init {} download manager: {}", col.id, e),
+            match TorrentIndex::from_file(&col_torrent_path) {
+                Ok(idx) => torrent_indices.push((col.id.to_string(), idx)),
+                Err(e) => log::warn!("Failed to parse {} torrent: {}", col.id, e),
             }
         }
     }
-    set_union_cleanup_keep_paths(&new_managers);
-    for (id, mgr) in &new_managers {
-        if mgr.hydrate_from_session().await {
-            log::info!("{}: adopted persisted torrent from session", id);
+
+    let offline = is_offline(&db_state.0);
+    let mut new_managers = Vec::new();
+    if offline {
+        log::info!("Offline mode: importing local collection without starting the torrent engine");
+    } else {
+        let session = DownloadManager::create_session(&config_dir, &persistence_dir)
+            .await
+            .map_err(|e| format!("Failed to init session: {}", e))?;
+        evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
+        apply_seeding_preference(&session, &db_state);
+
+        for col in COLLECTION_MAP {
+            if let Ok(col_torrent_path) = bundled_torrent_path(col.torrent_file) {
+                match DownloadManager::new_with_session(Arc::clone(&session), &col_torrent_path, &data_path, &persistence_dir) {
+                    Ok(mgr) => new_managers.push((col.id.to_string(), Arc::new(mgr))),
+                    Err(e) => log::warn!("Failed to init {} download manager: {}", col.id, e),
+                }
+            }
+        }
+        set_union_cleanup_keep_paths(&new_managers);
+        for (id, mgr) in &new_managers {
+            if mgr.hydrate_from_session().await {
+                log::info!("{}: adopted persisted torrent from session", id);
+            }
         }
     }
 
@@ -1637,7 +1709,7 @@ pub async fn setup_from_local(
     // whichever collections are missing and then run match_torrent_indices to wire up
     // torrent_source / game_torrent_index.
     if let Ok(metadata_dir) = bundled_metadata_dir() {
-        for (col_id, manager) in &new_managers {
+        for (col_id, torrent_index) in &torrent_indices {
             let col = match collection_def(col_id) {
                 Some(c) => c,
                 None => continue,
@@ -1677,10 +1749,9 @@ pub async fn setup_from_local(
 
             if imported > 0 {
                 // Wire up game_torrent_index and torrent_source for the newly imported rows.
-                let torrent_index = manager.index().clone();
                 let col_id_owned = col_id.clone();
                 let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-                if let Err(e) = match_torrent_indices(&conn, &torrent_index, &col_id_owned) {
+                if let Err(e) = match_torrent_indices(&conn, torrent_index, &col_id_owned) {
                     log::warn!("match_torrent_indices failed for {}: {}", col_id_owned, e);
                 }
             }
@@ -2157,3 +2228,97 @@ fn bundled_torrent_path(filename: &str) -> Result<PathBuf, String> {
         dev_path.display()
     ))
 }
+
+#[cfg(test)]
+mod network_mode_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    fn db_with(pairs: &[(&str, &str)]) -> Mutex<rusqlite::Connection> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        for (k, v) in pairs {
+            queries::set_config(&conn, k, v).unwrap();
+        }
+        Mutex::new(conn)
+    }
+
+    #[test]
+    fn missing_network_mode_means_live() {
+        // Installs from before the setting exists must keep downloading.
+        assert!(!is_offline(&db_with(&[])));
+    }
+
+    #[test]
+    fn only_the_exact_offline_value_disables_the_engine() {
+        assert!(is_offline(&db_with(&[("network_mode", "offline")])));
+        assert!(!is_offline(&db_with(&[("network_mode", "live")])));
+        assert!(!is_offline(&db_with(&[("network_mode", "")])));
+        assert!(!is_offline(&db_with(&[("network_mode", "Offline")])));
+    }
+
+    /// Sharing uploads copyrighted data, so anything short of an explicit yes
+    /// has to read as no - including the unset key of an older install.
+    #[test]
+    fn seeding_requires_an_explicit_yes() {
+        assert!(seeding_enabled(&db_with(&[("seeding_enabled", "1")])));
+        assert!(!seeding_enabled(&db_with(&[])));
+        assert!(!seeding_enabled(&db_with(&[("seeding_enabled", "0")])));
+        assert!(!seeding_enabled(&db_with(&[("seeding_enabled", "true")])));
+    }
+
+    /// The offline branch of init_download_manager is exactly this call, and
+    /// the import flow depends on it: an offline install still needs eXo's
+    /// DOSBox configs, which normally arrive with the torrent.
+    #[test]
+    fn offline_still_extracts_bundled_configs() {
+        let dir = std::env::temp_dir().join(format!("exodium_offline_cfg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let meta = dir.join("metadata");
+        std::fs::create_dir_all(&meta).unwrap();
+
+        // A stand-in for eXoDOS_configs.zip carrying one config file.
+        let zip_path = meta.join("eXoDOS_configs.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            zip.start_file::<_, ()>("eXo/eXoDOS/!dos/TEST/dosbox.conf", Default::default()).unwrap();
+            use std::io::Write;
+            zip.write_all(b"[sdl]\nfullscreen=false\n").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let data = dir.join("data");
+        extract_all_bundled_configs(&["eXoDOS"], Some(&meta), &data);
+
+        let extracted = data.join("eXoDOS").join("eXo/eXoDOS/!dos/TEST/dosbox.conf");
+        assert!(extracted.is_file(), "configs must land even with no torrent session");
+        assert!(data.join("eXoDOS").join(".eXoDOS_configs_extracted").is_file(),
+                "lock file marks the extraction as done");
+
+        // Second call is a no-op thanks to the lock: delete the payload and
+        // confirm nothing restores it.
+        std::fs::remove_file(&extracted).unwrap();
+        extract_all_bundled_configs(&["eXoDOS"], Some(&meta), &data);
+        assert!(!extracted.exists(), "lock file must prevent a re-extract");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Collections the user did not enable must be skipped entirely.
+    #[test]
+    fn disabled_collections_are_not_extracted() {
+        let dir = std::env::temp_dir().join(format!("exodium_offline_skip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let meta = dir.join("metadata");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("eXoDOS_configs.zip"), b"not a zip").unwrap();
+
+        let data = dir.join("data");
+        extract_all_bundled_configs(&["eXoDOS_GLP"], Some(&meta), &data);
+
+        assert!(!data.join("eXoDOS").join(".eXoDOS_configs_extracted").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+

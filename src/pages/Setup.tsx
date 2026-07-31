@@ -10,12 +10,18 @@ import {
   initDownloadManager,
   type ExodosValidation,
 } from "../api/tauri";
+import type { NetworkMode } from "../stores/network";
 
 interface SetupProps {
   onComplete: () => void;
 }
 
-type Phase = "mode" | "scratch" | "import" | "importing" | "starting";
+type Phase = "mode" | "scratch" | "import" | "network" | "importing" | "starting";
+
+/** Which route the user took to get to the network step - it decides whether
+ *  "offline" is even on the table (a from-scratch install has nothing to play
+ *  without downloading it first). */
+type Source = "scratch" | "import";
 
 const IconDownload = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -46,6 +52,13 @@ export function Setup(props: SetupProps) {
   const [exodosDir, setExodosDir] = createSignal("");
   const [validation, setValidation] = createSignal<ExodosValidation | null>(null);
   const [validating, setValidating] = createSignal(false);
+
+  // "network" phase state. The seeding box is pre-checked - sharing keeps the
+  // swarm alive - but it is shown with its implications spelled out and can be
+  // unchecked before setup finishes, so nobody uploads without having seen it.
+  const [source, setSource] = createSignal<Source>("scratch");
+  const [netMode, setNetMode] = createSignal<NetworkMode>("live");
+  const [seeding, setSeeding] = createSignal(true);
 
   onMount(async () => {
     try {
@@ -82,9 +95,35 @@ export function Setup(props: SetupProps) {
     }
   };
 
-  const handleScratchContinue = async () => {
-    if (!dataDir()) { return; }
+  /** Both routes converge here: the network answers must be persisted before
+   *  any backend call that might spin up a torrent session, because that is
+   *  where Rust reads them (same invariant as `collections`). */
+  const goToNetwork = (from: Source) => {
+    setSource(from);
+    setNetMode("live");
     setError("");
+    setPhase("network");
+  };
+
+  const handleNetworkContinue = async () => {
+    setError("");
+    const offline = netMode() === "offline";
+    try {
+      await setConfig("network_mode", offline ? "offline" : "live");
+      await setConfig("seeding_enabled", !offline && seeding() ? "1" : "0");
+    } catch (e) {
+      setError(`Failed to save network settings: ${e}`);
+      return;
+    }
+    if (source() === "scratch") {
+      await runScratchSetup();
+    } else {
+      await runImport();
+    }
+  };
+
+  const runScratchSetup = async () => {
+    if (!dataDir()) { return; }
     setPhase("starting");
     try {
       const available = await getAvailableCollections();
@@ -95,23 +134,23 @@ export function Setup(props: SetupProps) {
       props.onComplete();
     } catch (e) {
       setError(`Failed to initialize: ${e}`);
-      setPhase("scratch");
+      setPhase("network");
     }
   };
 
-  const handleImport = async () => {
+  const runImport = async () => {
     if (!exodosDir() || !validation()?.valid) { return; }
     setPhase("importing");
-    setError("");
     try {
       await setupFromLocal(exodosDir());
       // Re-initialize download managers via the standard path so DOSBox configs
-      // are extracted and all collections get a robust manager setup.
+      // are extracted and all collections get a robust manager setup. In
+      // offline mode this only extracts the configs - no session is created.
       await initDownloadManager();
       props.onComplete();
     } catch (e) {
       setError(`Import failed: ${e}`);
-      setPhase("import");
+      setPhase("network");
     }
   };
 
@@ -164,16 +203,15 @@ export function Setup(props: SetupProps) {
             </Show>
           </div>
           <p class="setup-note">
-            Games are downloaded from the eXoDOS BitTorrent network. While
-            Exodium runs, it also shares pieces you already have with other
-            players - you can turn this off later in Settings → Network.
+            Games are downloaded from the eXoDOS BitTorrent network, one at a
+            time, only when you ask for them.
           </p>
           <div class="setup-actions" style="margin-top:20px">
             <div style="display:flex;gap:8px">
               <button class="btn-secondary" onClick={() => setPhase("mode")}>
                 <IconBack /> Back
               </button>
-              <button class="btn-primary" style="flex:1" onClick={handleScratchContinue} disabled={!dataDir()}>
+              <button class="btn-primary" style="flex:1" onClick={() => goToNetwork("scratch")} disabled={!dataDir()}>
                 Continue
               </button>
             </div>
@@ -206,10 +244,75 @@ export function Setup(props: SetupProps) {
               <button
                 class="btn-primary"
                 style="flex:1"
-                onClick={handleImport}
+                onClick={() => goToNetwork("import")}
                 disabled={!validation()?.valid}
               >
-                Import
+                Continue
+              </button>
+            </div>
+          </div>
+        </Show>
+
+        {/* ── Network mode + seeding consent ── */}
+        <Show when={phase() === "network"}>
+          <p class="setup-subtitle">How should Exodium use the network?</p>
+
+          {/* Offline only makes sense with games already on disk, so it is
+              offered on the import route only. */}
+          <Show when={source() === "import"}>
+            <div class="setup-mode-grid">
+              <button
+                class={`setup-mode-btn${netMode() === "live" ? " is-selected" : ""}`}
+                onClick={() => setNetMode("live")}
+              >
+                <span class="setup-mode-title">Online</span>
+                <span class="setup-mode-desc">
+                  Download games you don't have yet from the eXoDOS torrents.
+                </span>
+              </button>
+              <button
+                class={`setup-mode-btn${netMode() === "offline" ? " is-selected" : ""}`}
+                onClick={() => setNetMode("offline")}
+              >
+                <span class="setup-mode-title">Offline</span>
+                <span class="setup-mode-desc">
+                  Launcher only. No torrent client is started and nothing is
+                  downloaded or shared.
+                </span>
+              </button>
+            </div>
+          </Show>
+
+          <Show when={netMode() === "live"}>
+            <label class="setting-toggle" style="margin-top:16px">
+              <input
+                type="checkbox"
+                checked={seeding()}
+                onChange={(e) => setSeeding(e.currentTarget.checked)}
+              />
+              <span class="setting-toggle-info">
+                <span class="setting-toggle-label">Share my downloads with other players (seeding)</span>
+                <span class="setting-toggle-hint">
+                  While Exodium runs, it uploads parts of the games you have to
+                  other users. That keeps the collection alive - but it also
+                  means you are distributing the files, which is a legal risk in
+                  some countries. Off by default.
+                </span>
+              </span>
+            </label>
+          </Show>
+
+          <p class="setup-note">
+            Both settings can be changed any time in Settings → Network.
+          </p>
+
+          <div class="setup-actions" style="margin-top:20px">
+            <div style="display:flex;gap:8px">
+              <button class="btn-secondary" onClick={() => setPhase(source())}>
+                <IconBack /> Back
+              </button>
+              <button class="btn-primary" style="flex:1" onClick={handleNetworkContinue}>
+                {source() === "import" ? "Import" : "Continue"}
               </button>
             </div>
           </div>

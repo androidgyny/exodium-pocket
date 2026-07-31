@@ -281,7 +281,15 @@ pub async fn download_game(
         let manager = guard
             .get(source)
             .cloned()
-            .ok_or_else(|| format!("Download manager for '{}' not initialized.", source))?;
+            .ok_or_else(|| {
+                if crate::commands::setup::is_offline(&db_state.0) {
+                    "Offline mode is on - no games can be downloaded. \
+                     Switch to online mode in Settings → Network."
+                        .to_string()
+                } else {
+                    format!("Download manager for '{}' not initialized.", source)
+                }
+            })?;
         let main_mgr = guard.get("eXoDOS").cloned();
         (manager, main_mgr)
     };
