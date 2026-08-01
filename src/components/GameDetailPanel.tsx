@@ -15,6 +15,7 @@ import { downloads, startGameDownload, getDownloadState, cancelGameDownload, wat
 import { loadGameMetadata } from "../stores/metadata";
 import { isOffline } from "../stores/network";
 import { loadVariants } from "../stores/variants";
+import { videos, requestVideo, releaseVideo, setForegroundVideo, getVideoState, PHASE_QUEUED, PHASE_PROBING } from "../stores/videos";
 
 interface Props {
   game: Game | null;
@@ -44,9 +45,17 @@ export function GameDetailPanel(props: Props) {
   const [brokenImages, setBrokenImages] = createSignal(new Set<number>());
   const [lightboxOpen, setLightboxOpen] = createSignal(false);
   const [lightboxStart, setLightboxStart] = createSignal(0);
+  /** The lightbox lists the preview video as entry 0 when there is one, so an
+   *  index into the screenshot array has to be shifted to match. */
+  const lightboxIndexOfImage = (imageIndex: number) => (videoSrc() ? imageIndex + 1 : imageIndex);
   const [manualOpen, setManualOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [playlistMenu, setPlaylistMenu] = createSignal<{x: number, y: number} | null>(null);
+  // Preview video. Fetching starts on open (see the effect below); this is only
+  // the playback state - the video takes over the hero while it plays and hands
+  // the cover back when it ends.
+  const [videoPlaying, setVideoPlaying] = createSignal(false);
+  let heroVideoRef: HTMLVideoElement | undefined;
   const openPlaylistMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
     const rect = e.currentTarget.getBoundingClientRect();
     setPlaylistMenu({ x: rect.left, y: rect.bottom + 4 });
@@ -170,6 +179,7 @@ export function GameDetailPanel(props: Props) {
     setLightboxOpen(false);
     setManualOpen(false);
     setSelectedId(g.id ?? null);
+    setVideoPlaying(false);
     // Force a metadata refetch: the cache key below would otherwise match the
     // previous visit to this same game and leave the panel with the null
     // metadata this reset just wrote (no screenshots, no manual).
@@ -268,6 +278,84 @@ export function GameDetailPanel(props: Props) {
   const handleDownload = (gameId: number, title?: string) => {
     startGameDownload(gameId, title ?? props.game?.title);
   };
+
+  // ── Preview video ──────────────────────────────────────────────────────
+  const videoState = () => {
+    const id = selected()?.id;
+    videos(); // subscribe
+    return id != null ? getVideoState(id) : undefined;
+  };
+  const videoReady = () => videoState()?.phase === "ready" && !!videoState()?.path;
+  // Finding out whether a game has a video means reading the archive index over
+  // the torrent, which can take tens of seconds. Staying silent through that
+  // just looks broken, so each stage says what it is - including the negative
+  // answer, which then fades out rather than lingering.
+  const videoConfirmed = () => (videoState()?.total_bytes ?? 0) > 0;
+  const videoProbing = () => videoState()?.phase === PHASE_PROBING;
+  const videoFetching = () => videoState()?.phase === "fetching" && videoConfirmed();
+  const videoQueued = () => videoState()?.phase === PHASE_QUEUED;
+  const videoFailed = () => videoState()?.phase === "error";
+
+  // "No video" is shown briefly and then disappears - it is closure, not a
+  // permanent label on the game.
+  const [showNoVideo, setShowNoVideo] = createSignal(false);
+  createEffect(() => {
+    if (videoState()?.phase !== "none") { return; }
+    // Offline reports "none" because nothing can be fetched, which is not the
+    // same statement as "this game has no video" - so say nothing at all.
+    if (isOffline()) { return; }
+    setShowNoVideo(true);
+    const timer = window.setTimeout(() => setShowNoVideo(false), 2600);
+    onCleanup(() => clearTimeout(timer));
+  });
+  const videoSrc = () => {
+    const p = videoState()?.path;
+    return p ? convertFileSrc(p) : null;
+  };
+
+  // Start the fetch a beat after the panel settles on a game. The delay is the
+  // point: clicking through the grid would otherwise queue a torrent read per
+  // card, and each one can pull tens of megabytes.
+  createEffect(() => {
+    const id = selected()?.id;
+    if (id == null) { return; }
+    setForegroundVideo(id);
+    const timer = window.setTimeout(() => requestVideo(id), 400);
+    onCleanup(() => {
+      // Only the not-yet-started fetch is dropped. One that is already running
+      // keeps going in the background so the video is simply there next time.
+      clearTimeout(timer);
+      releaseVideo(id);
+    });
+  });
+
+  // Autoplay as soon as it lands, muted - a preview that demands a click is
+  // barely better than no preview, and unmuted autoplay is a good way to make
+  // someone close the app.
+  createEffect(() => {
+    if (!videoReady()) { return; }
+    // Deferred: the <video> mounts from the same signal change, so the ref is
+    // not assigned yet while this effect body runs.
+    queueMicrotask(() => {
+      const el = heroVideoRef;
+      if (!el) { return; }
+      try {
+        el.currentTime = 0;
+        const started = el.play();
+        // Older WebKit returns undefined here instead of a promise. Calling
+        // .then on that throws INSIDE the effect, and Solid propagates the
+        // exception back to whoever set the signal - which made the video
+        // store record a fetch error for a video that had arrived fine.
+        if (started && typeof started.then === "function") {
+          started.then(() => setVideoPlaying(true)).catch(() => setVideoPlaying(false));
+        } else {
+          setVideoPlaying(true);
+        }
+      } catch {
+        setVideoPlaying(false);
+      }
+    });
+  });
 
   const handleManualClick = async () => {
     if (metadata()?.manual_path) {
@@ -416,18 +504,76 @@ export function GameDetailPanel(props: Props) {
 
           {/* Hero: thumbnail + title */}
           <div class="game-detail-hero">
+            <div class="game-detail-hero-art">
             <Show when={thumbSrc() && !imgError()}>
               <img
-                class="game-detail-thumb"
+                class={`game-detail-thumb${videoPlaying() ? " is-behind-video" : ""}`}
                 src={thumbSrc()!}
                 alt=""
                 onError={() => setImgError(true)}
-                onClick={() => { setLightboxStart(0); setLightboxOpen(true); }}
+                onClick={() => { setLightboxStart(lightboxIndexOfImage(0)); setLightboxOpen(true); }}
               />
             </Show>
             <Show when={!thumbSrc() || imgError()}>
               <div class="game-detail-thumb-placeholder" />
             </Show>
+
+            {/* The preview takes the cover's place while it runs, then fades
+                back out - it stays reachable in the lightbox afterwards. */}
+            <Show when={videoSrc()}>
+              <video
+                ref={heroVideoRef}
+                class={`game-detail-hero-video${videoPlaying() ? " is-visible" : ""}`}
+                src={videoSrc()!}
+                muted
+                playsinline
+                preload="auto"
+                onEnded={() => setVideoPlaying(false)}
+                onPause={() => setVideoPlaying(false)}
+                onPlay={() => setVideoPlaying(true)}
+                onClick={() => { setLightboxStart(0); setLightboxOpen(true); }}
+              />
+            </Show>
+
+            {/* Status while the bytes are still coming over the torrent. */}
+            <Show when={videoProbing() || videoFetching() || videoQueued()}>
+              <div class="game-detail-video-status">
+                <span class="btn-spinner" />
+                <Show when={videoQueued()} fallback={
+                  <Show when={videoConfirmed()} fallback={<>Looking for a video…</>}>
+                    Loading video {Math.round((videoState()?.progress ?? 0) * 100)}%
+                  </Show>
+                }>
+                  Video queued…
+                </Show>
+              </div>
+            </Show>
+
+            {/* The negative answer, shown long enough to read and then gone. */}
+            <Show when={showNoVideo()}>
+              <div class="game-detail-video-status is-fading-out">No video for this game</div>
+            </Show>
+
+            {/* A failed fetch must not look like "this game has no video" -
+                a stalled torrent read is worth retrying, a missing video is not. */}
+            <Show when={videoFailed()}>
+              <button
+                class="game-detail-video-status game-detail-video-retry"
+                title={videoState()?.error ?? undefined}
+                onClick={() => { const id = selected()?.id; if (id != null) { requestVideo(id); } }}
+              >↻ Video retry</button>
+            </Show>
+
+            {/* Replay control once it has run its course. */}
+            <Show when={videoReady() && !videoPlaying()}>
+              <button
+                class="game-detail-video-replay"
+                title="Play the preview again"
+                onClick={() => heroVideoRef?.play()}
+              >▶</button>
+            </Show>
+            </div>
+
             <div class="game-detail-hero-info">
               <div class="game-detail-title">{selected()?.title ?? props.game!.title}</div>
               <div class="game-detail-chips">
@@ -677,7 +823,7 @@ export function GameDetailPanel(props: Props) {
                               alt=""
                               onClick={() => {
                                 const vi = visible().indexOf(path);
-                                setLightboxStart(vi >= 0 ? vi : 0);
+                                setLightboxStart(lightboxIndexOfImage(vi >= 0 ? vi : 0));
                                 setLightboxOpen(true);
                               }}
                               onError={() => setBrokenImages((prev) => new Set(prev).add(i()))}
@@ -695,6 +841,7 @@ export function GameDetailPanel(props: Props) {
         </div>
 
         <Lightbox
+          video={videoSrc()}
           images={(() => {
             const filtered = (metadata()?.images ?? []).filter((_, i) => !brokenImages().has(i));
             if (filtered.length > 0) { return filtered; }

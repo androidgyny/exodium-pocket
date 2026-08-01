@@ -49,6 +49,10 @@ function makeGame(over: Partial<Game> = {}): Game {
 }
 
 const EMPTY_META = { manual_path: null, manual_kind: null, images: [], thumbnails: [] };
+const VIDEO_READY = {
+  phase: "ready", progress: 1, total_bytes: 2_000_000,
+  path: "/data/content/videocache/eXoDOS_1.mp4", error: null,
+};
 
 /** Render into a detached container and return it plus a disposer. Solid's
  *  render() flushes effects, so anything that throws at effect time (a helper
@@ -71,7 +75,33 @@ describe("GameDetailPanel", () => {
     });
   });
 
-  afterEach(() => { document.body.innerHTML = ""; });
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.useRealTimers();
+  });
+
+  // The panel asks for a video 400ms after settling on a game, then plays it
+  // in place of the cover. Reproduces "no video plays at all".
+  it("shows the preview video once the backend reports it ready", async () => {
+    vi.useFakeTimers();
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "get_game_metadata") { return EMPTY_META; }
+      if (cmd === "get_game_variants") { return []; }
+      if (cmd === "start_game_video") { return VIDEO_READY; }
+      if (cmd === "get_video_status") { return VIDEO_READY; }
+      return null;
+    });
+
+    const { host, dispose } = mount(makeGame({ id: 42, shortcode: "VID42" }));
+    await vi.advanceTimersByTimeAsync(1200);
+
+    const video = host.ownerDocument.querySelector("video.game-detail-hero-video");
+    expect(video, "the hero video element should be mounted").not.toBeNull();
+    expect(video?.getAttribute("src") ?? "").toContain("videocache");
+    // The cover crossfades out only once playback actually started.
+    expect(video?.className).toContain("is-visible");
+    dispose(); host.remove();
+  });
 
   it("renders a single-language game without throwing", async () => {
     const { host, dispose } = mount(makeGame());

@@ -5,6 +5,9 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 interface LightboxProps {
   images: string[];
+  /** Preview video, shown as the first entry when present. Already an asset
+   *  URL - unlike `images`, which are filesystem paths. */
+  video?: string | null;
   startIndex: number;
   open: boolean;
   onClose: () => void;
@@ -22,16 +25,21 @@ export function Lightbox(props: LightboxProps) {
 
   const resetZoom = () => { setZoomed(false); setPanX(0); setPanY(0); setImgLoadError(false); };
 
+  const hasVideo = () => !!props.video;
+  const videoIndex = 0;
+  const isVideoAt = (i: number) => hasVideo() && i === videoIndex;
+  const imageAt = (i: number) => props.images[hasVideo() ? i - 1 : i];
+  const count = () => props.images.length + (hasVideo() ? 1 : 0);
+
   createEffect(() => {
     if (props.open) {
-      setIdx(Math.max(0, Math.min(props.startIndex, props.images.length - 1)));
+      setIdx(Math.max(0, Math.min(props.startIndex, count() - 1)));
       resetZoom();
     }
   });
 
   createEffect(on(() => idx(), resetZoom, { defer: true }));
 
-  const count = () => props.images.length;
   const prev = () => setIdx((i) => (i - 1 + count()) % count());
   const next = () => setIdx((i) => (i + 1) % count());
 
@@ -96,7 +104,7 @@ export function Lightbox(props: LightboxProps) {
   };
 
   const srcAt = (i: number) => {
-    const path = props.images[i];
+    const path = imageAt(i);
     return path ? convertFileSrc(path) : null;
   };
 
@@ -129,8 +137,20 @@ export function Lightbox(props: LightboxProps) {
             onClick={onStageClick}
             onMouseMove={onMouseMove}
           >
-            <Show when={srcAt(idx()) && !imgLoadError()} fallback={
-              <div class="lightbox-broken">Image unavailable</div>
+            <Show when={isVideoAt(idx())}>
+              <video
+                class="lightbox-video"
+                src={props.video!}
+                controls
+                autoplay
+                playsinline
+                onClick={(e) => e.stopPropagation()}
+              />
+            </Show>
+            <Show when={!isVideoAt(idx()) && srcAt(idx()) && !imgLoadError()} fallback={
+              <Show when={!isVideoAt(idx())}>
+                <div class="lightbox-broken">Image unavailable</div>
+              </Show>
             }>
               <img
                 class={`lightbox-image ${zoomed() ? "zoomed" : ""}`}
@@ -146,7 +166,7 @@ export function Lightbox(props: LightboxProps) {
           <Show when={count() > 1}>
             <div class="lightbox-preload" aria-hidden="true">
               <For each={[idx() - 1, idx() + 1].map((i) => (i + count()) % count())}>
-                {(i) => <Show when={srcAt(i)}><img src={srcAt(i)!} alt="" /></Show>}
+                {(i) => <Show when={!isVideoAt(i) && srcAt(i)}><img src={srcAt(i)!} alt="" /></Show>}
               </For>
             </div>
           </Show>
@@ -154,16 +174,26 @@ export function Lightbox(props: LightboxProps) {
           <Show when={count() > 1}>
             <div class="lightbox-counter">{idx() + 1} / {count()}</div>
             <div class="lightbox-thumbs">
+              <Show when={hasVideo()}>
+                <button
+                  class={`lightbox-thumb-item lightbox-thumb-video ${idx() === videoIndex ? "active" : ""}`}
+                  title="Preview video"
+                  onClick={(e) => { e.stopPropagation(); setIdx(videoIndex); }}
+                >▶</button>
+              </Show>
               <For each={props.images}>
-                {(path, i) => (
-                  <img
-                    src={convertFileSrc(path)}
-                    class={`lightbox-thumb-item ${i() === idx() ? "active" : ""}`}
-                    alt=""
-                    loading="lazy"
-                    onClick={(e) => { e.stopPropagation(); setIdx(i()); }}
-                  />
-                )}
+                {(path, i) => {
+                  const at = () => (hasVideo() ? i() + 1 : i());
+                  return (
+                    <img
+                      src={convertFileSrc(path)}
+                      class={`lightbox-thumb-item ${at() === idx() ? "active" : ""}`}
+                      alt=""
+                      loading="lazy"
+                      onClick={(e) => { e.stopPropagation(); setIdx(at()); }}
+                    />
+                  );
+                }}
               </For>
             </div>
           </Show>

@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 
 use walkdir::WalkDir;
 
+use anyhow::Context;
 use super::TorrentIndex;
 
 /// Clear the ledger bits of every piece overlapping the byte range
@@ -438,6 +439,34 @@ impl DownloadManager {
             }
         }
         unreachable!()
+    }
+
+    /// Open a streaming reader over ONE file without selecting it for
+    /// download. The stream's own read position drives which pieces librqbit
+    /// fetches, which is what lets a 2.5 MB video come out of a 1.1 GB archive
+    /// without pulling the archive.
+    ///
+    /// Adds the torrent if it isn't running yet, reusing `download_files` with
+    /// an empty index list rather than duplicating that (delicate) add path.
+    /// librqbit's `FileStream` type lives in a private module and cannot be
+    /// named from here, so the reader is returned by its capabilities - which
+    /// is all `zip_range` needs anyway.
+    pub async fn stream_file(
+        &self,
+        file_index: usize,
+    ) -> anyhow::Result<impl tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send + use<>> {
+        if let Some(handle) = self.handle.read().await.as_ref().map(Arc::clone) {
+            return handle.stream(file_index).await;
+        }
+        self.download_files(Vec::new()).await?;
+        let handle = self
+            .handle
+            .read()
+            .await
+            .as_ref()
+            .map(Arc::clone)
+            .context("torrent handle missing after add")?;
+        handle.stream(file_index).await
     }
 
     /// Queue file indices for download. Adds the torrent on first call.

@@ -1,3 +1,4 @@
+pub mod media;
 pub(crate) mod content_packs;
 mod games;
 mod playlists;

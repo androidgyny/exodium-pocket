@@ -534,6 +534,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(conn)));
             app.manage(TorrentState(RwLock::new(std::collections::HashMap::new())));
             app.manage(ContentPackState::new());
+            app.manage(commands::media::VideoState::new());
 
             // macOS uses native traffic-light controls (no custom titlebar).
             // Linux/Windows keep the framed shell from tauri.conf.json
@@ -568,6 +569,9 @@ pub fn run() {
             get_thumbnail_dir,
             get_available_collections,
             init_download_manager,
+            commands::media::start_game_video,
+            commands::media::get_video_status,
+            commands::media::cancel_game_video,
             factory_reset,
             download_game,
             cancel_download,

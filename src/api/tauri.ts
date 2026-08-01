@@ -380,6 +380,31 @@ export interface GameMetadata {
   thumbnails: string[];
 }
 
+export interface VideoStatus {
+  /** "fetching" | "ready" | "none" | "error" */
+  phase: string;
+  /** 0..1 while fetching. */
+  progress: number;
+  total_bytes: number;
+  path: string | null;
+  error: string | null;
+}
+
+/** Start (or join) the fetch of a game's preview video. Returns immediately -
+ *  the video is streamed out of the GameData archive, which can take a minute
+ *  on a cold torrent. Poll getVideoStatus. */
+export async function startGameVideo(id: number): Promise<VideoStatus> {
+  return invoke("start_game_video", { id });
+}
+
+export async function getVideoStatus(id: number): Promise<VideoStatus | null> {
+  return invoke("get_video_status", { id });
+}
+
+export async function cancelGameVideo(id: number): Promise<void> {
+  return invoke("cancel_game_video", { id });
+}
+
 export async function getGameMetadata(
   collection: string,
   title: string,
