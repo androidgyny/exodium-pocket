@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 - 2026-08-01
 
 ### Added
 
+- **Game preview videos.** eXoDOS ships a short video for most games inside
+  that game's extras archive - archives that run up to 1.1 GB. Exodium reads
+  just the video out of them: the archive's index first, then only the video's
+  own bytes, streamed from the torrent (one measured case: 27 MB fetched from a
+  1163 MB archive). It starts when you open a game, plays in place of the box
+  art, hands the cover back when it ends, and stays available in the
+  screenshot lightbox. Fetches continue in the background when you close the
+  panel, three at a time, so the video is simply there next time.
 - **Offline mode**: setup now asks how Exodium should use the network. When
   importing an existing eXoDOS installation you can pick "Offline" - the
   torrent client is never started, and Exodium acts as a pure launcher for
@@ -36,6 +44,9 @@
   instead of ~2.7 MB. The lightbox still opens the originals.
 - Covers no longer pop in while scrolling: they start loading about two screens
   ahead of the viewport instead of just before entering it.
+- Preview thumbnails and the gallery cache were invisible to the app's own
+  asset protocol - hidden directories are not matched by its scope, so nothing
+  in them was ever served. Both caches moved out of hidden paths.
 - Search now applies to My Library. The search box is visible on both tabs but
   only ever filtered Browse; typing while on My Library did nothing. Shelves
   (Recently Played, Favorites, Installed, playlists) now filter as you type,

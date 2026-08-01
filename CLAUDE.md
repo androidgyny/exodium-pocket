@@ -290,6 +290,39 @@ Keep the CSS rule that gives a card without `.game-card-thumb` `aspect-ratio:
 3/4`: without it, unloaded cards collapse, the grid shrinks, and every card
 lands inside the observer margin at once.
 
+### 14. Preview videos come out of the GameData archive by seeking
+
+eXoDOS keeps each game's extras in `Content/GameData/eXoDOS/<Title>.zip` (6,334
+archives, 120 GB, up to 1.1 GB each) and files the preview as
+`Videos/MS-DOS/<Title>.mp4` - though one sampled archive kept its trailer under
+the game's own `Extras/`, so `find_video` accepts any playable file and only
+prefers `Videos/`, capped at 64 MB for the fallback.
+
+`torrent::zip_range` reads such an archive without downloading it: the central
+directory sits at the END of a zip, and entries are independently decodable, so
+it reads the tail, then seeks to the video's offset. Over librqbit's
+`FileStream` (`DownloadManager::stream_file`, `AsyncRead + AsyncSeek`) those
+seeks become piece requests - measured: 27 MB fetched from a 1163 MB archive.
+`stream_file` adds the torrent with an EMPTY selection when needed; selecting
+the file would download all of it.
+
+Three things are easy to get wrong here:
+- **Every localized row has a NULL `gamedata_torrent_index`** (DE 484/484, ES
+  413/413, PL 56/56) - extras live in the English archive only, so
+  `start_game_video` falls back to the EN sibling by shortcode.
+- **A stream waits for pieces forever.** Both reads have deadlines (45 s for
+  the index, 300 s for the video); without them one unseeded archive holds a
+  fetch slot for the whole session.
+- **The catalogue's `MissingVideo` is unusable** for skipping work: it said
+  "true" for 15 of 17 sampled games that do have one. A completed read that
+  found nothing writes a `.novideo` marker instead, so the question costs one
+  piece per archive, ever.
+
+Fetching is a background job (`VideoState`, poll `get_video_status`) because a
+cold torrent takes a minute; the panel starts one on open, keeps it running
+when it closes, and caps concurrency at three (each stream has its own 32 MB
+lookahead and they compete for peers).
+
 ## Conventions
 
 - **Every Tauri command that touches the DB, filesystem, or network MUST be
