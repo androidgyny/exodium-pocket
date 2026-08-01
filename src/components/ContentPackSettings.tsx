@@ -13,6 +13,7 @@ import {
 } from "../stores/contentPacks";
 import { formatBytes } from "../util";
 import { showToast } from "../stores/toasts";
+import { isOffline } from "../stores/network";
 
 type CollectionPacks = {
   id: string;
@@ -151,6 +152,8 @@ export function ContentPackSettings() {
                   }
                 };
 
+                const blockedOffline = () => isOffline() && pack.needs_torrent;
+
                 return (
                   <div class="pack-row">
                     <div class="pack-info">
@@ -167,10 +170,6 @@ export function ContentPackSettings() {
                       <div class="pack-progress">
                         <AutoProgress value={progress()} class="mini" indeterminate={job()?.phase !== "downloading" || undefined} />
                       </div>
-                    </Show>
-
-                    <Show when={!isActive() && job()?.error}>
-                      <span class="error" style="width: 100%; margin: 0; padding: 6px 10px; font-size: 11px">{job()!.error}</span>
                     </Show>
 
                     <Show when={!isActive() && !job()}>
@@ -197,7 +196,10 @@ export function ContentPackSettings() {
                         <button
                           class="btn-small"
                           onClick={() => handleInstall(col.id, pack.id, pack.display_name)}
-                          disabled={pendingAction() === "install"}
+                          disabled={pendingAction() === "install" || blockedOffline()}
+                          title={blockedOffline()
+                            ? "Offline mode - this pack comes from the torrent. Enable downloads in Settings → Network."
+                            : undefined}
                         >
                           <Show when={pendingAction() === "install"} fallback={<>Install</>}>
                             <span class="btn-spinner" /> Starting…

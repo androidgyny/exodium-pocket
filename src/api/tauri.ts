@@ -325,6 +325,8 @@ export interface ContentPackStatus {
   version: number;
   supersedes: string[];
   available: boolean;
+  /** Only obtainable through the torrent - offline mode cannot install it. */
+  needs_torrent: boolean;
   installed: boolean;
   installed_version?: number;
 }

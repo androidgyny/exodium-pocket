@@ -357,28 +357,8 @@ export function GameDetailPanel(props: Props) {
     });
   });
 
-  const handleManualClick = async () => {
-    if (metadata()?.manual_path) {
-      setManualOpen(true);
-      return;
-    }
-    // Unresolved manual: the GameData ZIP may have finished downloading
-    // since the last check - retry with the cache bypassed.
-    const g = selected();
-    if (!g?.title || !g.torrent_source) { return; }
-    setMetadataLoading(true);
-    const fresh = await loadGameMetadata(
-      g.torrent_source, g.title, g.shortcode ?? null, manualRow()?.manual_path ?? null, true
-    ).finally(() => setMetadataLoading(false));
-    if (selected()?.id !== g.id) { return; }
-    setMetadata(fresh);
-    if (fresh?.manual_path) {
-      setManualOpen(true);
-    } else {
-      showToast("Manual not available yet", "info", {
-        detail: "It downloads with the game's extras - check back once downloads finish.",
-      });
-    }
+  const handleManualClick = () => {
+    if (metadata()?.manual_path) { setManualOpen(true); }
   };
 
   const handleLaunch = async (gameId: number) => {
@@ -441,26 +421,32 @@ export function GameDetailPanel(props: Props) {
   // "Manual" on a DE selection silently opening the English PDF is exactly the
   // ambiguity this panel is meant to remove. Unresolved = its GameData ZIP is
   // still downloading; clicking retries the lookup, so it self-heals.
+  /** True once the file behind the catalogue's promise actually exists. */
+  const manualAvailable = () => !!metadata()?.manual_path;
+
   const ManualButton = () => (
     <button
       class="game-detail-btn btn-manual"
       onClick={handleManualClick}
-      disabled={metadataLoading()}
+      // Not yet extracted: the button is simply inert rather than clickable
+      // into a "not available" message. The metadata cache is invalidated when
+      // a download finishes, so it enables itself once the extras land.
+      disabled={metadataLoading() || !manualAvailable()}
       title={
-        !metadataLoading() && !metadata()?.manual_path
-          ? "The manual arrives with the game's extras download - click to check again"
+        !metadataLoading() && !manualAvailable()
+          ? "Arrives with the game's extras download"
           : manualIsFallback()
             ? `Only the ${languageName(manualRow()?.language)} manual is in the catalogue`
             : undefined
       }
     >
       <Show when={metadataLoading()} fallback={
-        <Show when={metadata()?.manual_path} fallback={<>Manual…</>}>
+        <>
           Manual
-          <Show when={manualIsFallback()}>
+          <Show when={manualAvailable() && manualIsFallback()}>
             <span class="btn-suffix">{manualRow()?.language}</span>
           </Show>
-        </Show>
+        </>
       }>
         <span class="btn-spinner" /> Manual
       </Show>

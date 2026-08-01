@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { Tooltip } from "@ark-ui/solid/tooltip";
+import { Switch } from "@ark-ui/solid/switch";
 import { Library } from "./pages/Library";
 import { Setup } from "./pages/Setup";
 import { SearchBar } from "./components/SearchBar";
@@ -364,6 +365,21 @@ function App() {
                 {updateState()!.status === "ready" && "↻ Restart to update"}
               </button>
             </Show>
+            {/* Offline is a mode with visible consequences (no downloads, no
+                videos, no sharing), so it says so permanently rather than only
+                inside Settings. */}
+            <Show when={isOffline()}>
+              <Tooltip.Root openDelay={300}>
+                <Tooltip.Trigger asChild={(props) =>
+                  <button {...props()} class="offline-badge" onClick={openSettings}>
+                    <span class="offline-badge-dot" /> Offline
+                  </button>
+                } />
+                <Portal><Tooltip.Positioner><Tooltip.Content class="ark-tooltip">
+                  Torrent client is off - no downloads or previews. Click to change.
+                </Tooltip.Content></Tooltip.Positioner></Portal>
+              </Tooltip.Root>
+            </Show>
             <DownloadIndicator />
             <Tooltip.Root openDelay={400}>
               <Tooltip.Trigger asChild={(props) =>
@@ -454,18 +470,30 @@ function App() {
                       <section class="settings-section">
                         <h3 class="settings-section-title">Network</h3>
                         <p class="settings-section-hint">Games are downloaded from the eXoDOS BitTorrent swarm. Both settings below are off by default - nothing is downloaded or uploaded until you ask for it.</p>
-                        <label class="setting-toggle">
-                          <input
-                            type="checkbox"
-                            checked={!isOffline()}
-                            disabled={switchingMode()}
-                            onChange={(e) => handleToggleOnline(e.currentTarget.checked)}
-                          />
-                          <span class="setting-toggle-info">
-                            <span class="setting-toggle-label">Download games (torrent client)</span>
-                            <span class="setting-toggle-hint">Off means offline mode: the torrent client never starts and Exodium only launches games already on disk.</span>
-                          </span>
-                        </label>
+                        {/* A switch, not a checkbox: this one starts and stops
+                            a network service, which is a mode rather than an
+                            option among several. */}
+                        <Switch.Root
+                          class="setting-switch"
+                          checked={!isOffline()}
+                          disabled={switchingMode()}
+                          onCheckedChange={(e) => handleToggleOnline(e.checked)}
+                        >
+                          <Switch.Control class="setting-switch-control">
+                            <Switch.Thumb class="setting-switch-thumb" />
+                          </Switch.Control>
+                          <Switch.Label class="setting-toggle-info">
+                            <span class="setting-toggle-label">
+                              {isOffline() ? "Offline mode" : "Online mode"}
+                            </span>
+                            <span class="setting-toggle-hint">
+                              {isOffline()
+                                ? "The torrent client stays off - Exodium only launches games already on disk."
+                                : "Games, previews and content packs are downloaded from the eXoDOS torrents."}
+                            </span>
+                          </Switch.Label>
+                          <Switch.HiddenInput />
+                        </Switch.Root>
                         <Show when={modeError()}>
                           <div class="setting-hint" style="margin-top:4px">{modeError()}</div>
                         </Show>

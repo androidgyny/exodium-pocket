@@ -3625,3 +3625,85 @@ body {
   cursor: pointer;
   font-size: 13px;
 }
+
+/* ── Network mode: switch + status badge ─────────────────────────────────────
+   A switch rather than a checkbox, because this starts and stops a network
+   service - it is a mode, not one option among several. */
+.setting-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.setting-switch:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.setting-switch[data-disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.setting-switch-control {
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  transition: background 0.2s ease;
+  position: relative;
+}
+
+.setting-switch-control[data-state="checked"] {
+  background: var(--accent);
+}
+
+.setting-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.setting-switch-thumb[data-state="checked"] {
+  transform: translateX(14px);
+}
+
+/* Permanent reminder in the top bar - offline changes what the app can do. */
+.offline-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.offline-badge:hover {
+  background: rgba(251, 191, 36, 0.2);
+}
+
+.offline-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fbbf24;
+}

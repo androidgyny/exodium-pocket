@@ -158,6 +158,10 @@ pub struct ContentPackStatus {
     pub supersedes: Vec<String>,
     /// True if the pack has a valid download URL (not a TODO placeholder).
     pub available: bool,
+    /// True when the only source is the torrent, so offline mode cannot fetch
+    /// it. HTTP-sourced packs (the poster pack) work offline just fine, which
+    /// is why the UI needs the distinction rather than a blanket rule.
+    pub needs_torrent: bool,
     pub installed: bool,
     pub installed_version: Option<u32>,
 }
@@ -191,6 +195,10 @@ pub async fn list_content_packs(
                 supersedes: info.supersedes.clone(),
                 available: info.torrent_file_path.is_some()
                     || (!info.url.is_empty() && !info.url.starts_with("TODO")),
+                needs_torrent: info.torrent_file_path.is_some()
+                    && (info.url.is_empty()
+                        || info.url.starts_with("TODO")
+                        || info.sha256.starts_with("TODO")),
                 installed: inst.is_some(),
                 installed_version: inst.map(|i| i.version),
             }
