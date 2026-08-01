@@ -62,6 +62,33 @@ describe("network mode store", () => {
     expect(writes.map((w) => w.args.value)).toEqual(["offline", "live"]);
   });
 
+  // Content packs download over HTTP, so nothing in the torrent layer stops
+  // them - but "Offline" must mean no traffic at all, or the badge lies.
+  it("stops content pack downloads when going offline", async () => {
+    mockInvoke.mockResolvedValue(null);
+    const packs = await import("./contentPacks");
+    const spy = vi.spyOn(packs, "cancelAllPackJobs").mockResolvedValue(1);
+    const { applyNetworkMode } = await import("./network");
+
+    const stopped = await applyNetworkMode("offline");
+
+    expect(spy).toHaveBeenCalled();
+    expect(stopped).toBe(1);
+    spy.mockRestore();
+  });
+
+  it("leaves content packs alone when going online", async () => {
+    mockInvoke.mockResolvedValue(null);
+    const packs = await import("./contentPacks");
+    const spy = vi.spyOn(packs, "cancelAllPackJobs");
+    const { applyNetworkMode } = await import("./network");
+
+    await applyNetworkMode("live");
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
   // Going offline drops the torrent managers; any poll still running would
   // read the resulting null progress as "Download didn't start".
   it("stops in-flight download tracking before going offline", async () => {

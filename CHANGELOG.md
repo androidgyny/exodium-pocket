@@ -50,6 +50,10 @@
   instead of ~2.7 MB. The lightbox still opens the originals.
 - Covers no longer pop in while scrolling: they start loading about two screens
   ahead of the viewport instead of just before entering it.
+- **Offline mode now means offline everywhere.** The first-run content-pack
+  offer is skipped, pack installs are blocked (including the poster pack, which
+  comes over HTTP), update checks are not made, and switching to offline stops
+  a pack download that is already running.
 - **DOSBox launch configs no longer pile up in your game folder.** Every
   launched game left a small `.conf` behind in the folder you chose for games,
   with nothing cleaning them up; they now live in Exodium's own directory and

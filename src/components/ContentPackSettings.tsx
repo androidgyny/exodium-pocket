@@ -153,7 +153,7 @@ export function ContentPackSettings() {
                   }
                 };
 
-                const blockedOffline = () => isOffline() && pack.needs_torrent;
+                const blockedOffline = () => isOffline();
 
                 return (
                   <div class="pack-row">
@@ -197,7 +197,7 @@ export function ContentPackSettings() {
                           loadingLabel="Starting…"
                           disabled={blockedOffline()}
                           title={blockedOffline()
-                            ? "Offline mode - this pack comes from the torrent. Enable downloads in Settings → Network."
+                            ? "Offline mode - nothing is downloaded. Enable downloads in Settings → Network."
                             : undefined}
                           onClick={() => handleInstall(col.id, pack.id, pack.display_name)}
                         >

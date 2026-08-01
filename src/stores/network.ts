@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { getConfig, initDownloadManager, setConfig } from "../api/tauri";
 import { stopAllDownloadTracking } from "./downloads";
+import { cancelAllPackJobs } from "./contentPacks";
 
 export type NetworkMode = "live" | "offline";
 
@@ -36,7 +37,9 @@ export async function applyNetworkMode(mode: NetworkMode): Promise<number> {
   setNetworkModeSignal(mode);
   // Stop trackers BEFORE the managers disappear, or the poll loop sees null
   // progress and reports a failure that never happened.
-  const stopped = mode === "offline" ? stopAllDownloadTracking() : 0;
+  // Content packs download over HTTP and would otherwise keep running while
+  // the app claims to be offline - the badge would be lying.
+  const stopped = mode === "offline" ? stopAllDownloadTracking() + (await cancelAllPackJobs()) : 0;
   try {
     await setConfig("network_mode", mode);
     await initDownloadManager();

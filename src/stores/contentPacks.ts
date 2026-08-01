@@ -156,3 +156,15 @@ export async function removeContentPack(collection: string, packId: string) {
   await refreshInstalledPacks();
   await loadThumbnailDir();
 }
+
+/** Cancel every in-flight pack install and report how many there were.
+ *  Used when switching to offline: an HTTP download that keeps running behind
+ *  an "Offline" badge makes the badge a lie. */
+export async function cancelAllPackJobs(): Promise<number> {
+  const running = Object.entries(activeJobs()).filter(([, job]) => job && !job.finished);
+  for (const [key] of running) {
+    const [collection, packId] = key.split(":");
+    await cancelContentPackJob(collection, packId).catch(() => {});
+  }
+  return running.length;
+}

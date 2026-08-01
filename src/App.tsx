@@ -143,8 +143,11 @@ function App() {
         if (dir) { setDataDir(dir); }
         loadThumbnailDir();
         refreshInstalledPacks();
-        notifyCatalogUpdates();
-        checkForAppUpdate();
+        // Update checks are network calls; offline mode means none are made.
+        if (!isOffline()) {
+          notifyCatalogUpdates();
+          checkForAppUpdate();
+        }
       } else {
         setPhase("setup");
       }
@@ -161,11 +164,14 @@ function App() {
     loadThumbnailDir();
     refreshInstalledPacks();
     fetchGames();
-    checkForAppUpdate();
+    if (!isOffline()) { checkForAppUpdate(); }
 
-    // Show the welcome modal if the user hasn't seen it yet.
+    // Show the welcome modal if the user hasn't seen it yet - but never in
+    // offline mode: it exists to offer downloads, which the user just declined.
+    // `welcome_seen` stays unwritten so the offer survives for a later online
+    // session; the packs are in Settings either way.
     const welcomeSeen = await getConfig("welcome_seen");
-    if (welcomeSeen !== "1") {
+    if (welcomeSeen !== "1" && !isOffline()) {
       setShowWelcomeModal(true);
     }
   };

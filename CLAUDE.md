@@ -233,6 +233,13 @@ Two config keys, both answered during setup and changeable in Settings → Netwo
   `"1"` as off; `migrateSeedingToOptIn` in `App.tsx` pins `"0"` for pre-existing
   installs that never chose, with a one-time toast.
 
+**Offline means no network at all, not "no torrent".** Everything that reaches
+out has to check `is_offline` / `isOffline()`: game downloads, preview videos,
+content packs (including HTTP-sourced ones), the first-run pack offer, and both
+update checks. The distinction is the promise made to the user, not the
+protocol - fetching a 380 MB poster pack over HTTPS while the badge says
+"Offline" is exactly the bug this rule prevents.
+
 The invariant from `collections` applies here too: **both keys must be written
 before `initDownloadManager()`**, because Rust reads them there to decide
 whether to start a session at all. Frontend gating lives in
