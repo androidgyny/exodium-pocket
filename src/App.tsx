@@ -540,7 +540,6 @@ function App() {
                             client does by default. */}
                         <div class="setting-row setting-row--limits">
                           <span class="setting-label">Speed limits</span>
-                          <span class="setting-hint">Leave empty for unlimited</span>
                           <div class="limit-inputs">
                             <label class="limit-field">
                               <span>Down</span>

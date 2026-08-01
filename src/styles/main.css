@@ -3761,6 +3761,9 @@ body {
 .limit-inputs {
   display: flex;
   gap: 12px;
+  /* This row has no hint text, and the hint is what pushes controls right in
+     every other settings row. */
+  margin-left: auto;
 }
 
 .limit-field {
