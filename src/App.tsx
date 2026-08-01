@@ -25,7 +25,6 @@ import {
   setRateLimits,
   scanInstalledGames,
   openLogFolder,
-  checkForUpdates,
 } from "./api/tauri";
 import { updateState, checkForAppUpdate, startUpdate, restartToUpdate } from "./stores/updater";
 import { fetchGames } from "./stores/games";
@@ -38,45 +37,6 @@ import "./styles/main.css";
 import { Button } from "./components/Button";
 
 type AppPhase = "loading" | "setup" | "ready";
-
-/** Friendly labels for collection IDs used in update toasts. */
-const COLLECTION_LABEL: Record<string, string> = {
-  eXoDOS: "eXoDOS",
-  eXoDOS_GLP: "German Language Pack",
-  eXoDOS_PLP: "Polish Language Pack",
-  eXoDOS_SLP: "Spanish Language Pack",
-};
-
-/** Compare bundled-manifest infohashes against the per-collection hashes
- *  stored at last `init_download_manager`. A mismatch means the shipped
- *  catalogue moved ahead of the user's DB (typically after an Exodium
- *  upgrade). Phase 1 only notifies; applying the update is deferred until
- *  a non-destructive merge-import path exists. Suppress per-session via
- *  `sessionStorage` so users aren't re-toasted on every focus event. */
-async function notifyCatalogUpdates() {
-  try {
-    if (sessionStorage.getItem("catalog_update_notified") === "1") { return; }
-    const info = await checkForUpdates();
-    if (!info.updates || info.updates.length === 0) { return; }
-    const totalNew = info.updates.reduce((sum, u) => sum + (u.new_game_count ?? 0), 0);
-    const cols = info.updates
-      .map((u) => COLLECTION_LABEL[u.collection] ?? u.collection)
-      .join(", ");
-    showToast(
-      totalNew > 0
-        ? `Catalogue update available: ${totalNew.toLocaleString()} games in ${cols}`
-        : `Catalogue update available for ${cols}`,
-      "info",
-      {
-        detail: "A reimport flow will be added in a future release. For now, run Factory Reset to refresh.",
-        durationMs: 12000,
-      },
-    );
-    sessionStorage.setItem("catalog_update_notified", "1");
-  } catch (e) {
-    console.warn("[updates] check_for_updates failed:", e);
-  }
-}
 
 function App() {
   const [phase, setPhase] = createSignal<AppPhase>("loading");
@@ -135,7 +95,6 @@ function App() {
         loadSeeding();
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
-          notifyCatalogUpdates();
           checkForAppUpdate();
           // Setup skips the content-pack offer while offline without marking it
           // seen, so pick it up on the first online start instead of dropping

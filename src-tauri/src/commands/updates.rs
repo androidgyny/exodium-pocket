@@ -1,11 +1,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
-
-use crate::db::queries;
-
-use super::DbState;
 
 // ── Manifest schema (v2) ─────────────────────────────────────────────────────
 
@@ -54,19 +49,6 @@ pub struct Manifest {
 
 // ── Response types ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
-pub struct CollectionUpdate {
-    pub collection: String,
-    pub current_hash: String,
-    pub latest_hash: String,
-    pub new_game_count: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct UpdateInfo {
-    pub updates: Vec<CollectionUpdate>,
-}
-
 // ── Manifest loading ──────────────────────────────────────────────────────────
 
 /// Load the manifest from the best available source.
@@ -99,42 +81,6 @@ pub(crate) fn load_manifest() -> Result<Manifest, String> {
 
     // TODO (v0.2): HTTP fetch from manifest_url as final fallback.
     Err("manifest.json not found (dev path or resource_dir)".to_string())
-}
-
-// ── Tauri command ─────────────────────────────────────────────────────────────
-
-/// Compare the locally stored torrent infohashes against the manifest.
-/// Returns a list of collections that have a newer version available.
-#[tauri::command]
-pub async fn check_for_updates(db_state: State<'_, DbState>) -> Result<UpdateInfo, String> {
-    let manifest = load_manifest()?;
-    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-
-    let mut updates = Vec::new();
-
-    for (col_id, col_manifest) in &manifest.collections {
-        // Ignore placeholder values left in the dev manifest
-        if col_manifest.torrent_infohash.starts_with("REPLACE") {
-            continue;
-        }
-
-        let stored = queries::get_config(&conn, &format!("{}_infohash", col_id))
-            .map_err(|e| e.to_string())?;
-
-        if let Some(current_hash) = stored {
-            if current_hash != col_manifest.torrent_infohash {
-                updates.push(CollectionUpdate {
-                    collection: col_id.clone(),
-                    current_hash,
-                    latest_hash: col_manifest.torrent_infohash.clone(),
-                    new_game_count: col_manifest.game_count,
-                });
-            }
-        }
-        // If no stored hash yet (collection not initialised), skip silently.
-    }
-
-    Ok(UpdateInfo { updates })
 }
 
 #[cfg(test)]

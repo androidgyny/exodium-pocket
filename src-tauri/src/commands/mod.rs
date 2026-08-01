@@ -28,4 +28,3 @@ pub use setup::{
     scan_installed_games, setup_from_local, setup_import, setup_start, validate_exodos_dir,
     CollectionDef, COLLECTION_MAP, TorrentState,
 };
-pub use updates::check_for_updates;

@@ -204,13 +204,25 @@ fallback (`find_lp_launch`, which itself prefers the EN autoexec's command)
 kick in. History: heuristics-first produced launch-and-exit bugs (Cobra
 Mission ES: bare root-level CM.EXE, no .bat - all heuristics missed it).
 
-### 10. Update-check manifest
+### 10. The manifest, and why there is no catalogue update check
 
-`manifest.json` (tracked in git) defines the schema for detecting eXoDOS updates. Each collection entry carries the SHA1 `torrent_infohash` of the current torrent. At startup (`init_download_manager`) the app stores each collection's infohash in the `config` table under `<col_id>_infohash`. The `check_for_updates` command compares stored hashes against the manifest and returns any collections where the hash differs (= new torrent = new games available).
+`manifest.json` (tracked in git) carries the SHA1 `torrent_infohash` per
+collection and the content-pack definitions (`load_manifest` in `updates.rs`,
+read by `content_packs.rs`). In dev it is read from the repo, in production
+from `resource_dir`; the HTTP fetch from `manifest_url` is still a TODO.
 
-In dev, `check_for_updates` reads the local `manifest.json`. In production it will HTTP-fetch from a hosted URL (stub is in `updates.rs`, marked TODO). When eXoDOS releases a new torrent: update the bundled `.torrent` file, re-run `pnpm run init-dev`, update `manifest.json` with the new infohash, and push the new thumbnail pack to the release host.
+`init_download_manager` stores each collection's infohash in `config` under
+`<col_id>_infohash`, **write-if-absent**. Nothing reads it today. Keep writing
+it anyway: it records which torrent an install was built against, and once a
+newer torrent ships with an app update the old baseline is unrecoverable.
 
-Thumbnail packs for production are hosted separately (GitHub Releases or similar). `manifest.json` contains the URL, sha256, and size so the setup flow can download and verify them. This is not yet implemented in the UI - just the backend command and schema exist.
+There WAS a `check_for_updates` command comparing those hashes; it was removed
+in 0.10.0. Detection without a migration is worse than no detection - the only
+advice it could give was "run Factory Reset", which costs the user favorites,
+playlists, install state, per-game settings and play history. Do not
+reintroduce the notification on its own; the merge import (match old rows to
+new by shortcode, carry user state across, then `scan_installed_games`) is the
+part that has to exist first. See issue #18.
 
 ### 11. Network mode and opt-in seeding
 

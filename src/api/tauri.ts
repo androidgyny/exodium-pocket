@@ -305,14 +305,6 @@ export interface CollectionUpdate {
   new_game_count: number;
 }
 
-export interface UpdateInfo {
-  updates: CollectionUpdate[];
-}
-
-export async function checkForUpdates(): Promise<UpdateInfo> {
-  return invoke("check_for_updates");
-}
-
 export interface CollectionInfo {
   id: string;
   display_name: string;

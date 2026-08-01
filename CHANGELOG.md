@@ -27,6 +27,11 @@
 
 ### Changed
 
+- **The catalogue update notification was removed.** It could only tell you a
+  new eXoDOS torrent exists and suggest a Factory Reset - which throws away
+  favorites, playlists, install state and per-game settings. It comes back
+  together with an update path that keeps your library (#18).
+
 - **Settings use switches instead of checkboxes**, and every action button
   shares one component - a disabled button no longer lights up on hover as if
   it were clickable. Installing a content pack that needs the torrent is

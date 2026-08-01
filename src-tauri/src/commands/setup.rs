@@ -400,11 +400,13 @@ pub async fn init_download_manager(
         if let Ok(torrent_path) = bundled_torrent_path(col.torrent_file) {
             match DownloadManager::new_with_session(Arc::clone(&session), &torrent_path, &data_path, &persistence_dir) {
                 Ok(mgr) => {
-                    // Store the torrent infohash so the update-checker can compare
-                    // later. Write-if-absent: overwriting on every startup would
-                    // clobber the stored baseline the moment a newer bundled
-                    // torrent ships, masking exactly the comparison
-                    // check_for_updates exists to make.
+                    // Record which torrent this install was built against.
+                    // Nothing reads it today - the catalogue update check was
+                    // removed until there is a migration that keeps a user's
+                    // library (issue #18) - but it has to be captured NOW: once
+                    // a newer bundled torrent ships, the old baseline is gone
+                    // and the comparison can never be made retroactively.
+                    // Write-if-absent for the same reason.
                     match TorrentIndex::infohash(&torrent_path) {
                         Ok(hash) => {
                             match db_state.0.lock() {
