@@ -19,6 +19,12 @@
 
 ### Changed
 
+- **Settings use switches instead of checkboxes**, and every action button
+  shares one component - a disabled button no longer lights up on hover as if
+  it were clickable. Installing a content pack that needs the torrent is
+  blocked while offline rather than explained afterwards, and the manual button
+  stays inert until the file has actually arrived. Offline mode is shown in the
+  top bar.
 - **Sharing (seeding) is now an explicit choice.** Setup asks before it
   finishes (pre-checked, with the upload implications spelled out) instead of
   silently starting; existing installs that never made a choice have it turned
@@ -44,6 +50,11 @@
   instead of ~2.7 MB. The lightbox still opens the originals.
 - Covers no longer pop in while scrolling: they start loading about two screens
   ahead of the viewport instead of just before entering it.
+- **DOSBox launch configs no longer pile up in your game folder.** Every
+  launched game left a small `.conf` behind in the folder you chose for games,
+  with nothing cleaning them up; they now live in Exodium's own directory and
+  the strays are removed on the next start.
+- Buttons with an icon aligned it on the text baseline instead of centring it.
 - Preview thumbnails and the gallery cache were invisible to the app's own
   asset protocol - hidden directories are not matched by its scope, so nothing
   in them was ever served. Both caches moved out of hidden paths.

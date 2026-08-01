@@ -3707,3 +3707,20 @@ body {
   border-radius: 50%;
   background: #fbbf24;
 }
+
+/* ── Shared button layout ────────────────────────────────────────────────────
+   Applied by the Button component to every variant. An inline SVG otherwise
+   sits on the text baseline, which left icons visibly low next to their
+   label (reported on the setup screen's "← Back"). */
+.app-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1.2;
+}
+
+.app-btn > svg {
+  display: block;
+  flex-shrink: 0;
+}

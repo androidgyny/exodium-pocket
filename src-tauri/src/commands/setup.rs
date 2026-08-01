@@ -342,6 +342,9 @@ pub async fn init_download_manager(
     // Startup is the natural place to bound the gallery cache: nothing else
     // deletes from it, and doing it here keeps it off the panel-open path.
     remove_legacy_cache_dirs(&data_dir);
+    // Earlier versions wrote per-launch DOSBox fragments straight into the
+    // user's game folder; they are regenerated on demand, so sweep them up.
+    crate::commands::games::sweep_legacy_launch_confs(&data_dir);
     prune_gallery_cache(&gallery_cache_dir(&data_dir), GALLERY_CACHE_MAX_BYTES);
     crate::commands::media::prune_video_cache(&data_dir);
 

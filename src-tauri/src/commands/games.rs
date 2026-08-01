@@ -2277,6 +2277,41 @@ pub async fn get_recently_played(state: State<'_, DbState>, limit: Option<usize>
 }
 
 /// Launch a downloaded game via DOSBox Staging.
+/// Where the per-launch DOSBox config fragments live.
+///
+/// NOT the game data dir: that is a location the user picked for their games,
+/// and these files accumulated there one per game ever launched (15 of them in
+/// one report) with nothing ever cleaning them up. They are derived from
+/// settings and rewritten on every launch, so the app's own directory is the
+/// right home - and `sweep_legacy_launch_confs` removes the old ones.
+fn launch_conf_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("launch");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Delete launch fragments left in the game data dir by earlier versions.
+/// They are regenerated on demand, so removing them loses nothing.
+pub fn sweep_legacy_launch_confs(data_dir: &str) {
+    let Ok(entries) = std::fs::read_dir(data_dir) else { return };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with("exodium_") && name.ends_with(".conf") && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        log::info!("Removed {} stray launch config(s) from the game folder", removed);
+    }
+}
+
 #[tauri::command]
 pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) -> Result<String, String> {
     // Serialize against uninstall/download of the same game (see game_op_lock).
@@ -2541,8 +2576,7 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     #[cfg(target_os = "macos")]
     {
         if !crt_auto_enabled {
-            let conf_path =
-                std::path::Path::new(&data_dir).join(format!("exodium_macos_dosbox_{}.conf", id));
+            let conf_path = launch_conf_dir(&app)?.join(format!("macos_dosbox_{}.conf", id));
             std::fs::write(&conf_path, "[sdl]\noutput = texture\n")
                 .map_err(|e| format!("Failed to write macOS override conf: {e}"))?;
             cmd.arg("-conf").arg(&conf_path);
@@ -2569,8 +2603,7 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
                 "[sdl]\nfullscreen = {fullscreen_val}\n[render]\nglshader = {glshader_val}\n"
             )
         };
-        let conf_path =
-            std::path::Path::new(&data_dir).join(format!("exodium_global_overrides_{}.conf", id));
+        let conf_path = launch_conf_dir(&app)?.join(format!("global_overrides_{}.conf", id));
         std::fs::write(&conf_path, &frag)
             .map_err(|e| format!("Failed to write global override conf: {e}"))?;
         cmd.arg("-conf").arg(&conf_path);
@@ -2579,8 +2612,7 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     // Per-game overrides (last-wins over global). Only written if the user has
     // configured game-specific settings via the Game Settings dialog.
     {
-        let game_conf_path = std::path::Path::new(&data_dir)
-            .join(format!("exodium_game_{}.conf", id));
+        let game_conf_path = launch_conf_dir(&app)?.join(format!("game_{}.conf", id));
         if per_game_config.is_empty() {
             // Clean up stale conf file from a previous configuration.
             let _ = std::fs::remove_file(&game_conf_path);

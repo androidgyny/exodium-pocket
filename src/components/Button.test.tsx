@@ -13,9 +13,16 @@ describe("Button", () => {
     return { host, dispose, btn: () => host.querySelector("button")! };
   }
 
+  // Layout lives on the shared class so an icon never sits on the baseline.
+  it("always carries the shared layout class", () => {
+    const { btn, dispose } = mount(() => <Button>Go</Button>);
+    expect(btn().className).toContain("app-btn");
+    dispose();
+  });
+
   it("maps a variant to the stylesheet class", () => {
     const { btn, dispose } = mount(() => <Button variant="danger">Remove</Button>);
-    expect(btn().className).toBe("btn-danger");
+    expect(btn().className).toBe("app-btn btn-danger");
     dispose();
   });
 

@@ -45,7 +45,10 @@ export function Button(props: ButtonProps) {
   return (
     <button
       {...rest}
-      class={`${variantClass()}${own.class ? ` ${own.class}` : ""}`}
+      // `app-btn` carries the layout every variant needs (centred content, an
+      // icon that sits on the text's middle rather than its baseline). The
+      // variant classes carry only colour and size.
+      class={`app-btn ${variantClass()}${own.class ? ` ${own.class}` : ""}`}
       disabled={own.disabled || own.loading}
       aria-busy={own.loading || undefined}
     >
