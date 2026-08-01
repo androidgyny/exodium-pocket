@@ -287,6 +287,10 @@ pub struct TransferStats {
     pub download_bps: u64,
     pub upload_bps: u64,
     pub uploaded_bytes: u64,
+    /// Connected peers across all collections. A peer serving two collections
+    /// counts twice, same as any torrent client's per-torrent peer list - the
+    /// number answers "are we in the swarm", not "how many humans".
+    pub peers: u32,
     /// False when no torrent is live anywhere - the difference between "idle"
     /// and "nothing running", which the badge shows differently.
     pub active: bool,
@@ -304,6 +308,7 @@ pub async fn get_transfer_stats(torrent_state: State<'_, TorrentState>) -> Resul
         download_bps: 0,
         upload_bps: 0,
         uploaded_bytes: 0,
+        peers: 0,
         active: false,
     };
     for mgr in managers {
@@ -317,6 +322,7 @@ pub async fn get_transfer_stats(torrent_state: State<'_, TorrentState>) -> Resul
             stats.active = true;
         }
         stats.uploaded_bytes += s.uploaded_bytes.unwrap_or(0);
+        stats.peers += s.peers.unwrap_or(0);
     }
     Ok(stats)
 }

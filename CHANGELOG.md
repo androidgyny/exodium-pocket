@@ -18,8 +18,10 @@
   the games already on disk. Switchable any time in Settings → Network.
 - **Network badge with live transfer rates.** The top bar shows the current
   down/up speed while anything is moving, summed across all four collections,
-  and reads "Online" when idle. Its tooltip reports how much you have shared
-  this session. Clicking it opens the network settings.
+  and reads "Online" when idle. Its tooltip says what idle actually means -
+  whether sharing is on, how many peers are connected, and how much has been
+  shared this session - because a rate of zero on its own cannot tell "switched
+  off" from "nobody is asking". Clicking it opens the network settings.
 - **Speed limits.** Settings → Network takes an upload and download cap in
   KB/s, applied immediately and to the whole session. Empty means unlimited.
 
@@ -46,6 +48,9 @@
   its own, the English one is shown and labelled as such.
 
 ### Fixed
+
+- The lightbox thumbnail strip covered a preview video's seek bar, so the
+  video could not be scrubbed.
 
 - Multi-language games showed no description and their screenshot strip was
   cut off: the Versions list pushed the panel's flexible region to zero height.

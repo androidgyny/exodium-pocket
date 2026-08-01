@@ -192,6 +192,9 @@ export interface TransferStats {
   download_bps: number;
   upload_bps: number;
   uploaded_bytes: number;
+  /** Connected peers across all collections - the readout that shows liveness
+   *  when the rates are zero. */
+  peers: number;
   /** False when no torrent is live - distinct from a live 0 B/s. */
   active: boolean;
 }

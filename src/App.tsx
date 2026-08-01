@@ -11,7 +11,7 @@ import { SearchBar } from "./components/SearchBar";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { SeedingConsentDialog } from "./components/SeedingConsentDialog";
 import { NetworkBadge } from "./components/NetworkBadge";
-import { needsSeedingConsent } from "./stores/seeding";
+import { needsSeedingConsent, seedingOn, applySeeding, loadSeeding } from "./stores/seeding";
 import { ContentPackSettings } from "./components/ContentPackSettings";
 import { DownloadIndicator } from "./components/DownloadIndicator";
 import { WindowFrame } from "./components/WindowFrame";
@@ -22,7 +22,6 @@ import {
   factoryReset,
   getConfig,
   setConfig,
-  setSeedingEnabled,
   setRateLimits,
   scanInstalledGames,
   openLogFolder,
@@ -133,6 +132,7 @@ function App() {
         refreshInstalledPacks();
         startTransferPolling();
         onCleanup(stopTransferPolling);
+        loadSeeding();
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
           notifyCatalogUpdates();
@@ -161,6 +161,7 @@ function App() {
     refreshInstalledPacks();
     fetchGames();
     startTransferPolling();
+    loadSeeding();
     if (!isOffline()) { checkForAppUpdate(); }
 
     // Show the welcome modal if the user hasn't seen it yet - but never in
@@ -209,26 +210,25 @@ function App() {
   const [crtAuto, setCrtAuto] = createSignal(true);
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
 
-  const [seeding, setSeeding] = createSignal(false);
   // Kept as strings: an empty field means unlimited, which no number can say.
   const [limitDown, setLimitDown] = createSignal("");
   const [limitUp, setLimitUp] = createSignal("");
   const [limitError, setLimitError] = createSignal("");
   const loadGameDefaults = async () => {
     try {
-      const [shader, fs, seed, down, up] = await Promise.all([
+      const [shader, fs, down, up] = await Promise.all([
         getConfig("global_glshader"),
         getConfig("default_fullscreen"),
-        getConfig("seeding_enabled"),
         getConfig("rate_limit_down_kbps"),
         getConfig("rate_limit_up_kbps"),
       ]);
+      // Sharing lives in its own store - the badge needs it before Settings
+      // has ever been opened.
+      loadSeeding();
       setLimitDown(down ?? "");
       setLimitUp(up ?? "");
       setCrtAuto(shader == null || shader === "crt-auto");
       setDefaultFullscreen(fs === "fullscreen");
-      // Opt-in: only an explicit "1" means sharing (mirrors the Rust side).
-      setSeeding(seed === "1");
     } catch (e) {
       console.warn("[settings] failed to load game defaults:", e);
     }
@@ -286,8 +286,7 @@ function App() {
    *  dialog can stay open and say so - a failed write here would otherwise
    *  leave the key unset and ask again on the next start. */
   const handleSeedingConsent = async (enabled: boolean) => {
-    await setSeedingEnabled(enabled);
-    setSeeding(enabled);
+    await applySeeding(enabled);
     setShowSeedingConsent(false);
     showToast(
       enabled ? "Sharing with other players is on" : "Sharing with other players is off",
@@ -318,12 +317,10 @@ function App() {
   };
 
   const handleToggleSeeding = async (next: boolean) => {
-    setSeeding(next);
     try {
-      await setSeedingEnabled(next);
+      await applySeeding(next);
     } catch (e) {
       console.error("[settings] failed to save seeding preference:", e);
-      setSeeding(!next);
     }
   };
 
@@ -526,7 +523,7 @@ function App() {
                             would look like the setting disappeared, and its
                             state still matters for when you go back online. */}
                         <Toggle
-                          checked={seeding() && !isOffline()}
+                          checked={seedingOn() && !isOffline()}
                           disabled={isOffline()}
                           onChange={handleToggleSeeding}
                           label="Share with other players (seeding)"
@@ -560,7 +557,7 @@ function App() {
                                 type="number"
                                 min="1"
                                 placeholder="∞"
-                                disabled={isOffline() || !seeding()}
+                                disabled={isOffline() || !seedingOn()}
                                 value={limitUp()}
                                 onInput={(e) => setLimitUp(e.currentTarget.value)}
                                 onChange={handleSaveLimits}

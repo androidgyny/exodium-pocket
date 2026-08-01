@@ -3,6 +3,7 @@ import { Portal } from "solid-js/web";
 import { Tooltip } from "@ark-ui/solid/tooltip";
 import { isOffline } from "../stores/network";
 import { transferStats, formatRate } from "../stores/transfer";
+import { seedingOn } from "../stores/seeding";
 import { formatBytes } from "../util";
 
 interface Props {
@@ -34,6 +35,24 @@ export function NetworkBadge(props: Props) {
     return !!v && (v.download_bps >= 1024 || v.upload_bps >= 1024);
   };
 
+  /** What "Online" actually means right now.
+   *
+   *  A rate of zero is ambiguous - sharing switched off and nobody requesting
+   *  look identical - so the sharing state comes first, and the peer count
+   *  carries the rest: connections are a standing state, transfer is
+   *  event-driven, so peers can prove liveness when the rates cannot. */
+  const peers = (n: number) => `${n} peer${n === 1 ? "" : "s"}`;
+
+  const statusLine = () => {
+    const v = s();
+    if (!v?.active) { return "Online - no torrent running."; }
+    const shared = `${formatBytes(v.uploaded_bytes)} shared this session.`;
+    if (!seedingOn()) { return "Sharing is off - downloading only."; }
+    if (moving()) { return `${peers(v.peers)} - ${shared}`; }
+    if (v.peers === 0) { return "Online, looking for peers."; }
+    return `Sharing with ${peers(v.peers)} - nothing requested right now. ${shared}`;
+  };
+
   return (
     <Show
       when={!isOffline()}
@@ -61,9 +80,7 @@ export function NetworkBadge(props: Props) {
           </button>
         } />
         <Portal><Tooltip.Positioner><Tooltip.Content class="ark-tooltip">
-          <Show when={s()?.active} fallback={<>Online - nothing transferring. Click for network settings.</>}>
-            Shared {formatBytes(s()!.uploaded_bytes)} this session. Click for network settings.
-          </Show>
+          {statusLine()} Click for network settings.
         </Tooltip.Content></Tooltip.Positioner></Portal>
       </Tooltip.Root>
     </Show>

@@ -181,6 +181,10 @@ pub struct DownloadManagerStatus {
     pub upload_bps: Option<u64>,
     /// Uploaded since this session started - librqbit keeps no lifetime total.
     pub uploaded_bytes: Option<u64>,
+    /// Peers currently connected. The readout that answers "is anything
+    /// happening" while the rates sit at zero: connections are a standing
+    /// state, transfer is event-driven.
+    pub peers: Option<u32>,
 }
 
 /// Manages BitTorrent downloads using librqbit with selective file support.
@@ -781,15 +785,17 @@ impl DownloadManager {
                     l.download_speed.as_bytes(),
                     l.upload_speed.as_bytes(),
                     l.snapshot.uploaded_bytes,
+                    l.snapshot.peer_stats.live,
                 )
             })
         });
 
         DownloadManagerStatus {
             active_downloads,
-            download_bps: live.map(|(d, _, _)| d),
-            upload_bps: live.map(|(_, u, _)| u),
-            uploaded_bytes: live.map(|(_, _, t)| t),
+            download_bps: live.map(|(d, ..)| d),
+            upload_bps: live.map(|(_, u, ..)| u),
+            uploaded_bytes: live.map(|(_, _, t, _)| t),
+            peers: live.map(|(.., p)| p),
         }
     }
 

@@ -131,7 +131,7 @@ export function Lightbox(props: LightboxProps) {
 
           <div
             ref={stageRef}
-            class={`lightbox-stage ${zoomed() ? "zoomed" : ""}`}
+            class={`lightbox-stage ${zoomed() ? "zoomed" : ""} ${isVideoAt(idx()) ? "has-video" : ""}`}
             onPointerDown={onPointerDown}
             onPointerUp={onPointerUp}
             onClick={onStageClick}

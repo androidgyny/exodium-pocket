@@ -3609,6 +3609,16 @@ body {
   background: rgba(124, 92, 252, 0.85);
 }
 
+/* The thumbnail strip floats over the stage, which is fine for images but put
+   it right on top of the video's native control bar - the seek handle was
+   unreachable. Shrinking the stage from the bottom lifts the controls clear;
+   padding rather than height because the stage is centred, and a smaller box
+   would just split the gap between top and bottom again. */
+.lightbox-stage.has-video {
+  padding-bottom: 76px;
+  box-sizing: border-box;
+}
+
 /* Lightbox: the video is just another entry in the strip. */
 .lightbox-video {
   max-width: 100%;
