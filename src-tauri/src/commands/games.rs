@@ -239,12 +239,86 @@ pub async fn set_seeding_enabled(
         queries::set_config(&conn, "seeding_enabled", if enabled { "1" } else { "0" })
             .map_err(|e| e.to_string())?;
     }
+    apply_stored_limits(&db_state, &torrent_state).await;
+    Ok(())
+}
+
+/// Set the user's transfer caps in KB/s; `None` (or 0 from the UI) means
+/// unlimited. Persisted and applied live.
+#[tauri::command]
+pub async fn set_rate_limits(
+    db_state: State<'_, DbState>,
+    torrent_state: State<'_, TorrentState>,
+    up_kbps: Option<u32>,
+    down_kbps: Option<u32>,
+) -> Result<(), String> {
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        // Store "" for unlimited rather than deleting the row: the reader
+        // treats unparseable and absent alike, and a present key documents
+        // that the user has been here.
+        let write = |key: &str, v: Option<u32>| {
+            queries::set_config(&conn, key, &v.map_or(String::new(), |k| k.to_string()))
+        };
+        write("rate_limit_up_kbps", up_kbps).map_err(|e| e.to_string())?;
+        write("rate_limit_down_kbps", down_kbps).map_err(|e| e.to_string())?;
+    }
+    apply_stored_limits(&db_state, &torrent_state).await;
+    Ok(())
+}
+
+/// Re-apply seeding preference and caps together. They share one knob, so a
+/// change to either has to go through the same call - see
+/// `DownloadManager::apply_limits`. No manager means no session, and the
+/// preferences are read again when one is created.
+async fn apply_stored_limits(db_state: &State<'_, DbState>, torrent_state: &State<'_, TorrentState>) {
+    let seeding = crate::commands::setup::seeding_enabled(&db_state.0);
+    let (up, down) = crate::commands::setup::rate_limits(&db_state.0);
     // All managers share one session - applying via any of them is enough.
     let mgr = { torrent_state.0.read().await.values().next().cloned() };
     if let Some(mgr) = mgr {
-        mgr.set_seeding(enabled);
+        mgr.apply_limits(seeding, up, down);
     }
-    Ok(())
+}
+
+/// Live transfer rates, summed across collections.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TransferStats {
+    pub download_bps: u64,
+    pub upload_bps: u64,
+    pub uploaded_bytes: u64,
+    /// False when no torrent is live anywhere - the difference between "idle"
+    /// and "nothing running", which the badge shows differently.
+    pub active: bool,
+}
+
+/// Current up/down rates across every collection.
+///
+/// Summing matters: the four collections have separate managers over one
+/// shared session, so reading a single manager reports 0 B/s while a language
+/// pack is downloading.
+#[tauri::command]
+pub async fn get_transfer_stats(torrent_state: State<'_, TorrentState>) -> Result<TransferStats, String> {
+    let managers: Vec<_> = { torrent_state.0.read().await.values().cloned().collect() };
+    let mut stats = TransferStats {
+        download_bps: 0,
+        upload_bps: 0,
+        uploaded_bytes: 0,
+        active: false,
+    };
+    for mgr in managers {
+        let s = mgr.status().await;
+        if let Some(d) = s.download_bps {
+            stats.download_bps += d;
+            stats.active = true;
+        }
+        if let Some(u) = s.upload_bps {
+            stats.upload_bps += u;
+            stats.active = true;
+        }
+        stats.uploaded_bytes += s.uploaded_bytes.unwrap_or(0);
+    }
+    Ok(stats)
 }
 
 /// Queue a game for download via torrent.

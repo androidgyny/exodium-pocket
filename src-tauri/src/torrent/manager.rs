@@ -12,6 +12,11 @@ use tokio::sync::RwLock;
 
 use walkdir::WalkDir;
 
+/// Upload cap applied when sharing is off. Not zero: librqbit throttles rather
+/// than blocks, and a hard zero would stall the handshakes that keep downloads
+/// working.
+pub const SEEDING_OFF_BPS: u32 = 1024;
+
 use anyhow::Context;
 use super::TorrentIndex;
 
@@ -169,8 +174,13 @@ pub struct DownloadProgress {
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadManagerStatus {
     pub active_downloads: Vec<DownloadProgress>,
-    pub download_speed: Option<String>,
-    pub upload_speed: Option<String>,
+    /// Bytes per second, `None` while the torrent has no live state (not
+    /// added, checking, paused). That is different from a live zero and the
+    /// UI shows it differently, so don't collapse it to 0.
+    pub download_bps: Option<u64>,
+    pub upload_bps: Option<u64>,
+    /// Uploaded since this session started - librqbit keeps no lifetime total.
+    pub uploaded_bytes: Option<u64>,
 }
 
 /// Manages BitTorrent downloads using librqbit with selective file support.
@@ -351,19 +361,31 @@ impl DownloadManager {
         &self.torrent_index
     }
 
-    /// Enable/disable seeding by (un)limiting the shared session's upload
-    /// rate. librqbit has no runtime upload kill-switch; 1 KB/s keeps
-    /// protocol handshakes working while making uploads negligible. The
-    /// session is shared across collections, so calling this on any one
-    /// manager affects all of them.
-    pub fn set_seeding(&self, enabled: bool) {
-        let bps = if enabled {
-            None
+    /// The one place that sets the session's transfer caps.
+    ///
+    /// Seeding and the user's upload limit write the same knob, so they cannot
+    /// be applied independently - whoever ran last would win, and turning
+    /// sharing off after setting a limit would silently lift the cap. Seeding
+    /// off always wins: librqbit has no runtime upload kill-switch, and 1 KB/s
+    /// keeps protocol handshakes working while making uploads negligible.
+    ///
+    /// Limits are in KB/s, `None` meaning unlimited. The session is shared
+    /// across collections, so calling this on any one manager affects all.
+    pub fn apply_limits(&self, seeding: bool, up_kbps: Option<u32>, down_kbps: Option<u32>) {
+        let up = if seeding {
+            up_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024)))
         } else {
-            std::num::NonZeroU32::new(1024)
+            std::num::NonZeroU32::new(SEEDING_OFF_BPS)
         };
-        self.session.ratelimits.set_upload_bps(bps);
-        log::info!("Seeding {}", if enabled { "enabled" } else { "disabled (upload capped at 1 KB/s)" });
+        let down = down_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024)));
+        self.session.ratelimits.set_upload_bps(up);
+        self.session.ratelimits.set_download_bps(down);
+        log::info!(
+            "Transfer limits: seeding={} up={} down={}",
+            seeding,
+            up.map_or("unlimited".to_string(), |b| format!("{} B/s", b.get())),
+            down.map_or("unlimited".to_string(), |b| format!("{} B/s", b.get())),
+        );
     }
 
     /// Stop the shared librqbit session: aborts live torrents and flushes
@@ -752,21 +774,22 @@ impl DownloadManager {
             }
         }
 
-        let (download_speed, upload_speed) = handle_guard
-            .as_ref()
-            .map(|h| {
-                let s = h.stats();
+        let live = handle_guard.as_ref().and_then(|h| {
+            let s = h.stats();
+            s.live.as_ref().map(|l| {
                 (
-                    s.live.as_ref().map(|l| l.download_speed.to_string()),
-                    s.live.as_ref().map(|l| l.upload_speed.to_string()),
+                    l.download_speed.as_bytes(),
+                    l.upload_speed.as_bytes(),
+                    l.snapshot.uploaded_bytes,
                 )
             })
-            .unwrap_or((None, None));
+        });
 
         DownloadManagerStatus {
             active_downloads,
-            download_speed,
-            upload_speed,
+            download_bps: live.map(|(d, _, _)| d),
+            upload_bps: live.map(|(_, u, _)| u),
+            uploaded_bytes: live.map(|(_, _, t)| t),
         }
     }
 

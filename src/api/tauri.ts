@@ -188,6 +188,23 @@ export async function setSeedingEnabled(enabled: boolean): Promise<void> {
   return invoke("set_seeding_enabled", { enabled });
 }
 
+export interface TransferStats {
+  download_bps: number;
+  upload_bps: number;
+  uploaded_bytes: number;
+  /** False when no torrent is live - distinct from a live 0 B/s. */
+  active: boolean;
+}
+
+export async function getTransferStats(): Promise<TransferStats> {
+  return invoke("get_transfer_stats");
+}
+
+/** Transfer caps in KB/s; `null` means unlimited. */
+export async function setRateLimits(upKbps: number | null, downKbps: number | null): Promise<void> {
+  return invoke("set_rate_limits", { upKbps, downKbps });
+}
+
 export interface TorrentInfo {
   name: string;
   file_count: number;

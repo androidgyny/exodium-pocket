@@ -90,13 +90,26 @@ pub(crate) fn is_offline(db: &std::sync::Mutex<rusqlite::Connection>) -> bool {
 }
 
 /// Sharing is opt-in: only an explicit "1" counts. Split out from
-/// `apply_seeding_preference` so the rule can be tested without a session.
+/// `apply_transfer_preferences` so the rule can be tested without a session.
 pub(crate) fn seeding_enabled(db: &std::sync::Mutex<rusqlite::Connection>) -> bool {
     db.lock()
         .ok()
         .and_then(|conn| queries::get_config(&conn, "seeding_enabled").ok().flatten())
         .as_deref()
         == Some("1")
+}
+
+/// The user's transfer caps in KB/s as `(upload, download)`, `None` meaning
+/// unlimited. Anything unparseable or zero reads as unlimited: a stored "0"
+/// would otherwise mean "throttle to nothing", which is not a setting the UI
+/// can offer back out again.
+pub(crate) fn rate_limits(db: &std::sync::Mutex<rusqlite::Connection>) -> (Option<u32>, Option<u32>) {
+    let read = |key: &str| -> Option<u32> {
+        let conn = db.lock().ok()?;
+        let raw = queries::get_config(&conn, key).ok().flatten()?;
+        raw.parse::<u32>().ok().filter(|v| *v > 0)
+    };
+    (read("rate_limit_up_kbps"), read("rate_limit_down_kbps"))
 }
 
 /// Extract the bundled emulator configs for every enabled collection. This is
@@ -374,7 +387,7 @@ pub async fn init_download_manager(
         .await
         .map_err(|e| e.to_string())?;
     evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
-    apply_seeding_preference(&session, &db_state);
+    apply_transfer_preferences(&session, &db_state);
 
     // Build all managers and do slow work (infohash, config extraction) WITHOUT holding
     // the torrent_state write lock - archive.extract() on 7 000+ files blocks for seconds.
@@ -489,16 +502,27 @@ fn extract_bundled_configs(col: &CollectionDef, metadata_dir: Option<&PathBuf>, 
 }
 
 /// Apply the persisted seeding preference to a freshly created session.
-/// Sharing is OPT-IN: only an explicit "1" lifts the upload cap, anything
-/// else (including an unset key) caps upload at 1 KB/s - see
-/// DownloadManager::set_seeding. Uploading copyrighted material is a legal
-/// risk in some jurisdictions, so it must never start without consent.
-fn apply_seeding_preference(session: &Arc<librqbit::Session>, db_state: &State<'_, DbState>) {
-    let enabled = seeding_enabled(&db_state.0);
-    if !enabled {
-        session
-            .ratelimits
-            .set_upload_bps(std::num::NonZeroU32::new(1024));
+/// Push the stored transfer preferences into a freshly created session.
+///
+/// Sharing is OPT-IN: only an explicit "1" lifts the upload cap, anything else
+/// (including an unset key) caps upload at 1 KB/s. Uploading copyrighted
+/// material is a legal risk in some jurisdictions, so it must never start
+/// without consent. The user's own caps ride along, because a new session
+/// starts unlimited in both directions and would otherwise ignore them until
+/// the next time Settings was touched.
+fn apply_transfer_preferences(session: &Arc<librqbit::Session>, db_state: &State<'_, DbState>) {
+    let seeding = seeding_enabled(&db_state.0);
+    let (up_kbps, down_kbps) = rate_limits(&db_state.0);
+    let up = if seeding {
+        up_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024)))
+    } else {
+        std::num::NonZeroU32::new(crate::torrent::manager::SEEDING_OFF_BPS)
+    };
+    session.ratelimits.set_upload_bps(up);
+    session
+        .ratelimits
+        .set_download_bps(down_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024))));
+    if !seeding {
         log::info!("Seeding disabled by user preference (upload capped at 1 KB/s)");
     }
 }
@@ -1510,7 +1534,7 @@ pub async fn setup_start(
         .await
         .map_err(|e| e.to_string())?;
     evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
-    apply_seeding_preference(&session, &db_state);
+    apply_transfer_preferences(&session, &db_state);
     let manager =
         DownloadManager::new_with_session(session, &torrent_path, &data_path, &persistence_dir)
             .map_err(|e| format!("Failed to init download manager: {}", e))?;
@@ -1863,7 +1887,7 @@ pub async fn setup_from_local(
             .await
             .map_err(|e| format!("Failed to init session: {}", e))?;
         evict_mismatched_session_torrents(&session, &persistence_dir, &data_path).await;
-        apply_seeding_preference(&session, &db_state);
+        apply_transfer_preferences(&session, &db_state);
 
         for col in COLLECTION_MAP {
             if let Ok(col_torrent_path) = bundled_torrent_path(col.torrent_file) {
@@ -2603,6 +2627,21 @@ mod network_mode_tests {
         assert!(!seeding_enabled(&db_with(&[])));
         assert!(!seeding_enabled(&db_with(&[("seeding_enabled", "0")])));
         assert!(!seeding_enabled(&db_with(&[("seeding_enabled", "true")])));
+    }
+
+    /// A cap of 0 would throttle to nothing and the UI has no way to express
+    /// it, so it has to read as "unlimited" like an absent or broken value.
+    #[test]
+    fn rate_limits_treat_zero_and_junk_as_unlimited() {
+        assert_eq!(
+            rate_limits(&db_with(&[("rate_limit_up_kbps", "500"), ("rate_limit_down_kbps", "2000")])),
+            (Some(500), Some(2000))
+        );
+        assert_eq!(rate_limits(&db_with(&[])), (None, None));
+        assert_eq!(rate_limits(&db_with(&[("rate_limit_up_kbps", "")])), (None, None));
+        assert_eq!(rate_limits(&db_with(&[("rate_limit_up_kbps", "0")])), (None, None));
+        assert_eq!(rate_limits(&db_with(&[("rate_limit_up_kbps", "-5")])), (None, None));
+        assert_eq!(rate_limits(&db_with(&[("rate_limit_up_kbps", "abc")])), (None, None));
     }
 
     /// The offline branch of init_download_manager is exactly this call, and

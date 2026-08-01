@@ -10,6 +10,7 @@ import { Setup } from "./pages/Setup";
 import { SearchBar } from "./components/SearchBar";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { SeedingConsentDialog } from "./components/SeedingConsentDialog";
+import { NetworkBadge } from "./components/NetworkBadge";
 import { needsSeedingConsent } from "./stores/seeding";
 import { ContentPackSettings } from "./components/ContentPackSettings";
 import { DownloadIndicator } from "./components/DownloadIndicator";
@@ -22,6 +23,7 @@ import {
   getConfig,
   setConfig,
   setSeedingEnabled,
+  setRateLimits,
   scanInstalledGames,
   openLogFolder,
   checkForUpdates,
@@ -32,6 +34,7 @@ import { applyNetworkMode, isOffline, loadNetworkMode } from "./stores/network";
 import { loadThumbnailDir } from "./stores/thumbnails";
 import { refreshInstalledPacks } from "./stores/contentPacks";
 import { showToast } from "./stores/toasts";
+import { startTransferPolling, stopTransferPolling } from "./stores/transfer";
 import "./styles/main.css";
 import { Button } from "./components/Button";
 
@@ -128,6 +131,8 @@ function App() {
         if (dir) { setDataDir(dir); }
         loadThumbnailDir();
         refreshInstalledPacks();
+        startTransferPolling();
+        onCleanup(stopTransferPolling);
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
           notifyCatalogUpdates();
@@ -155,6 +160,7 @@ function App() {
     loadThumbnailDir();
     refreshInstalledPacks();
     fetchGames();
+    startTransferPolling();
     if (!isOffline()) { checkForAppUpdate(); }
 
     // Show the welcome modal if the user hasn't seen it yet - but never in
@@ -204,13 +210,21 @@ function App() {
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
 
   const [seeding, setSeeding] = createSignal(false);
+  // Kept as strings: an empty field means unlimited, which no number can say.
+  const [limitDown, setLimitDown] = createSignal("");
+  const [limitUp, setLimitUp] = createSignal("");
+  const [limitError, setLimitError] = createSignal("");
   const loadGameDefaults = async () => {
     try {
-      const [shader, fs, seed] = await Promise.all([
+      const [shader, fs, seed, down, up] = await Promise.all([
         getConfig("global_glshader"),
         getConfig("default_fullscreen"),
         getConfig("seeding_enabled"),
+        getConfig("rate_limit_down_kbps"),
+        getConfig("rate_limit_up_kbps"),
       ]);
+      setLimitDown(down ?? "");
+      setLimitUp(up ?? "");
       setCrtAuto(shader == null || shader === "crt-auto");
       setDefaultFullscreen(fs === "fullscreen");
       // Opt-in: only an explicit "1" means sharing (mirrors the Rust side).
@@ -280,6 +294,27 @@ function App() {
       "info",
       { detail: "Change it any time in Settings → Network." },
     );
+  };
+
+  /** Saves on blur rather than per keystroke: applying a limit mid-typing
+   *  would throttle to "5" on the way to "500". */
+  const handleSaveLimits = async () => {
+    setLimitError("");
+    const parse = (raw: string): number | null => {
+      const v = parseInt(raw, 10);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    };
+    const up = parse(limitUp());
+    const down = parse(limitDown());
+    // Normalise the fields to what was actually stored, so "0" or "abc"
+    // visibly becomes unlimited instead of lingering as a rejected value.
+    setLimitUp(up === null ? "" : String(up));
+    setLimitDown(down === null ? "" : String(down));
+    try {
+      await setRateLimits(up, down);
+    } catch (e) {
+      setLimitError(`Could not apply the limits: ${e}`);
+    }
   };
 
   const handleToggleSeeding = async (next: boolean) => {
@@ -391,18 +426,7 @@ function App() {
             {/* Offline is a mode with visible consequences (no downloads, no
                 videos, no sharing), so it says so permanently rather than only
                 inside Settings. */}
-            <Show when={isOffline()}>
-              <Tooltip.Root openDelay={300}>
-                <Tooltip.Trigger asChild={(props) =>
-                  <button {...props()} class="offline-badge" onClick={openSettings}>
-                    <span class="offline-badge-dot" /> Offline
-                  </button>
-                } />
-                <Portal><Tooltip.Positioner><Tooltip.Content class="ark-tooltip">
-                  Torrent client is off - no downloads or previews. Click to change.
-                </Tooltip.Content></Tooltip.Positioner></Portal>
-              </Tooltip.Root>
-            </Show>
+            <NetworkBadge onOpenSettings={openSettings} />
             <DownloadIndicator />
             <Tooltip.Root openDelay={400}>
               <Tooltip.Trigger asChild={(props) =>
@@ -510,6 +534,45 @@ function App() {
                             ? "Nothing is shared while offline. Your choice is kept for when you switch back."
                             : "Uploads parts of the games you have to other users while Exodium runs. Keeps the collection alive - but distributing game files carries legal risk in some countries. Off caps upload at 1 KB/s."}
                         />
+
+                        {/* Caps apply to the whole session, both directions.
+                            Empty means unlimited, which is what a torrent
+                            client does by default. */}
+                        <div class="setting-row setting-row--limits">
+                          <span class="setting-label">Speed limits</span>
+                          <span class="setting-hint">Leave empty for unlimited</span>
+                          <div class="limit-inputs">
+                            <label class="limit-field">
+                              <span>Down</span>
+                              <input
+                                type="number"
+                                min="1"
+                                placeholder="∞"
+                                disabled={isOffline()}
+                                value={limitDown()}
+                                onInput={(e) => setLimitDown(e.currentTarget.value)}
+                                onChange={handleSaveLimits}
+                              />
+                              <span>KB/s</span>
+                            </label>
+                            <label class="limit-field">
+                              <span>Up</span>
+                              <input
+                                type="number"
+                                min="1"
+                                placeholder="∞"
+                                disabled={isOffline() || !seeding()}
+                                value={limitUp()}
+                                onInput={(e) => setLimitUp(e.currentTarget.value)}
+                                onChange={handleSaveLimits}
+                              />
+                              <span>KB/s</span>
+                            </label>
+                          </div>
+                        </div>
+                        <Show when={limitError()}>
+                          <div class="error" style="margin-top:6px">{limitError()}</div>
+                        </Show>
                       </section>
 
                       <section class="settings-section">

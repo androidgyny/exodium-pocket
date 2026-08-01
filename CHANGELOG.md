@@ -16,6 +16,12 @@
   importing an existing eXoDOS installation you can pick "Offline" - the
   torrent client is never started, and Exodium acts as a pure launcher for
   the games already on disk. Switchable any time in Settings → Network.
+- **Network badge with live transfer rates.** The top bar shows the current
+  down/up speed while anything is moving, summed across all four collections,
+  and reads "Online" when idle. Its tooltip reports how much you have shared
+  this session. Clicking it opens the network settings.
+- **Speed limits.** Settings → Network takes an upload and download cap in
+  KB/s, applied immediately and to the whole session. Empty means unlimited.
 
 ### Changed
 
