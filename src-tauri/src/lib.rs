@@ -167,6 +167,26 @@ pub fn allow_asset_dir(app: &tauri::AppHandle, data_dir: &Path) {
             log::warn!("Failed to extend asset scope to {}: {}", dir.display(), e);
         }
     }
+
+    // Bundled preview thumbnails. The static scope grants $RESOURCE/**, which
+    // covers the packaged app - but in `tauri dev` the previews are read from
+    // the source tree (src-tauri/resources/previews), which is outside it. The
+    // result was ~200 denials per session and no fallback covers for any game
+    // without a downloaded poster pack.
+    let preview_roots = [
+        commands::setup::RESOURCE_DIR.get().map(|d| d.join("previews")),
+        // `tauri dev` resolves previews from the source tree - see
+        // setup::get_preview_dir, which probes exactly this path first.
+        Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("previews")),
+    ];
+    for previews in preview_roots.into_iter().flatten() {
+        if !previews.is_dir() {
+            continue;
+        }
+        if let Err(e) = app.asset_protocol_scope().allow_directory(&previews, true) {
+            log::warn!("Failed to extend asset scope to {}: {}", previews.display(), e);
+        }
+    }
 }
 
 /// Empty in-memory DB used when the real one can't be opened, so the app

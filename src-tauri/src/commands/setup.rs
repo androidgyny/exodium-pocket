@@ -341,6 +341,7 @@ pub async fn init_download_manager(
 
     // Startup is the natural place to bound the gallery cache: nothing else
     // deletes from it, and doing it here keeps it off the panel-open path.
+    remove_legacy_cache_dirs(&data_dir);
     prune_gallery_cache(&gallery_cache_dir(&data_dir), GALLERY_CACHE_MAX_BYTES);
 
     // Offline mode: no session, no torrents, no swarm traffic - the app is a
@@ -717,7 +718,7 @@ pub async fn factory_reset(
 /// Convert a PathBuf to a forward-slash string. Tauri's convertFileSrc on
 /// the frontend expects consistent separators when we later join `${dir}/${file}`;
 /// mixed Windows backslash + frontend forward slash produces broken asset URLs.
-fn path_to_fwd_slash(p: &Path) -> String {
+pub(crate) fn path_to_fwd_slash(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
@@ -805,6 +806,14 @@ pub async fn get_preview_dir(collection: String) -> Result<String, String> {
         }
     }
 
+    // Only eXoDOS ships a preview pack; the language packs share it. That is
+    // by design, not a missing file, so it must not be a warning - three of
+    // them fired at every startup and buried the real ones.
+    if collection != "eXoDOS" {
+        log::debug!("get_preview_dir({}): no dedicated pack, falling back to eXoDOS", collection);
+        return Box::pin(get_preview_dir("eXoDOS".to_string())).await;
+    }
+
     let checked: Vec<String> = candidates
         .iter()
         .map(|p| p.display().to_string())
@@ -869,8 +878,23 @@ const THUMB_MAX_EDGE: u32 = 160;
 
 /// Where cached gallery thumbnails live. Inside the content dir so a factory
 /// reset that clears content also clears the cache.
+///
+/// NOT a dotted directory: Tauri's asset-protocol scope glob does not match
+/// hidden path components, so `.thumbcache` was silently denied for every
+/// image (202 denials in one session) while `content/posters` worked.
 fn gallery_cache_dir(data_dir: &str) -> PathBuf {
-    PathBuf::from(data_dir).join("content").join(".thumbcache")
+    PathBuf::from(data_dir).join("content").join("thumbcache")
+}
+
+/// Remove caches from before the rename - they can never be served.
+fn remove_legacy_cache_dirs(data_dir: &str) {
+    for legacy in [".thumbcache", ".videocache"] {
+        let dir = PathBuf::from(data_dir).join("content").join(legacy);
+        if dir.is_dir() {
+            log::info!("Removing unusable legacy cache dir {}", dir.display());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }
 
 /// Cache filename for a source image: content-addressed by path + size +
@@ -2473,7 +2497,14 @@ mod metadata_scan_tests {
         let mut thumb_total = 0u64;
         for (full, thumb) in meta.images.iter().zip(meta.thumbnails.iter()) {
             assert_ne!(full, thumb, "strip must not be handed the full-size file");
-            assert!(thumb.contains(".thumbcache"), "thumbnail should live in the cache dir");
+            assert!(thumb.contains("/thumbcache/"), "thumbnail should live in the cache dir");
+            // The bug this encodes: Tauri's asset-protocol scope glob does not
+            // match hidden path components, so a dotted cache dir is served to
+            // nobody - 202 denials in one session before this was found.
+            assert!(
+                !thumb.split('/').any(|part| part.starts_with('.')),
+                "cache path must have no hidden component: {}", thumb
+            );
             let (w, h) = image::image_dimensions(Path::new(thumb)).unwrap();
             assert!(w <= THUMB_MAX_EDGE && h <= THUMB_MAX_EDGE, "{}x{}", w, h);
             full_total += std::fs::metadata(Path::new(full)).unwrap().len();
@@ -2512,7 +2543,8 @@ mod metadata_scan_tests {
 
         assert_eq!(meta.images.len(), 1);
         assert!(meta.images[0].contains("/eXoDOS/"), "resolved from the EN pack");
-        assert!(meta.thumbnails[0].contains(".thumbcache"));
+        assert!(meta.thumbnails[0].contains("/thumbcache/"));
+        assert!(!meta.thumbnails[0].split('/').any(|p| p.starts_with('.')));
         let _ = std::fs::remove_dir_all(&data);
     }
 
