@@ -1391,6 +1391,14 @@ body {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  margin-top: 20px;
+}
+
+/* Dialog buttons size to their label. `.btn-primary` carries `width: 100%` for
+   the setup screen's stacked layout, which next to a second button here turns
+   the confirming one into a full-width slab. */
+.ark-dialog-actions .app-btn {
+  width: auto;
 }
 
 /* ── Welcome modal content-pack picker ─────────────────────────────────────── */
@@ -3718,6 +3726,9 @@ body {
   justify-content: center;
   gap: 6px;
   line-height: 1.2;
+  /* A label broken across two lines reads as two controls. Buttons are short
+     by design; if one is too long for its row, the row is wrong. */
+  white-space: nowrap;
 }
 
 .app-btn > svg {
