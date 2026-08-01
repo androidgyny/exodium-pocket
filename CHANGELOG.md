@@ -55,6 +55,8 @@
   with nothing cleaning them up; they now live in Exodium's own directory and
   the strays are removed on the next start.
 - Buttons with an icon aligned it on the text baseline instead of centring it.
+- The first-run screen now shows Exodium's icon, and the window icon is
+  Exodium's rather than the SolidJS logo left over from the project template.
 - Preview thumbnails and the gallery cache were invisible to the app's own
   asset protocol - hidden directories are not matched by its scope, so nothing
   in them was ever served. Both caches moved out of hidden paths.

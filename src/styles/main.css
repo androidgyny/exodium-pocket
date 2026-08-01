@@ -3724,3 +3724,15 @@ body {
   display: block;
   flex-shrink: 0;
 }
+
+/* The app icon on the first-run screen. Deliberately the real bundle icon and
+   not src/assets/logo.svg - that one is the SolidJS logo from the project
+   template, which happened to be the favicon until now. */
+.setup-logo {
+  display: block;
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 14px;
+  border-radius: 16px;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.5));
+}

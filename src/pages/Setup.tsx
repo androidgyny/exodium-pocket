@@ -13,6 +13,7 @@ import {
 import type { NetworkMode } from "../stores/network";
 import { Button } from "../components/Button";
 import { Toggle } from "../components/Toggle";
+import exodiumIcon from "../assets/exodium-icon.png";
 
 interface SetupProps {
   onComplete: () => void;
@@ -166,6 +167,7 @@ export function Setup(props: SetupProps) {
   return (
     <div class="setup-page">
       <div class="setup-card">
+        <img src={exodiumIcon} alt="" class="setup-logo" />
         <h2>Welcome to Exodium</h2>
 
         <Show when={error()}>
