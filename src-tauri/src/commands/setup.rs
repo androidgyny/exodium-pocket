@@ -515,18 +515,7 @@ fn extract_bundled_configs(col: &CollectionDef, metadata_dir: Option<&PathBuf>, 
 fn apply_transfer_preferences(session: &Arc<librqbit::Session>, db_state: &State<'_, DbState>) {
     let seeding = seeding_enabled(&db_state.0);
     let (up_kbps, down_kbps) = rate_limits(&db_state.0);
-    let up = if seeding {
-        up_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024)))
-    } else {
-        std::num::NonZeroU32::new(crate::torrent::manager::SEEDING_OFF_BPS)
-    };
-    session.ratelimits.set_upload_bps(up);
-    session
-        .ratelimits
-        .set_download_bps(down_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024))));
-    if !seeding {
-        log::info!("Seeding disabled by user preference (upload capped at 1 KB/s)");
-    }
+    crate::torrent::manager::apply_session_limits(session, seeding, up_kbps, down_kbps);
 }
 
 /// Drop session torrents whose persisted output folder is outside the current

@@ -28,6 +28,9 @@ async function poll() {
   }
   try {
     const next = await getTransferStats();
+    // A poll in flight when stopTransferPolling() ran would otherwise write
+    // its result after the stop cleared the signal.
+    if (!running) { return; }
     setStats(next);
     const moving = next.download_bps > 0 || next.upload_bps > 0;
     schedule(moving ? ACTIVE_MS : IDLE_MS);

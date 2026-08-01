@@ -32,7 +32,7 @@ import { applyNetworkMode, isOffline, loadNetworkMode } from "./stores/network";
 import { loadThumbnailDir } from "./stores/thumbnails";
 import { refreshInstalledPacks } from "./stores/contentPacks";
 import { showToast } from "./stores/toasts";
-import { startTransferPolling, stopTransferPolling } from "./stores/transfer";
+import { startTransferPolling } from "./stores/transfer";
 import "./styles/main.css";
 import { Button } from "./components/Button";
 
@@ -80,18 +80,23 @@ function App() {
       if (status.ready) {
         setPhase("ready");
         await loadNetworkMode();
-        setShowSeedingConsent(await needsSeedingConsent());
         try {
           await initDownloadManager();
         } catch (e) {
           console.error("Failed to init download manager:", e);
         }
+        // After the manager exists, not before: answering the dialog applies
+        // the choice to the running session, and a click landing in the gap
+        // would be written to the DB but never reach librqbit.
+        setShowSeedingConsent(await needsSeedingConsent());
         const dir = await getConfig("data_dir");
         if (dir) { setDataDir(dir); }
         loadThumbnailDir();
         refreshInstalledPacks();
+        // No onCleanup: this runs after an await, where Solid has no owner to
+        // attach it to, so it would silently never fire. The poll lives as
+        // long as the app does.
         startTransferPolling();
-        onCleanup(stopTransferPolling);
         loadSeeding();
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
@@ -258,9 +263,14 @@ function App() {
    *  would throttle to "5" on the way to "500". */
   const handleSaveLimits = async () => {
     setLimitError("");
+    // Clamped to u32: the command's parameter type is u32, and anything larger
+    // fails deserialization with an error about integers rather than about
+    // speed limits.
+    const MAX_KBPS = 4_000_000;
     const parse = (raw: string): number | null => {
       const v = parseInt(raw, 10);
-      return Number.isFinite(v) && v > 0 ? v : null;
+      if (!Number.isFinite(v) || v <= 0) { return null; }
+      return Math.min(v, MAX_KBPS);
     };
     const up = parse(limitUp());
     const down = parse(limitDown());

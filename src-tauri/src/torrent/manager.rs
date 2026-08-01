@@ -17,6 +17,39 @@ use walkdir::WalkDir;
 /// working.
 pub const SEEDING_OFF_BPS: u32 = 1024;
 
+/// Apply the effective transfer caps to a session.
+///
+/// Free-standing because two callers need it: `DownloadManager::apply_limits`
+/// for a running session, and `init_download_manager` for one that was just
+/// created (a new session starts unlimited in both directions). Both MUST go
+/// through here - seeding and the user's upload limit write the same knob, and
+/// a second copy of this rule would drift from the first.
+pub fn apply_session_limits(
+    session: &librqbit::Session,
+    seeding: bool,
+    up_kbps: Option<u32>,
+    down_kbps: Option<u32>,
+) {
+    let to_bps = |kbps: u32| std::num::NonZeroU32::new(kbps.saturating_mul(1024));
+    // Seeding off wins over any user limit: librqbit has no upload
+    // kill-switch, so 1 KB/s is as close to off as it gets while leaving
+    // enough headroom for the handshakes downloads depend on.
+    let up = if seeding {
+        up_kbps.and_then(to_bps)
+    } else {
+        std::num::NonZeroU32::new(SEEDING_OFF_BPS)
+    };
+    let down = down_kbps.and_then(to_bps);
+    session.ratelimits.set_upload_bps(up);
+    session.ratelimits.set_download_bps(down);
+    log::info!(
+        "Transfer limits: seeding={} up={} down={}",
+        seeding,
+        up.map_or("unlimited".to_string(), |b| format!("{} B/s", b.get())),
+        down.map_or("unlimited".to_string(), |b| format!("{} B/s", b.get())),
+    );
+}
+
 use anyhow::Context;
 use super::TorrentIndex;
 
@@ -171,20 +204,26 @@ pub struct DownloadProgress {
     pub extras_done: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct DownloadManagerStatus {
-    pub active_downloads: Vec<DownloadProgress>,
-    /// Bytes per second, `None` while the torrent has no live state (not
-    /// added, checking, paused). That is different from a live zero and the
-    /// UI shows it differently, so don't collapse it to 0.
-    pub download_bps: Option<u64>,
-    pub upload_bps: Option<u64>,
-    /// Uploaded since this session started - librqbit keeps no lifetime total.
-    pub uploaded_bytes: Option<u64>,
+/// Live transfer figures for the shared session.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct SessionTransfer {
+    pub download_bps: u64,
+    pub upload_bps: u64,
+    /// Uploaded since the session started - librqbit keeps no lifetime total.
+    pub uploaded_bytes: u64,
     /// Peers currently connected. The readout that answers "is anything
     /// happening" while the rates sit at zero: connections are a standing
     /// state, transfer is event-driven.
-    pub peers: Option<u32>,
+    pub peers: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadManagerStatus {
+    pub active_downloads: Vec<DownloadProgress>,
+    /// Whether this manager's torrent is live (not merely added, checking or
+    /// paused). "Nothing running" and "running at 0 B/s" are different things
+    /// and the UI shows them differently, so don't collapse them.
+    pub live: bool,
 }
 
 /// Manages BitTorrent downloads using librqbit with selective file support.
@@ -375,21 +414,24 @@ impl DownloadManager {
     ///
     /// Limits are in KB/s, `None` meaning unlimited. The session is shared
     /// across collections, so calling this on any one manager affects all.
+    /// Live transfer rates for the whole session.
+    ///
+    /// Session-wide on purpose: all collections share one session, so this is
+    /// one cheap read instead of summing per-torrent stats - and `stats()`
+    /// copies a 15,000-entry file-progress vector plus a path String per
+    /// selected file, which is a lot of work to poll for three numbers.
+    pub fn session_transfer(&self) -> SessionTransfer {
+        let snap = self.session.stats_snapshot();
+        SessionTransfer {
+            download_bps: snap.download_speed.as_bytes(),
+            upload_bps: snap.upload_speed.as_bytes(),
+            uploaded_bytes: snap.counters.uploaded_bytes,
+            peers: snap.peers.live,
+        }
+    }
+
     pub fn apply_limits(&self, seeding: bool, up_kbps: Option<u32>, down_kbps: Option<u32>) {
-        let up = if seeding {
-            up_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024)))
-        } else {
-            std::num::NonZeroU32::new(SEEDING_OFF_BPS)
-        };
-        let down = down_kbps.and_then(|k| std::num::NonZeroU32::new(k.saturating_mul(1024)));
-        self.session.ratelimits.set_upload_bps(up);
-        self.session.ratelimits.set_download_bps(down);
-        log::info!(
-            "Transfer limits: seeding={} up={} down={}",
-            seeding,
-            up.map_or("unlimited".to_string(), |b| format!("{} B/s", b.get())),
-            down.map_or("unlimited".to_string(), |b| format!("{} B/s", b.get())),
-        );
+        apply_session_limits(&self.session, seeding, up_kbps, down_kbps);
     }
 
     /// Stop the shared librqbit session: aborts live torrents and flushes
@@ -778,24 +820,13 @@ impl DownloadManager {
             }
         }
 
-        let live = handle_guard.as_ref().and_then(|h| {
-            let s = h.stats();
-            s.live.as_ref().map(|l| {
-                (
-                    l.download_speed.as_bytes(),
-                    l.upload_speed.as_bytes(),
-                    l.snapshot.uploaded_bytes,
-                    l.snapshot.peer_stats.live,
-                )
-            })
-        });
+        // `live()` is an Arc clone; `stats()` would copy a 15,000-entry
+        // file-progress vector just to answer this.
+        let live = handle_guard.as_ref().is_some_and(|h| h.live().is_some());
 
         DownloadManagerStatus {
             active_downloads,
-            download_bps: live.map(|(d, ..)| d),
-            upload_bps: live.map(|(_, u, ..)| u),
-            uploaded_bytes: live.map(|(_, _, t, _)| t),
-            peers: live.map(|(.., p)| p),
+            live,
         }
     }
 

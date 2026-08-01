@@ -256,13 +256,19 @@ Two config keys, both answered during setup and changeable in Settings → Netwo
 
 Seeding and the user's speed limits write the SAME librqbit knob
 (`ratelimits.set_upload_bps`), so they must never be applied separately -
-`DownloadManager::apply_limits` is the only place that computes the effective
-caps, and seeding-off (1 KB/s) always wins over a user limit. A new session
-starts unlimited, so `apply_transfer_preferences` pushes both preferences in at
-creation time. Rates for the top-bar badge come from `get_transfer_stats`, which
-sums over ALL managers: the four collections have separate managers over one
-shared session, so reading a single one reports 0 B/s while a language pack
-downloads.
+`torrent::manager::apply_session_limits` is the only place that computes the
+effective caps, and seeding-off (1 KB/s) always wins over a user limit. Both
+callers go through it: `DownloadManager::apply_limits` for a running session,
+`apply_transfer_preferences` for a freshly created one (a new session starts
+unlimited). A second copy of that rule drifts from the first - it already did
+once.
+
+Rates for the top-bar badge come from `get_transfer_stats` →
+`Session::stats_snapshot()`, which is session-wide. Do NOT sum per-torrent
+stats for this: all four collections share one session, `handle.stats()` copies
+a 15,000-entry file-progress vector plus a path String per selected file, and a
+peer serving two collections would be counted twice. Per-manager `status()` is
+only asked whether its torrent is live.
 
 **Offline means no network at all, not "no torrent".** Everything that reaches
 out has to check `is_offline` / `isOffline()`: game downloads, preview videos,

@@ -61,6 +61,35 @@ describe("downloads state machine", () => {
     expect(getDownloadState(120)!.status).toContain("shared data block");
   });
 
+  // Torrent progress moves in whole 8 MB pieces, so on a slow line it goes
+  // quiet for minutes at a time and looks exactly like a stall. The session
+  // byte rate is the continuous signal that tells them apart.
+  it("trusts the session byte rate when piece progress goes quiet", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "download_game") { return Promise.resolve("Downloading: Dig Dug"); }
+      if (cmd === "get_download_progress") {
+        return Promise.resolve(makeProgress({
+          progress: 0, downloaded_bytes: 0, torrent_progress: 0.5,
+        }));
+      }
+      if (cmd === "get_transfer_stats") {
+        return Promise.resolve({
+          download_bps: 50_000, upload_bps: 0, uploaded_bytes: 0, peers: 4, active: true,
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const { startTransferPolling, stopTransferPolling } = await import("./transfer");
+    const { startGameDownload, getDownloadState } = await import("./downloads");
+    startTransferPolling();
+    startGameDownload(122);
+    await vi.advanceTimersByTimeAsync(95_000);
+
+    expect(getDownloadState(122)!.status).not.toContain("Stalled");
+    stopTransferPolling();
+  });
+
   // The warning still has to work: nothing moving anywhere is a real fault.
   it("still reports a stall when the torrent itself receives nothing", async () => {
     mockInvoke.mockImplementation((cmd: string) => {

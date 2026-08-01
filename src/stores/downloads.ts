@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { cancelDownload, downloadGame, getDownloadProgress } from "../api/tauri";
 import { refreshLoadedGames, notifyGameLibraryChanged } from "./games";
 import { showToast } from "./toasts";
+import { transferStats } from "./transfer";
 
 interface DownloadState {
   status: string;
@@ -274,7 +275,14 @@ export function startGameDownload(gameId: number, title?: string) {
         const stalledSecs = (now - (lastProgressAt[gameId] ?? now)) / 1000;
         // Data is arriving for the torrent even if none of it has landed in
         // this game's file yet - so this is a wait, not a fault.
-        const receiving = (now - (lastTorrentAt[gameId] ?? now)) / 1000 < STALL_HINT_SECS;
+        //
+        // Two signals, because torrent progress also moves in whole pieces: at
+        // 50 KB/s an 8 MB piece takes over two minutes, so on a slow line the
+        // per-piece signal goes quiet exactly like a real stall. The session
+        // byte rate is continuous and settles it.
+        const pieceAdvanced = (now - (lastTorrentAt[gameId] ?? now)) / 1000 < STALL_HINT_SECS;
+        const bytesFlowing = (transferStats()?.download_bps ?? 0) >= 1024;
+        const receiving = pieceAdvanced || bytesFlowing;
         const pct = `${(safeProgress * 100).toFixed(0)}%`;
         let status = pct;
         if (stalledSecs >= STALL_HINT_SECS && receiving) {

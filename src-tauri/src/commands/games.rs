@@ -281,50 +281,50 @@ async fn apply_stored_limits(db_state: &State<'_, DbState>, torrent_state: &Stat
     }
 }
 
-/// Live transfer rates, summed across collections.
-#[derive(Debug, Clone, serde::Serialize)]
+/// Live transfer figures shown in the network badge.
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TransferStats {
     pub download_bps: u64,
     pub upload_bps: u64,
+    /// Uploaded since the session started - librqbit keeps no lifetime total.
     pub uploaded_bytes: u64,
-    /// Connected peers across all collections. A peer serving two collections
-    /// counts twice, same as any torrent client's per-torrent peer list - the
-    /// number answers "are we in the swarm", not "how many humans".
+    /// Peers currently connected. The readout that answers "is anything
+    /// happening" while the rates sit at zero: connections are a standing
+    /// state, transfer is event-driven.
     pub peers: u32,
     /// False when no torrent is live anywhere - the difference between "idle"
     /// and "nothing running", which the badge shows differently.
     pub active: bool,
 }
 
-/// Current up/down rates across every collection.
+/// Current transfer rates for the whole torrent session.
 ///
-/// Summing matters: the four collections have separate managers over one
-/// shared session, so reading a single manager reports 0 B/s while a language
-/// pack is downloading.
+/// All four collections share one librqbit session, so this is a single cheap
+/// read rather than a sum over managers - and it cannot double-count a peer
+/// that serves two collections.
 #[tauri::command]
 pub async fn get_transfer_stats(torrent_state: State<'_, TorrentState>) -> Result<TransferStats, String> {
     let managers: Vec<_> = { torrent_state.0.read().await.values().cloned().collect() };
-    let mut stats = TransferStats {
-        download_bps: 0,
-        upload_bps: 0,
-        uploaded_bytes: 0,
-        peers: 0,
-        active: false,
+    let Some(first) = managers.first() else {
+        return Ok(TransferStats::default());
     };
-    for mgr in managers {
-        let s = mgr.status().await;
-        if let Some(d) = s.download_bps {
-            stats.download_bps += d;
-            stats.active = true;
+    let t = first.session_transfer();
+    // Liveness is per torrent, so it still needs every manager: the session
+    // exists in offline-to-online transitions before any torrent is running.
+    let mut active = false;
+    for mgr in &managers {
+        if mgr.status().await.live {
+            active = true;
+            break;
         }
-        if let Some(u) = s.upload_bps {
-            stats.upload_bps += u;
-            stats.active = true;
-        }
-        stats.uploaded_bytes += s.uploaded_bytes.unwrap_or(0);
-        stats.peers += s.peers.unwrap_or(0);
     }
-    Ok(stats)
+    Ok(TransferStats {
+        download_bps: t.download_bps,
+        upload_bps: t.upload_bps,
+        uploaded_bytes: t.uploaded_bytes,
+        peers: t.peers,
+        active,
+    })
 }
 
 /// Queue a game for download via torrent.
