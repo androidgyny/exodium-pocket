@@ -68,7 +68,10 @@ struct VideoJob {
     cancel: Arc<AtomicBool>,
 }
 
-pub struct VideoState(pub Arc<RwLock<HashMap<i64, VideoJob>>>);
+/// Tauri-managed state for in-flight video fetches. The field is private
+/// because `VideoJob` is - a `pub` field of a private type is an error under
+/// `-D warnings`, and nothing outside this module ever needed the access.
+pub struct VideoState(Arc<RwLock<HashMap<i64, VideoJob>>>);
 
 impl VideoState {
     pub fn new() -> Self {

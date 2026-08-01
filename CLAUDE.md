@@ -142,6 +142,17 @@ pnpm tauri dev
 
 `init-dev` chains `get-dosbox` + thumbnail generation. Each step is idempotent - already-downloaded files are skipped. When run interactively without pack flags it prompts whether to download LP metadata. `XODOSMetadata.zip` is only used for thumbnails - the game catalogue comes from the bundled `.xml.gz` files. Downloaded ZIPs are cached under `~/.exodium-dev/` (override with `XDO_DEV_DATA=/your/path`).
 
+**Before pushing Rust changes, run what CI runs:**
+
+```bash
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
+`cargo check` and `cargo test` are not enough - CI promotes every warning to an
+error, so a lint that looks like harmless noise locally is a red pipeline. The
+release workflow does NOT run clippy, so a green release does not mean a green
+CI.
+
 To download only the DOSBox binary (without thumbnails):
 ```bash
 pnpm run get-dosbox
