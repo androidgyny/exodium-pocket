@@ -460,7 +460,7 @@ function App() {
 
                       <section class="settings-section">
                         <h3 class="settings-section-title">Network</h3>
-                        <p class="settings-section-hint">Games are downloaded from the eXoDOS BitTorrent swarm. Both settings below are off by default - nothing is downloaded or uploaded until you ask for it.</p>
+                        <p class="settings-section-hint">Games are downloaded from the eXoDOS BitTorrent swarm.</p>
                         {/* A switch, not a checkbox: this one starts and stops
                             a network service, which is a mode rather than an
                             option among several. */}
