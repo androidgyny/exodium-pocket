@@ -1,6 +1,7 @@
 import { createSignal, createEffect, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
+import { Button } from "./Button";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -53,7 +54,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               <Dialog.Title class="ark-dialog-title">{props.title}</Dialog.Title>
               <Dialog.Description class="ark-dialog-desc">{props.message}</Dialog.Description>
               <div class="ark-dialog-actions">
-                <button class="btn-secondary" onClick={() => close(false)}>Cancel</button>
+                <Button variant="secondary" onClick={() => close(false)}>Cancel</Button>
                 <button
                   class={props.danger ? "btn-danger" : "btn-primary"}
                   onClick={() => close(true)}

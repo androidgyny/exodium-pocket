@@ -13,6 +13,7 @@ import {
 } from "../stores/contentPacks";
 import { formatBytes } from "../util";
 import { showToast } from "../stores/toasts";
+import { Button } from "./Button";
 import { isOffline } from "../stores/network";
 
 type CollectionPacks = {
@@ -163,10 +164,9 @@ export function ContentPackSettings() {
 
                     <Show when={isActive()}>
                       <span class="pack-status-inline">{statusText()}</span>
-                      <button
-                        class="btn-small btn-danger"
-                        onClick={() => handleCancel(col.id, pack.id, pack.display_name)}
-                      >Cancel</button>
+                      <Button variant="danger" class="btn-small" onClick={() => handleCancel(col.id, pack.id, pack.display_name)}>
+                        Cancel
+                      </Button>
                       <div class="pack-progress">
                         <AutoProgress value={progress()} class="mini" indeterminate={job()?.phase !== "downloading" || undefined} />
                       </div>
@@ -177,15 +177,14 @@ export function ContentPackSettings() {
                         <span class="pack-status-inline">
                           {pendingAction() === "remove" ? "Removing…" : `Installed · v${pack.installed_version}`}
                         </span>
-                        <button
-                          class="btn-small btn-danger"
+                        <Button
+                          variant="danger"
+                          class="btn-small"
+                          loading={pendingAction() === "remove"}
                           onClick={() => handleUninstall(col.id, pack.id, pack.display_name)}
-                          disabled={pendingAction() === "remove"}
                         >
-                          <Show when={pendingAction() === "remove"} fallback={<>Remove</>}>
-                            <span class="btn-spinner" /> Remove
-                          </Show>
-                        </button>
+                          Remove
+                        </Button>
                       </Show>
 
                       <Show when={!pack.installed && isSupersededByInstalled()}>
@@ -193,18 +192,17 @@ export function ContentPackSettings() {
                       </Show>
 
                       <Show when={!pack.installed && !isSupersededByInstalled() && !isFuture()}>
-                        <button
-                          class="btn-small"
-                          onClick={() => handleInstall(col.id, pack.id, pack.display_name)}
-                          disabled={pendingAction() === "install" || blockedOffline()}
+                        <Button
+                          loading={pendingAction() === "install"}
+                          loadingLabel="Starting…"
+                          disabled={blockedOffline()}
                           title={blockedOffline()
                             ? "Offline mode - this pack comes from the torrent. Enable downloads in Settings → Network."
                             : undefined}
+                          onClick={() => handleInstall(col.id, pack.id, pack.display_name)}
                         >
-                          <Show when={pendingAction() === "install"} fallback={<>Install</>}>
-                            <span class="btn-spinner" /> Starting…
-                          </Show>
-                        </button>
+                          Install
+                        </Button>
                       </Show>
 
                       <Show when={isFuture()}>

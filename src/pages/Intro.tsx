@@ -1,5 +1,6 @@
 import { createSignal, For } from "solid-js";
 import "./Intro.css";
+import { Button } from "../components/Button";
 
 interface Collection {
   id: string;
@@ -99,9 +100,9 @@ export function Intro(props: IntroProps) {
           </For>
         </div>
 
-        <button class="btn-primary intro-continue" onClick={handleContinue}>
+        <Button variant="primary" class="intro-continue" onClick={handleContinue}>
           Continue
-        </button>
+        </Button>
       </div>
     </div>
   );

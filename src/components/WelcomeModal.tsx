@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { listContentPacks, setConfig, type ContentPackStatus } from "../api/tauri";
 import { startContentPackInstall } from "../stores/contentPacks";
 import { formatBytes } from "../util";
+import { Button } from "./Button";
 
 interface Props {
   open: boolean;
@@ -123,12 +124,12 @@ export function WelcomeModal(props: Props) {
 
             <div class="ark-dialog-actions">
               <Show when={error()}>
-                <button class="btn-secondary" onClick={props.onClose}>Close</button>
+                <Button variant="secondary" onClick={props.onClose}>Close</Button>
               </Show>
               <Show when={canProceed()}>
-                <button class="btn-primary" onClick={handleContinue}>
+                <Button variant="primary" onClick={handleContinue}>
                   {selected() ? "Download & Continue" : "Continue"}
-                </button>
+                </Button>
               </Show>
             </div>
           </Dialog.Content>

@@ -6,6 +6,7 @@ import { Lightbox } from "./Lightbox";
 import { ManualViewer } from "./ManualViewer";
 import { GameSettingsDialog } from "./GameSettingsDialog";
 import { PlaylistMenu } from "./PlaylistMenu";
+import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
 import { launchGame } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
@@ -425,8 +426,9 @@ export function GameDetailPanel(props: Props) {
   const manualAvailable = () => !!metadata()?.manual_path;
 
   const ManualButton = () => (
-    <button
-      class="game-detail-btn btn-manual"
+    <Button
+      variant="action"
+      class="btn-manual"
       onClick={handleManualClick}
       // Not yet extracted: the button is simply inert rather than clickable
       // into a "not available" message. The metadata cache is invalidated when
@@ -440,31 +442,26 @@ export function GameDetailPanel(props: Props) {
             : undefined
       }
     >
-      <Show when={metadataLoading()} fallback={
-        <>
-          Manual
-          <Show when={manualAvailable() && manualIsFallback()}>
-            <span class="btn-suffix">{manualRow()?.language}</span>
-          </Show>
-        </>
-      }>
-        <span class="btn-spinner" /> Manual
+      Manual
+      <Show when={!metadataLoading() && manualAvailable() && manualIsFallback()}>
+        <span class="btn-suffix">{manualRow()?.language}</span>
       </Show>
-    </button>
+    </Button>
   );
 
   // Shared "Play" button - same disabled+spinner UX whether it's the main
   // single-language action or one row of the multi-language variant list.
   const PlayButton = (p: { id: number; class: string; disabled?: boolean }) => (
-    <button
-      class={p.class}
+    <Button
+      variant="action"
+      class={p.class.replace("game-detail-btn ", "")}
       onClick={() => handleLaunch(p.id)}
-      disabled={p.disabled || launchingId() === p.id}
+      disabled={p.disabled}
+      loading={launchingId() === p.id}
+      loadingLabel="Starting…"
     >
-      <Show when={launchingId() === p.id} fallback={<>▶ Play</>}>
-        <span class="btn-spinner" /> Starting…
-      </Show>
-    </button>
+      ▶ Play
+    </Button>
   );
 
   // Genre column is semicolon-joined. The hero chip shows the first piece
@@ -646,9 +643,9 @@ export function GameDetailPanel(props: Props) {
                       <ManualButton />
                     </Show>
                     <Show when={selectedInstalled()}>
-                      <button class="game-detail-btn btn-settings" title="Game settings" onClick={() => setSettingsOpen(true)}>
+                      <Button variant="action" class="btn-settings" title="Game settings" onClick={() => setSettingsOpen(true)}>
                         ⚙
-                      </button>
+                      </Button>
                     </Show>
                     <Show when={!selectedInstalled() && selectedDownloading()}>
                       <div class="game-detail-btn btn-downloading">
@@ -659,19 +656,20 @@ export function GameDetailPanel(props: Props) {
                         />
                         <span>{selectedDl()?.status}</span>
                       </div>
-                      <button class="game-detail-btn btn-cancel" onClick={() => cancelGameDownload(sel().id!)}>
+                      <Button variant="action" class="btn-cancel" onClick={() => cancelGameDownload(sel().id!)}>
                         ✕ Cancel
-                      </button>
+                      </Button>
                     </Show>
                     <Show when={!selectedInstalled() && !selectedDownloading() && sel().game_torrent_index != null && !isOffline()}>
-                      <button
-                        class="game-detail-btn btn-download"
+                      <Button
+                        variant="action"
+                        class="btn-download"
                         onClick={() => handleDownload(sel().id!, isMultiLang() ? `${sel().title} [${sel().language}]` : sel().title)}
                       >
                         {sel().in_library
                           ? "↓ Re-download"
                           : `↓ Download ${sel().download_size ? formatBytes(sel().download_size!) : ""}`}
-                      </button>
+                      </Button>
                     </Show>
                     <Show when={!selectedInstalled() && !selectedDownloading() && isOffline()}>
                       <div class="game-detail-btn btn-offline" title="Enable downloads in Settings → Network">
@@ -679,22 +677,24 @@ export function GameDetailPanel(props: Props) {
                       </div>
                     </Show>
                     <Show when={!selectedDownloading() && (selectedInstalled() || sel().in_library) && sel().id != null}>
-                      <button
-                        class="game-detail-btn btn-uninstall"
+                      <Button
+                        variant="action"
+                        class="btn-uninstall"
                         disabled={launchingId() != null}
                         onClick={() => handleUninstall(sel().id!)}
                       >
                         Uninstall
-                      </button>
+                      </Button>
                     </Show>
                     <Show when={props.game!.id != null}>
-                      <button
-                        class="game-detail-btn btn-playlist"
+                      <Button
+                        variant="action"
+                        class="btn-playlist"
                         title="Add to playlist"
                         onClick={openPlaylistMenu}
                       >
                         ＋ Playlist
-                      </button>
+                      </Button>
                     </Show>
                   </div>
                 </Show>

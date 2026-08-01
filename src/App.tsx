@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { Tooltip } from "@ark-ui/solid/tooltip";
-import { Switch } from "@ark-ui/solid/switch";
+import { Toggle } from "./components/Toggle";
 import { Library } from "./pages/Library";
 import { Setup } from "./pages/Setup";
 import { SearchBar } from "./components/SearchBar";
@@ -31,6 +31,7 @@ import { loadThumbnailDir } from "./stores/thumbnails";
 import { refreshInstalledPacks } from "./stores/contentPacks";
 import { showToast } from "./stores/toasts";
 import "./styles/main.css";
+import { Button } from "./components/Button";
 
 type AppPhase = "loading" | "setup" | "ready";
 
@@ -426,14 +427,14 @@ function App() {
                         <div class="setting-row">
                           <span class="setting-label">Game folder</span>
                           <span class="setting-value">{gameFolderPath() || "Not set"}</span>
-                          <button class="btn-small" onClick={handleChangeDataDir}>Change</button>
+                          <Button variant="small" onClick={handleChangeDataDir}>Change</Button>
                         </div>
                         <div class="setting-row">
                           <span class="setting-label">Installed games</span>
                           <span class="setting-hint">Re-scan disk to detect already-downloaded games</span>
-                          <button class="btn-small" onClick={handleRescan} disabled={scanning()}>
+                          <Button variant="small" onClick={handleRescan} disabled={scanning()}>
                             {scanning() ? "Scanning…" : "Scan"}
-                          </button>
+                          </Button>
                         </div>
                         <Show when={scanResult()}>
                           <div class="setting-hint" style="margin-top:4px">{scanResult()}</div>
@@ -443,28 +444,18 @@ function App() {
                       <section class="settings-section">
                         <h3 class="settings-section-title">Game Defaults</h3>
                         <p class="settings-section-hint">Applied as a last-wins DOSBox config on every launch. Overrides per-game settings without modifying eXoDOS's bundled configs.</p>
-                        <label class="setting-toggle">
-                          <input
-                            type="checkbox"
-                            checked={crtAuto()}
-                            onChange={(e) => handleToggleCrtAuto(e.currentTarget.checked)}
-                          />
-                          <span class="setting-toggle-info">
-                            <span class="setting-toggle-label">Auto CRT shaders</span>
-                            <span class="setting-toggle-hint">DOSBox Staging picks a CRT shader matched to each game's video mode and your display resolution.</span>
-                          </span>
-                        </label>
-                        <label class="setting-toggle">
-                          <input
-                            type="checkbox"
-                            checked={defaultFullscreen()}
-                            onChange={(e) => handleToggleFullscreen(e.currentTarget.checked)}
-                          />
-                          <span class="setting-toggle-info">
-                            <span class="setting-toggle-label">Launch in fullscreen</span>
-                            <span class="setting-toggle-hint">Start every game fullscreen instead of windowed. Alt+Enter still toggles at runtime.</span>
-                          </span>
-                        </label>
+                        <Toggle
+                          checked={crtAuto()}
+                          onChange={handleToggleCrtAuto}
+                          label="Auto CRT shaders"
+                          hint="DOSBox Staging picks a CRT shader matched to each game's video mode and your display resolution."
+                        />
+                        <Toggle
+                          checked={defaultFullscreen()}
+                          onChange={handleToggleFullscreen}
+                          label="Launch in fullscreen"
+                          hint="Start every game fullscreen instead of windowed. Alt+Enter still toggles at runtime."
+                        />
                       </section>
 
                       <section class="settings-section">
@@ -473,44 +464,30 @@ function App() {
                         {/* A switch, not a checkbox: this one starts and stops
                             a network service, which is a mode rather than an
                             option among several. */}
-                        <Switch.Root
-                          class="setting-switch"
+                        <Toggle
                           checked={!isOffline()}
                           disabled={switchingMode()}
-                          onCheckedChange={(e) => handleToggleOnline(e.checked)}
-                        >
-                          <Switch.Control class="setting-switch-control">
-                            <Switch.Thumb class="setting-switch-thumb" />
-                          </Switch.Control>
-                          <Switch.Label class="setting-toggle-info">
-                            <span class="setting-toggle-label">
-                              {isOffline() ? "Offline mode" : "Online mode"}
-                            </span>
-                            <span class="setting-toggle-hint">
-                              {isOffline()
-                                ? "The torrent client stays off - Exodium only launches games already on disk."
-                                : "Games, previews and content packs are downloaded from the eXoDOS torrents."}
-                            </span>
-                          </Switch.Label>
-                          <Switch.HiddenInput />
-                        </Switch.Root>
+                          onChange={handleToggleOnline}
+                          label={isOffline() ? "Offline mode" : "Online mode"}
+                          hint={isOffline()
+                            ? "The torrent client stays off - Exodium only launches games already on disk."
+                            : "Games, previews and content packs are downloaded from the eXoDOS torrents."}
+                        />
                         <Show when={modeError()}>
                           <div class="setting-hint" style="margin-top:4px">{modeError()}</div>
                         </Show>
-                        <label class="setting-toggle">
-                          <input
-                            type="checkbox"
-                            checked={seeding() && !isOffline()}
-                            disabled={isOffline()}
-                            onChange={(e) => handleToggleSeeding(e.currentTarget.checked)}
-                          />
-                          <span class="setting-toggle-info">
-                            <span class="setting-toggle-label">Share with other players (seeding)</span>
-                            <span class="setting-toggle-hint">
-                              Uploads parts of the games you have to other users while Exodium runs. Keeps the collection alive - but distributing game files carries legal risk in some countries. Off caps upload at 1 KB/s.
-                            </span>
-                          </span>
-                        </label>
+                        {/* Kept visible but inert while offline: hiding it
+                            would look like the setting disappeared, and its
+                            state still matters for when you go back online. */}
+                        <Toggle
+                          checked={seeding() && !isOffline()}
+                          disabled={isOffline()}
+                          onChange={handleToggleSeeding}
+                          label="Share with other players (seeding)"
+                          hint={isOffline()
+                            ? "Nothing is shared while offline. Your choice is kept for when you switch back."
+                            : "Uploads parts of the games you have to other users while Exodium runs. Keeps the collection alive - but distributing game files carries legal risk in some countries. Off caps upload at 1 KB/s."}
+                        />
                       </section>
 
                       <section class="settings-section">
@@ -519,7 +496,7 @@ function App() {
                         <div class="setting-row">
                           <span class="setting-label">Log folder</span>
                           <span class="setting-hint">Open in your file explorer</span>
-                          <button class="btn-small" onClick={handleOpenLogFolder}>Open</button>
+                          <Button variant="small" onClick={handleOpenLogFolder}>Open</Button>
                         </div>
                         <Show when={logOpenError()}>
                           <div class="error" style="margin-top:6px">{logOpenError()}</div>
@@ -532,12 +509,12 @@ function App() {
                         <div class="setting-row">
                           <span class="setting-label">Ko-fi</span>
                           <span class="setting-hint">One-time donation, no account needed</span>
-                          <button class="btn-small" onClick={() => openUrl("https://ko-fi.com/tvollstaedt")}>Open</button>
+                          <Button variant="small" onClick={() => openUrl("https://ko-fi.com/tvollstaedt")}>Open</Button>
                         </div>
                         <div class="setting-row">
                           <span class="setting-label">GitHub Sponsors</span>
                           <span class="setting-hint">One-time or monthly via GitHub</span>
-                          <button class="btn-small" onClick={() => openUrl("https://github.com/sponsors/tvollstaedt")}>Open</button>
+                          <Button variant="small" onClick={() => openUrl("https://github.com/sponsors/tvollstaedt")}>Open</Button>
                         </div>
                       </section>
 
@@ -594,7 +571,7 @@ function App() {
                 </Show>
                 <div class="ark-dialog-actions">
                   <Dialog.CloseTrigger class="btn-secondary">Cancel</Dialog.CloseTrigger>
-                  <button class="btn-danger" onClick={confirmReset}>Reset</button>
+                  <Button variant="danger" onClick={confirmReset}>Reset</Button>
                 </div>
               </Dialog.Content>
             </Dialog.Positioner>

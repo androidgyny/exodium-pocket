@@ -1930,8 +1930,8 @@ body {
 
 .btn-small:disabled,
 .btn-danger:disabled {
-  cursor: default;
-  opacity: 0.7;
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .btn-small .btn-spinner,
@@ -1941,7 +1941,7 @@ body {
   border-width: 1.5px;
 }
 
-.btn-small:hover {
+.btn-small:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
@@ -1963,7 +1963,7 @@ body {
   gap: 5px;
 }
 
-.btn-danger:hover {
+.btn-danger:hover:not(:disabled) {
   background: rgba(233, 69, 96, 0.1);
 }
 
@@ -2955,7 +2955,7 @@ body {
   font-family: inherit;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 

@@ -11,6 +11,8 @@ import {
   type ExodosValidation,
 } from "../api/tauri";
 import type { NetworkMode } from "../stores/network";
+import { Button } from "../components/Button";
+import { Toggle } from "../components/Toggle";
 
 interface SetupProps {
   onComplete: () => void;
@@ -194,7 +196,7 @@ export function Setup(props: SetupProps) {
             <label>Parent directory</label>
             <div class="path-picker">
               <span class="setting-value">{dataDir() || "Not selected"}</span>
-              <button class="btn-small" onClick={handleSelectDataDir}>Browse</button>
+              <Button variant="small" onClick={handleSelectDataDir}>Browse</Button>
             </div>
             <Show when={dataDir()}>
               <div class="setup-preview">
@@ -208,12 +210,12 @@ export function Setup(props: SetupProps) {
           </p>
           <div class="setup-actions" style="margin-top:20px">
             <div style="display:flex;gap:8px">
-              <button class="btn-secondary" onClick={() => setPhase("mode")}>
+              <Button variant="secondary" onClick={() => setPhase("mode")}>
                 <IconBack /> Back
-              </button>
-              <button class="btn-primary" style="flex:1" onClick={() => goToNetwork("scratch")} disabled={!dataDir()}>
+              </Button>
+              <Button variant="primary" style="flex:1" onClick={() => goToNetwork("scratch")} disabled={!dataDir()}>
                 Continue
-              </button>
+              </Button>
             </div>
           </div>
         </Show>
@@ -225,7 +227,7 @@ export function Setup(props: SetupProps) {
             <label>eXoDOS folder</label>
             <div class="path-picker">
               <span class="setting-value">{exodosDir() || "Not selected"}</span>
-              <button class="btn-small" onClick={handleSelectExodosDir}>Browse</button>
+              <Button variant="small" onClick={handleSelectExodosDir}>Browse</Button>
             </div>
             <Show when={validating()}>
               <div class="setup-validation setup-validation--checking">Checking...</div>
@@ -238,17 +240,16 @@ export function Setup(props: SetupProps) {
           </div>
           <div class="setup-actions" style="margin-top:20px">
             <div style="display:flex;gap:8px">
-              <button class="btn-secondary" onClick={() => setPhase("mode")}>
+              <Button variant="secondary" onClick={() => setPhase("mode")}>
                 <IconBack /> Back
-              </button>
-              <button
-                class="btn-primary"
+              </Button>
+              <Button variant="primary"
                 style="flex:1"
                 onClick={() => goToNetwork("import")}
                 disabled={!validation()?.valid}
               >
                 Continue
-              </button>
+              </Button>
             </div>
           </div>
         </Show>
@@ -284,22 +285,14 @@ export function Setup(props: SetupProps) {
           </Show>
 
           <Show when={netMode() === "live"}>
-            <label class="setting-toggle" style="margin-top:16px">
-              <input
-                type="checkbox"
+            <div style="margin-top:16px">
+              <Toggle
                 checked={seeding()}
-                onChange={(e) => setSeeding(e.currentTarget.checked)}
+                onChange={setSeeding}
+                label="Share my downloads with other players (seeding)"
+                hint="While Exodium runs, it uploads parts of the games you have to other users. That keeps the collection alive - but it also means you are distributing the files, which is a legal risk in some countries. Off by default."
               />
-              <span class="setting-toggle-info">
-                <span class="setting-toggle-label">Share my downloads with other players (seeding)</span>
-                <span class="setting-toggle-hint">
-                  While Exodium runs, it uploads parts of the games you have to
-                  other users. That keeps the collection alive - but it also
-                  means you are distributing the files, which is a legal risk in
-                  some countries. Off by default.
-                </span>
-              </span>
-            </label>
+            </div>
           </Show>
 
           <p class="setup-note">
@@ -308,12 +301,12 @@ export function Setup(props: SetupProps) {
 
           <div class="setup-actions" style="margin-top:20px">
             <div style="display:flex;gap:8px">
-              <button class="btn-secondary" onClick={() => setPhase(source())}>
+              <Button variant="secondary" onClick={() => setPhase(source())}>
                 <IconBack /> Back
-              </button>
-              <button class="btn-primary" style="flex:1" onClick={handleNetworkContinue}>
+              </Button>
+              <Button variant="primary" style="flex:1" onClick={handleNetworkContinue}>
                 {source() === "import" ? "Import" : "Continue"}
-              </button>
+              </Button>
             </div>
           </div>
         </Show>

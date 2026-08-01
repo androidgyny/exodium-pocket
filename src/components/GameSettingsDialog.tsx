@@ -2,6 +2,7 @@ import { createSignal, createEffect, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { getGameSettings, setGameSettings } from "../api/tauri";
+import { Button } from "./Button";
 
 interface GameSettingsDialogProps {
   gameId: number | null;
@@ -146,10 +147,10 @@ export function GameSettingsDialog(props: GameSettingsDialogProps) {
               <Show when={saveError()}>
                 <span class="game-settings-error">{saveError()}</span>
               </Show>
-              <button class="btn-secondary" onClick={props.onClose}>Cancel</button>
-              <button class="btn-primary" onClick={handleSave} disabled={saving()}>
-                {saving() ? "Saving…" : "Save"}
-              </button>
+              <Button variant="secondary" onClick={props.onClose}>Cancel</Button>
+              <Button variant="primary" loading={saving()} loadingLabel="Saving…" onClick={handleSave}>
+                Save
+              </Button>
             </div>
           </Dialog.Content>
         </Dialog.Positioner>

@@ -6,6 +6,7 @@ import {
   togglePlaylistMembership,
 } from "../stores/playlists";
 import { showToast } from "../stores/toasts";
+import { Button } from "./Button";
 
 /** How long the exit animation runs before the dialog unmounts.
  *  Must match the CSS animation duration on .closing. */
@@ -102,14 +103,13 @@ export function PlaylistNameDialog() {
                 <div class="playlist-name-error">{error()}</div>
               </Show>
               <div class="ark-dialog-actions">
-                <button class="btn-secondary" onClick={close}>Cancel</button>
-                <button
-                  class="btn-primary"
+                <Button variant="secondary" onClick={close}>Cancel</Button>
+                <Button variant="primary"
                   onClick={handleSave}
                   disabled={!name().trim() || saving()}
                 >
                   {saving() ? "Saving…" : request()!.mode === "create" ? "Create" : "Rename"}
-                </button>
+                </Button>
               </div>
             </Dialog.Content>
           </Dialog.Positioner>
