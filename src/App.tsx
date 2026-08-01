@@ -147,6 +147,12 @@ function App() {
         if (!isOffline()) {
           notifyCatalogUpdates();
           checkForAppUpdate();
+          // Setup skips the content-pack offer while offline without marking it
+          // seen, so pick it up on the first online start instead of dropping
+          // it silently.
+          getConfig("welcome_seen").then((seen) => {
+            if (seen !== "1") { setShowWelcomeModal(true); }
+          }).catch(() => {});
         }
       } else {
         setPhase("setup");
@@ -168,8 +174,8 @@ function App() {
 
     // Show the welcome modal if the user hasn't seen it yet - but never in
     // offline mode: it exists to offer downloads, which the user just declined.
-    // `welcome_seen` stays unwritten so the offer survives for a later online
-    // session; the packs are in Settings either way.
+    // `welcome_seen` stays unwritten, and the startup path above re-offers it on
+    // the first online session; the packs are in Settings either way.
     const welcomeSeen = await getConfig("welcome_seen");
     if (welcomeSeen !== "1" && !isOffline()) {
       setShowWelcomeModal(true);
@@ -252,12 +258,20 @@ function App() {
     setSwitchingMode(true);
     try {
       const stopped = await applyNetworkMode(online ? "live" : "offline");
+      // Two different fates, so they get two different sentences: torrent
+      // downloads keep their file selection and pick up again, pack installs
+      // are plain HTTP transfers that have to be restarted by hand.
+      const notes: string[] = [];
+      if (stopped.downloads > 0) {
+        notes.push(`${stopped.downloads} game download${stopped.downloads === 1 ? "" : "s"} paused - resumes when you go back online`);
+      }
+      if (stopped.packs > 0) {
+        notes.push(`${stopped.packs} content pack download${stopped.packs === 1 ? "" : "s"} cancelled`);
+      }
       showToast(
         online ? "Online mode - downloads enabled" : "Offline mode - torrent client stopped",
         "info",
-        stopped > 0
-          ? { detail: `${stopped} download${stopped === 1 ? "" : "s"} paused - they resume when you go back online.` }
-          : {},
+        notes.length > 0 ? { detail: `${notes.join("; ")}.` } : {},
       );
     } catch (e) {
       setModeError(`Could not switch mode: ${e}`);

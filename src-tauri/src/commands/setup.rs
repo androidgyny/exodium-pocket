@@ -345,6 +345,7 @@ pub async fn init_download_manager(
     // Earlier versions wrote per-launch DOSBox fragments straight into the
     // user's game folder; they are regenerated on demand, so sweep them up.
     crate::commands::games::sweep_legacy_launch_confs(&data_dir);
+    crate::commands::games::prune_launch_confs(&app);
     prune_gallery_cache(&gallery_cache_dir(&data_dir), GALLERY_CACHE_MAX_BYTES);
     crate::commands::media::prune_video_cache(&data_dir);
 

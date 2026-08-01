@@ -73,7 +73,8 @@ describe("network mode store", () => {
     const stopped = await applyNetworkMode("offline");
 
     expect(spy).toHaveBeenCalled();
-    expect(stopped).toBe(1);
+    // Reported separately from game downloads: pack transfers do not resume.
+    expect(stopped.packs).toBe(1);
     spy.mockRestore();
   });
 
@@ -100,7 +101,7 @@ describe("network mode store", () => {
     const stopped = await applyNetworkMode("offline");
 
     expect(spy).toHaveBeenCalled();
-    expect(stopped).toBe(2);
+    expect(stopped.downloads).toBe(2);
     spy.mockRestore();
   });
 

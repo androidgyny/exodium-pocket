@@ -23,23 +23,34 @@ export async function loadNetworkMode() {
   }
 }
 
+export interface ModeSwitchResult {
+  /** Torrent downloads whose tracking was stopped. librqbit keeps the file
+   *  selection, so these pick up again when the session returns. */
+  downloads: number;
+  /** Content-pack installs that were cancelled outright - HTTP transfers with
+   *  no resume, so the user has to start them again. */
+  packs: number;
+}
+
 /** Persist the mode and rebuild the torrent state to match it. The config
  *  write MUST land before initDownloadManager() - the backend reads the key
  *  there to decide whether to create a session at all (same invariant as
  *  `collections`). Going offline drops every manager, which releases the last
  *  Arc to the librqbit session and stops all traffic.
  *
- *  Returns how many in-flight downloads were stopped, so the caller can say
- *  so. On failure the config write is rolled back: leaving the DB claiming
- *  one mode while the session runs in the other is worse than either. */
-export async function applyNetworkMode(mode: NetworkMode): Promise<number> {
+ *  Returns what was stopped, so the caller can say so precisely. On failure the
+ *  config write is rolled back: leaving the DB claiming one mode while the
+ *  session runs in the other is worse than either. */
+export async function applyNetworkMode(mode: NetworkMode): Promise<ModeSwitchResult> {
   const previous = networkMode();
   setNetworkModeSignal(mode);
   // Stop trackers BEFORE the managers disappear, or the poll loop sees null
   // progress and reports a failure that never happened.
   // Content packs download over HTTP and would otherwise keep running while
   // the app claims to be offline - the badge would be lying.
-  const stopped = mode === "offline" ? stopAllDownloadTracking() + (await cancelAllPackJobs()) : 0;
+  const stopped: ModeSwitchResult = mode === "offline"
+    ? { downloads: stopAllDownloadTracking(), packs: await cancelAllPackJobs() }
+    : { downloads: 0, packs: 0 };
   try {
     await setConfig("network_mode", mode);
     await initDownloadManager();

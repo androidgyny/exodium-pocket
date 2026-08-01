@@ -451,10 +451,10 @@ export function GameDetailPanel(props: Props) {
 
   // Shared "Play" button - same disabled+spinner UX whether it's the main
   // single-language action or one row of the multi-language variant list.
-  const PlayButton = (p: { id: number; class: string; disabled?: boolean }) => (
+  const PlayButton = (p: { id: number; class?: string; disabled?: boolean }) => (
     <Button
       variant="action"
-      class={p.class.replace("game-detail-btn ", "")}
+      class={p.class}
       onClick={() => handleLaunch(p.id)}
       disabled={p.disabled}
       loading={launchingId() === p.id}
@@ -637,7 +637,7 @@ export function GameDetailPanel(props: Props) {
                 }>
                   <div class="game-detail-actions fade-swap">
                     <Show when={selectedInstalled() && sel().id != null}>
-                      <PlayButton id={sel().id!} class="game-detail-btn btn-play" />
+                      <PlayButton id={sel().id!} class="btn-play" />
                     </Show>
                     <Show when={selectedInstalled() && manualRow()}>
                       <ManualButton />

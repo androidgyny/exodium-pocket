@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
@@ -2295,20 +2295,48 @@ fn launch_conf_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Delete launch fragments left in the game data dir by earlier versions.
-/// They are regenerated on demand, so removing them loses nothing.
-pub fn sweep_legacy_launch_confs(data_dir: &str) {
-    let Ok(entries) = std::fs::read_dir(data_dir) else { return };
+/// Remove `*.conf` files from `dir`, optionally only those with `prefix`.
+/// Non-recursive and never touches subdirectories - both callers clean a flat
+/// directory that also holds files belonging to someone else.
+fn remove_conf_files(dir: impl AsRef<Path>, prefix: Option<&str>) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if name.starts_with("exodium_") && name.ends_with(".conf") && std::fs::remove_file(entry.path()).is_ok() {
+        if !name.ends_with(".conf") {
+            continue;
+        }
+        if prefix.is_some_and(|p| !name.starts_with(p)) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
             removed += 1;
         }
     }
+    removed
+}
+
+/// Delete launch fragments left in the game data dir by earlier versions.
+/// They are regenerated on demand, so removing them loses nothing.
+pub fn sweep_legacy_launch_confs(data_dir: &str) {
+    let removed = remove_conf_files(data_dir, Some("exodium_"));
     if removed > 0 {
         log::info!("Removed {} stray launch config(s) from the game folder", removed);
+    }
+}
+
+/// Empty the launch-config dir at startup.
+///
+/// One fragment is written per game ever launched and it is only read while
+/// DOSBox starts up, so without this they pile up forever - the same unbounded
+/// growth that made them a problem in the game folder. Startup is the safe
+/// moment: no game this instance launched is running yet.
+pub fn prune_launch_confs(app: &AppHandle) {
+    let Ok(dir) = launch_conf_dir(app) else { return };
+    let removed = remove_conf_files(&dir, None);
+    if removed > 0 {
+        log::debug!("Cleared {} stale launch config(s)", removed);
     }
 }
 
@@ -2756,6 +2784,30 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
 
 #[cfg(test)]
 mod tests {
+    // Both cleanups run against directories that also hold the user's own
+    // files, so "only ours, only .conf, never recurse" is the contract.
+    #[test]
+    fn remove_conf_files_respects_prefix_and_extension() {
+        let dir = std::env::temp_dir().join(format!("exodium_conf_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for f in ["exodium_a.conf", "global_overrides_7.conf", "dosbox.conf", "notes.txt"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        std::fs::write(dir.join("sub").join("exodium_nested.conf"), b"x").unwrap();
+
+        assert_eq!(super::remove_conf_files(&dir, Some("exodium_")), 1);
+        assert!(!dir.join("exodium_a.conf").exists());
+        // The game's own dosbox.conf must survive a prefixed sweep.
+        assert!(dir.join("dosbox.conf").exists());
+        assert!(dir.join("sub").join("exodium_nested.conf").exists());
+
+        assert_eq!(super::remove_conf_files(&dir, None), 2);
+        assert!(dir.join("notes.txt").exists());
+        assert_eq!(super::remove_conf_files(&dir, None), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use std::fs;
 
