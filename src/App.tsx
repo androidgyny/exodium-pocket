@@ -9,6 +9,8 @@ import { Library } from "./pages/Library";
 import { Setup } from "./pages/Setup";
 import { SearchBar } from "./components/SearchBar";
 import { WelcomeModal } from "./components/WelcomeModal";
+import { SeedingConsentDialog } from "./components/SeedingConsentDialog";
+import { needsSeedingConsent } from "./stores/seeding";
 import { ContentPackSettings } from "./components/ContentPackSettings";
 import { DownloadIndicator } from "./components/DownloadIndicator";
 import { WindowFrame } from "./components/WindowFrame";
@@ -74,29 +76,12 @@ async function notifyCatalogUpdates() {
   }
 }
 
-/** Installs made before seeding became opt-in have no `seeding_enabled` key,
- *  and used to seed anyway. The backend now treats "unset" as off, so pin the
- *  choice explicitly and tell the user once - silently flipping a setting they
- *  may have relied on (and silently uploading for the ones who didn't know)
- *  are both worse than a one-time notice. */
-async function migrateSeedingToOptIn() {
-  try {
-    if ((await getConfig("seeding_enabled")) != null) { return; }
-    await setConfig("seeding_enabled", "0");
-    showToast("Sharing with other players (seeding) is now off", "info", {
-      detail: "Uploading game data is opt-in from this version on. Turn it back on in Settings → Network.",
-      durationMs: 12000,
-    });
-  } catch (e) {
-    console.warn("[settings] seeding opt-in migration failed:", e);
-  }
-}
-
 function App() {
   const [phase, setPhase] = createSignal<AppPhase>("loading");
   const [showSettings, setShowSettings] = createSignal(false);
   const [settingsTab, setSettingsTab] = createSignal<"general" | "packs">("general");
   const [showWelcomeModal, setShowWelcomeModal] = createSignal(false);
+  const [showSeedingConsent, setShowSeedingConsent] = createSignal(false);
   const [dataDir, setDataDir] = createSignal("");
   const [resetError, setResetError] = createSignal("");
   const [logOpenError, setLogOpenError] = createSignal("");
@@ -133,7 +118,7 @@ function App() {
       if (status.ready) {
         setPhase("ready");
         await loadNetworkMode();
-        await migrateSeedingToOptIn();
+        setShowSeedingConsent(await needsSeedingConsent());
         try {
           await initDownloadManager();
         } catch (e) {
@@ -273,11 +258,28 @@ function App() {
         "info",
         notes.length > 0 ? { detail: `${notes.join("; ")}.` } : {},
       );
+      // Offline installs are never asked about seeding, so going online is
+      // where an old install finally owes the answer.
+      if (online) { setShowSeedingConsent(await needsSeedingConsent()); }
     } catch (e) {
       setModeError(`Could not switch mode: ${e}`);
     } finally {
       setSwitchingMode(false);
     }
+  };
+
+  /** The answer from the one-time consent dialog. Errors propagate so the
+   *  dialog can stay open and say so - a failed write here would otherwise
+   *  leave the key unset and ask again on the next start. */
+  const handleSeedingConsent = async (enabled: boolean) => {
+    await setSeedingEnabled(enabled);
+    setSeeding(enabled);
+    setShowSeedingConsent(false);
+    showToast(
+      enabled ? "Sharing with other players is on" : "Sharing with other players is off",
+      "info",
+      { detail: "Change it any time in Settings → Network." },
+    );
   };
 
   const handleToggleSeeding = async (next: boolean) => {
@@ -604,6 +606,11 @@ function App() {
         <WelcomeModal
           open={showWelcomeModal()}
           onClose={() => setShowWelcomeModal(false)}
+        />
+
+        <SeedingConsentDialog
+          open={showSeedingConsent()}
+          onDecide={handleSeedingConsent}
         />
       </Show>
 

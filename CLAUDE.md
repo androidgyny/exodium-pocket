@@ -230,8 +230,17 @@ Two config keys, both answered during setup and changeable in Settings → Netwo
   start without the user having seen the question (issue #1). The setup
   checkbox is pre-checked but shown with its implications, so consent is
   informed rather than silent. `apply_seeding_preference` treats anything but
-  `"1"` as off; `migrateSeedingToOptIn` in `App.tsx` pins `"0"` for pre-existing
-  installs that never chose, with a one-time toast.
+  `"1"` as off.
+
+  Pre-existing installs have no key and used to seed anyway, so their wish is
+  unknown - `needsSeedingConsent` (`stores/seeding.ts`) detects that and
+  `SeedingConsentDialog` asks them the same question once, rather than
+  guessing. Do not turn this back into a silent flip in either direction: "keep
+  seeding" keeps distributing files nobody agreed to distribute, "force off"
+  takes away something they may have been happy to give. Because unset already
+  reads as off, nothing uploads while the dialog is open, and offline installs
+  are not asked at all (nothing uploads there either) - they get the question
+  when they first switch to online.
 
 **Offline means no network at all, not "no torrent".** Everything that reaches
 out has to check `is_offline` / `isOffline()`: game downloads, preview videos,

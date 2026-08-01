@@ -27,8 +27,9 @@
   top bar.
 - **Sharing (seeding) is now an explicit choice.** Setup asks before it
   finishes - pre-selected, with the upload implications spelled out - instead
-  of silently starting; existing installs that never made a choice have it
-  turned off with a one-time notice. Changeable in Settings → Network.
+  of silently starting. Existing installs, which shared without ever being
+  asked, get the same question once on startup; nothing is uploaded until it
+  is answered. Changeable in Settings → Network.
 
 - **Game detail panel reworked.** The panel is wider (scaled to the window)
   and puts the catalogue fields next to the description instead of below it,
