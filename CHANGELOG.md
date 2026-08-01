@@ -51,6 +51,12 @@
 
 - The lightbox thumbnail strip covered a preview video's seek bar, so the
   video could not be scrubbed.
+- **Reinstalling a small game looked like a stalled download.** Torrent pieces
+  are 8 MB and most games are far smaller, so a reinstall refetches the whole
+  block the game shares with its neighbours - and the game's own progress stays
+  at exactly 0% until that block arrives. The status said "no data received"
+  and invited people to cancel a download that was working; it now distinguishes
+  a shared-block wait from an actual stall.
 
 - Multi-language games showed no description and their screenshot strip was
   cut off: the Versions list pushed the panel's flexible region to zero height.

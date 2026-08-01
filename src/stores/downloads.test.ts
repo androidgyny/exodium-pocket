@@ -11,6 +11,7 @@ const mockInvoke = vi.mocked(invoke);
 
 function makeProgress(overrides: Partial<{
   progress: number; finished: boolean; installed: boolean; error: string | null;
+  downloaded_bytes: number; torrent_progress: number;
 }> = {}) {
   return {
     file_index: 0,
@@ -33,6 +34,50 @@ describe("downloads state machine", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  // A 12 KB game inside an 8 MB piece shows exactly 0 bytes of its own while
+  // that piece downloads. Reporting "no data received" there sent people
+  // cancelling a download that was working - the torrent-level progress is the
+  // signal that separates a wait from a fault.
+  it("does not call a sub-piece wait a stall while the torrent receives data", async () => {
+    let torrentProgress = 0.5;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "download_game") { return Promise.resolve("Downloading: Dig Dug"); }
+      if (cmd === "get_download_progress") {
+        torrentProgress += 0.001;
+        return Promise.resolve(makeProgress({
+          progress: 0, downloaded_bytes: 0, torrent_progress: torrentProgress,
+        }));
+      }
+      return Promise.resolve(null);
+    });
+
+    const { startGameDownload, getDownloadState } = await import("./downloads");
+    startGameDownload(120);
+    await vi.advanceTimersByTimeAsync(95_000);
+
+    expect(getDownloadState(120)!.status).not.toContain("Stalled");
+    expect(getDownloadState(120)!.status).toContain("shared data block");
+  });
+
+  // The warning still has to work: nothing moving anywhere is a real fault.
+  it("still reports a stall when the torrent itself receives nothing", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "download_game") { return Promise.resolve("Downloading: Dig Dug"); }
+      if (cmd === "get_download_progress") {
+        return Promise.resolve(makeProgress({
+          progress: 0, downloaded_bytes: 0, torrent_progress: 0.5,
+        }));
+      }
+      return Promise.resolve(null);
+    });
+
+    const { startGameDownload, getDownloadState } = await import("./downloads");
+    startGameDownload(121);
+    await vi.advanceTimersByTimeAsync(95_000);
+
+    expect(getDownloadState(121)!.status).toContain("Stalled");
   });
 
   it("sets initial Starting state immediately on startGameDownload", async () => {

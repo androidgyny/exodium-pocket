@@ -43,6 +43,14 @@ const announcedInstalled: Record<number, boolean> = {};
 // Stall detection: timestamp + value of the last observed progress increase.
 const lastProgressAt: Record<number, number> = {};
 const lastProgressVal: Record<number, number> = {};
+// Same, for the whole torrent. A game's file can sit at exactly 0 for minutes
+// while data pours in: pieces are 8 MB and most games are far smaller than
+// that, so a re-download after uninstall has to refetch the entire block the
+// game shares with its neighbours, and per-file progress only moves when that
+// block validates. Without this the honest "no data received" warning fires on
+// a download that is working perfectly.
+const lastTorrentAt: Record<number, number> = {};
+const lastTorrentVal: Record<number, number> = {};
 // Seconds without progress before the status turns into peer-wait feedback,
 // and before it becomes an actionable stall warning.
 const STALL_HINT_SECS = 15;
@@ -68,6 +76,8 @@ export function startGameDownload(gameId: number, title?: string) {
   commandPending[gameId] = true;
   lastProgressVal[gameId] = -1;
   lastProgressAt[gameId] = Date.now();
+  lastTorrentVal[gameId] = -1;
+  lastTorrentAt[gameId] = Date.now();
   if (title) { titles[gameId] = title; }
   setDownloads((prev) => ({
     ...prev,
@@ -118,6 +128,8 @@ export function startGameDownload(gameId: number, title?: string) {
           delete commandPending[gameId];
           delete lastProgressAt[gameId];
           delete lastProgressVal[gameId];
+          delete lastTorrentAt[gameId];
+          delete lastTorrentVal[gameId];
           setDownloads((prev) => ({
             ...prev,
             [gameId]: {
@@ -143,6 +155,8 @@ export function startGameDownload(gameId: number, title?: string) {
         delete maxProgress[gameId];
         delete lastProgressAt[gameId];
         delete lastProgressVal[gameId];
+        delete lastTorrentAt[gameId];
+        delete lastTorrentVal[gameId];
         delete announcedInstalled[gameId];
         delete commandPending[gameId];
         setDownloads((prev) => ({
@@ -185,6 +199,8 @@ export function startGameDownload(gameId: number, title?: string) {
         delete maxProgress[gameId];
         delete lastProgressAt[gameId];
         delete lastProgressVal[gameId];
+        delete lastTorrentAt[gameId];
+        delete lastTorrentVal[gameId];
         delete announcedInstalled[gameId];
         delete commandPending[gameId];
         setDownloads((prev) => ({
@@ -250,10 +266,20 @@ export function startGameDownload(gameId: number, title?: string) {
           lastProgressVal[gameId] = safeProgress;
           lastProgressAt[gameId] = now;
         }
+        const tp = typeof p.torrent_progress === "number" ? p.torrent_progress : 0;
+        if (tp > (lastTorrentVal[gameId] ?? -1)) {
+          lastTorrentVal[gameId] = tp;
+          lastTorrentAt[gameId] = now;
+        }
         const stalledSecs = (now - (lastProgressAt[gameId] ?? now)) / 1000;
+        // Data is arriving for the torrent even if none of it has landed in
+        // this game's file yet - so this is a wait, not a fault.
+        const receiving = (now - (lastTorrentAt[gameId] ?? now)) / 1000 < STALL_HINT_SECS;
         const pct = `${(safeProgress * 100).toFixed(0)}%`;
         let status = pct;
-        if (stalledSecs >= STALL_WARN_SECS) {
+        if (stalledSecs >= STALL_HINT_SECS && receiving) {
+          status = `${pct} - fetching a shared data block…`;
+        } else if (stalledSecs >= STALL_WARN_SECS) {
           status = `Stalled at ${pct} - no data received. Check your connection, or cancel and retry.`;
         } else if (stalledSecs >= STALL_HINT_SECS) {
           status = safeProgress === 0 ? "Looking for peers…" : `${pct} - waiting for peers…`;
