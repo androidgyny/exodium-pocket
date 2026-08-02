@@ -338,8 +338,12 @@ fn main() {
 
         // Match torrent indices for this collection
         if let Some(index) = torrent_indices.get(col.id) {
-            let shared = if col.id != "eXoDOS" {
-                torrent_indices.get("eXoDOS")
+            // Only language packs draw on a base collection's GameData; a
+            // collection with its own game tree (eXoWin3x) must not, or a
+            // title it shares with eXoDOS inflates its download size by a
+            // GameData archive that belongs to a different game.
+            let shared = if col.lang_dir.is_some() {
+                torrent_indices.get(exodium_lib::collection_base_id(col.id))
             } else {
                 None
             };
@@ -348,6 +352,34 @@ fn main() {
     }
 
     println!("\nTotal imported: {} games", total_imported);
+
+    // One launcher, one row. eXoWin3x catalogues both Castle of the Winds games
+    // against the same bat file (they ship as a single install), and two rows
+    // sharing an application_path break refresh_catalog's matching key - it
+    // would update an arbitrary one and insert duplicates on the next refresh.
+    {
+        let dupes: Vec<(i64, String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT g.id, g.title, g.application_path FROM games g
+                     WHERE g.application_path IS NOT NULL AND g.application_path != ''
+                       AND EXISTS (
+                         SELECT 1 FROM games o
+                         WHERE o.application_path = g.application_path AND o.id < g.id
+                       ) ORDER BY g.id",
+                )
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for (id, title, path) in &dupes {
+            println!("  dropping duplicate launcher row: \"{}\" ({})", title, path);
+            conn.execute("DELETE FROM games WHERE id = ?1", params![id]).unwrap();
+        }
+        println!("Dropped {} rows sharing another row's launcher", dupes.len());
+    }
 
     // Pass 1: Exact title match backfill (same SQL as runtime)
     conn.execute_batch(
@@ -584,15 +616,24 @@ fn main() {
     // Mark games whose thumbnail file actually exists on disk (bundled pack).
     // has_thumbnail is now secondary to thumbnail_key but kept so the frontend
     // can skip image loads for known-absent files.
-    let thumb_dir = root.join("thumbnails/eXoDOS");
-    if thumb_dir.exists() {
+    // Each collection keeps its own thumbnail dir; language packs share the
+    // base collection's, since their variants hash to the EN title's key.
+    let thumb_root = root.join("thumbnails");
+    if thumb_root.exists() {
         let tx = conn.unchecked_transaction().unwrap();
-        let keyed_games: Vec<(i64, String)> = {
+        let keyed_games: Vec<(i64, String, Option<String>)> = {
             let mut stmt = tx
-                .prepare("SELECT id, thumbnail_key FROM games WHERE thumbnail_key IS NOT NULL")
+                .prepare(
+                    "SELECT id, thumbnail_key, torrent_source FROM games
+                     WHERE thumbnail_key IS NOT NULL",
+                )
                 .unwrap();
             stmt.query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })
             .unwrap()
             .filter_map(|r| r.ok())
@@ -604,7 +645,10 @@ fn main() {
             let mut update = tx
                 .prepare_cached("UPDATE games SET has_thumbnail = 1 WHERE id = ?1")
                 .unwrap();
-            for (id, key) in &keyed_games {
+            for (id, key, source) in &keyed_games {
+                let thumb_dir = thumb_root.join(exodium_lib::collection_base_id(
+                    source.as_deref().unwrap_or("eXoDOS"),
+                ));
                 if thumb_dir.join(format!("{}.jpg", key)).exists() {
                     update.execute(params![id]).unwrap();
                     thumb_count += 1;
@@ -632,55 +676,66 @@ fn main() {
         }
     }
 
-    // Populate dosbox_variant from metadata/dosbox.txt
+    // Populate dosbox_variant from the per-family variant indices.
     // Format: "Game Title (Year):variant\dosbox.exe"
     // We strip the "(Year)" suffix and normalize before matching against game titles.
-    let dosbox_txt = root.join("metadata/dosbox.txt");
-    if dosbox_txt.exists() {
-        let content = std::fs::read_to_string(&dosbox_txt).unwrap_or_default();
-        // Build map: normalized_title → variant_slug
-        let mut variant_map: HashMap<String, String> = HashMap::new();
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() { continue; }
-            let Some(colon) = line.rfind(':') else { continue };
-            let title_raw = &line[..colon];
-            let path_raw = &line[colon + 1..]; // e.g. "ece4230\dosbox.exe" or "dosbox.exe"
-            // Extract slug: first path component before '\', or "dosbox" for bare "dosbox.exe"
-            let slug = if let Some(sep) = path_raw.find('\\') {
-                path_raw[..sep].to_string()
-            } else {
-                "dosbox".to_string() // bare dosbox.exe = classic 0.74
-            };
-            variant_map.insert(normalize_title(title_raw), slug);
-        }
-        println!("Loaded {} dosbox variant entries", variant_map.len());
-
-        // Match by title and update
-        let mut stmt = conn.prepare("SELECT id, title FROM games").unwrap();
-        let rows: Vec<(i64, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let tx = conn.unchecked_transaction().unwrap();
-        {
-            let mut update = tx
-                .prepare_cached("UPDATE games SET dosbox_variant = ?1 WHERE id = ?2")
-                .unwrap();
-            let mut matched = 0usize;
-            for (id, title) in &rows {
-                if let Some(variant) = variant_map.get(&normalize_title(title)) {
-                    update.execute(params![variant, id]).unwrap();
-                    matched += 1;
-                }
+    //
+    // Matching is scoped to the family the index belongs to: eXoDOS and eXoWin3x
+    // share 100+ titles (Myst, SimCity, Civilization), and an unscoped title
+    // match handed Win3x games the DOS build's variant.
+    for (index_file, family) in [("dosbox.txt", "eXoDOS"), ("dosbox3x.txt", "eXoWin3x")] {
+        let dosbox_txt = root.join("metadata").join(index_file);
+        if dosbox_txt.exists() {
+            let content = std::fs::read_to_string(&dosbox_txt).unwrap_or_default();
+            // Build map: normalized_title → variant_slug
+            let mut variant_map: HashMap<String, String> = HashMap::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                let Some(colon) = line.rfind(':') else { continue };
+                let title_raw = &line[..colon];
+                let path_raw = &line[colon + 1..]; // e.g. "ece4230\dosbox.exe" or "dosbox.exe"
+                // Extract slug: first path component before '\', or "dosbox" for bare "dosbox.exe"
+                let slug = if let Some(sep) = path_raw.find('\\') {
+                    path_raw[..sep].to_string()
+                } else {
+                    "dosbox".to_string() // bare dosbox.exe = classic 0.74
+                };
+                variant_map.insert(normalize_title(title_raw), slug);
             }
-            println!("Set dosbox_variant for {}/{} games", matched, rows.len());
+            println!("Loaded {} dosbox variant entries from {}", variant_map.len(), index_file);
+
+            // Match by title within this family and update
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, title FROM games
+                     WHERE COALESCE(torrent_source, 'eXoDOS') LIKE ?1 || '%'",
+                )
+                .unwrap();
+            let rows: Vec<(i64, String)> = stmt
+                .query_map(params![family], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let tx = conn.unchecked_transaction().unwrap();
+            {
+                let mut update = tx
+                    .prepare_cached("UPDATE games SET dosbox_variant = ?1 WHERE id = ?2")
+                    .unwrap();
+                let mut matched = 0usize;
+                for (id, title) in &rows {
+                    if let Some(variant) = variant_map.get(&normalize_title(title)) {
+                        update.execute(params![variant, id]).unwrap();
+                        matched += 1;
+                    }
+                }
+                println!("Set dosbox_variant for {}/{} {} games", matched, rows.len(), family);
+            }
+            tx.commit().unwrap();
+        } else {
+            println!("WARN: metadata/{} not found, skipping variant mapping", index_file);
         }
-        tx.commit().unwrap();
-    } else {
-        println!("WARN: metadata/dosbox.txt not found, skipping variant mapping");
     }
 
     // Seed curated playlists from the bundled LaunchBox playlist metadata.
@@ -714,7 +769,8 @@ fn main() {
     }
 
     // Save default collections config
-    db::queries::set_config(&conn, "collections", "eXoDOS,eXoDOS_GLP,eXoDOS_SLP,eXoDOS_PLP")
+    let all_collections: Vec<&str> = COLLECTION_MAP.iter().map(|c| c.id).collect();
+    db::queries::set_config(&conn, "collections", &all_collections.join(","))
         .unwrap();
     // Stamp the catalog version so fresh installs skip the startup refresh.
     db::queries::set_config(&conn, "catalog_version", &db::CATALOG_VERSION.to_string())

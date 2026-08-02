@@ -9,6 +9,7 @@ src-tauri/target/
 
 # Thumbnails (large, hosted separately)
 thumbnails/eXoDOS/
+thumbnails/eXoWin3x/
 thumbnails/*.tar.gz
 
 # Bundled emulator binaries (platform-specific, fetched via get-dosbox)

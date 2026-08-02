@@ -24,7 +24,7 @@ pub type DbResult<T> = Result<T, DbError>;
 /// the bundled DB via `refresh_catalog` - user state is preserved.
 /// History: 1 = pre-versioning (0.6.x), 2 = path-anchored torrent indices,
 /// 3 = curated playlists shipped in the bundled DB.
-pub const CATALOG_VERSION: i64 = 3;
+pub const CATALOG_VERSION: i64 = 4;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
@@ -437,7 +437,12 @@ fn populate_manual_paths(conn: &Connection) -> DbResult<()> {
     };
 
     // Parse ManualPath from each bundled XML and build a title → path map.
-    let xml_files = ["MS-DOS.xml.gz", "GLP.xml.gz", "PLP.xml.gz", "SLP.xml.gz"];
+    // Derived from COLLECTION_MAP rather than listed here: a hardcoded copy
+    // silently skips any collection added later, and the games just go missing.
+    let xml_files: Vec<&str> = crate::COLLECTION_MAP
+        .iter()
+        .map(|c| c.metadata_file)
+        .collect();
     let mut manual_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 

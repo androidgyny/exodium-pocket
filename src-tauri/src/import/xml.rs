@@ -65,7 +65,7 @@ fn blank_to_none(s: Option<String>) -> Option<String> {
 ///
 /// eXoDOS:   "eXo\eXoDOS\!dos\captlsm\Capitalism (1995).bat"   → segment "!dos" → "captlsm"
 /// eXoDOS:   "eXo\eXoDOS\!dos\!german\SQ5\Space Quest V.bat"   → segment "!dos" → "SQ5"
-/// eXoWin3x: "eXo\eXoWin3x\!windows\GAME\…"                   → segment "!windows" → "GAME"
+/// eXoWin3x: "eXo\eXoWin3X\!win3x\101Dalma\101 Dalmatians (1997).bat" → segment "!win3x" → "101Dalma"
 fn extract_shortcode(app_path: &Option<String>, segment: &str) -> Option<String> {
     let path = app_path.as_ref()?;
     let normalized = path.replace('\\', "/");
@@ -106,7 +106,7 @@ fn extract_language(series: &Option<String>) -> String {
 
 /// Convert a raw XML game record to our Game model.
 /// `shortcode_segment` is the collection-specific path segment used to extract
-/// the shortcode from application_path (e.g. "!dos" for eXoDOS, "!windows" for eXoWin3x).
+/// the shortcode from application_path (e.g. "!dos" for eXoDOS, "!win3x" for eXoWin3x).
 fn xml_game_to_game(x: XmlGame, shortcode_segment: &str) -> Game {
     let year = extract_year(&x.release_date);
     let language = extract_language(&x.series);
@@ -135,6 +135,7 @@ fn xml_game_to_game(x: XmlGame, shortcode_segment: &str) -> Game {
         dosbox_conf: x
             .root_folder
             .as_deref()
+            .filter(|rf| !rf.is_empty())
             .map(|rf| format!("{}/dosbox.conf", rf)),
         status: blank_to_none(x.status),
         region: blank_to_none(x.region),
@@ -161,6 +162,17 @@ fn xml_game_to_game(x: XmlGame, shortcode_segment: &str) -> Game {
 /// Parse a LaunchBox XML game database from a buffered reader.
 /// `shortcode_segment` selects the path component used for shortcode extraction
 /// (e.g. "!dos" for eXoDOS, "!windows" for eXoWin3x).
+/// LaunchBox catalogues carry one entry for the pack itself, pinned to the top
+/// of the list by a `!`-prefixed SortTitle. eXoWin3x's has no ApplicationPath
+/// and no RootFolder, so it would otherwise become a card that cannot launch,
+/// download or show art. Both conditions are required: the three GLP rows that
+/// legitimately lack paths carry no SortTitle at all.
+fn is_pack_sentinel(g: &Game) -> bool {
+    g.application_path.is_none()
+        && g.dosbox_conf.is_none()
+        && g.sort_title.as_deref().is_some_and(|s| s.starts_with('!'))
+}
+
 pub fn parse_games_xml<R: BufRead>(reader: R, shortcode_segment: &str) -> ImportResult<Vec<Game>> {
     let doc: LaunchBoxGames = from_reader(reader)?;
     let games: Vec<Game> = doc
@@ -168,6 +180,7 @@ pub fn parse_games_xml<R: BufRead>(reader: R, shortcode_segment: &str) -> Import
         .into_iter()
         .map(|x| xml_game_to_game(x, shortcode_segment))
         .filter(|g| !g.title.is_empty())
+        .filter(|g| !is_pack_sentinel(g))
         .collect();
     log::info!("Parsed {} games from XML", games.len());
     Ok(games)
