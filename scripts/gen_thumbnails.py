@@ -7,9 +7,10 @@ collision-proof, and independent of shortcode naming. The same hash function
 is implemented in src-tauri/src/bin/generate_db.rs::thumbnail_key — both sides
 must agree or the frontend lookup will miss.
 
-Works for the main eXoDOS pack and all language packs (GLP/SLP/PLP).
-Each pack uses platform 'MS-DOS' so image paths are always
-Images/MS-DOS/Box - Front/<title>-NN.jpg inside the zip.
+Works for the main eXoDOS pack and all language packs (GLP/SLP/PLP), which
+all use platform 'MS-DOS', and for eXoWin3x, whose LaunchBox platform is
+'Windows 3x'. The platform names the image subtree inside the zip:
+Images/<platform>/Box - Front/<title>-NN.jpg.
 
 Usage:
     python3 scripts/gen_thumbnails.py <metadata_zip> <xml_gz> <output_dir> [--force]
@@ -23,6 +24,8 @@ Usage:
                    source because generate_db.rs imports the canonical XML title
     --extra-xml    Additional XML catalogue to merge as fallback (e.g. MS-DOS.xml.gz
                    for GLP, which includes German box art for EN-catalog games)
+    --platform     LaunchBox platform subtree inside the zip (default: MS-DOS;
+                   eXoWin3x uses "Windows 3x")
 
 Dependencies: Pillow  (pip3 install Pillow)
 """
@@ -276,6 +279,15 @@ def main() -> None:
         preview_dir.mkdir(parents=True, exist_ok=True)
         raw_args = raw_args[:idx] + raw_args[idx + 2:]
 
+    platform = "MS-DOS"
+    if "--platform" in raw_args:
+        idx = raw_args.index("--platform")
+        if idx + 1 >= len(raw_args):
+            print("Error: --platform requires a name argument")
+            sys.exit(1)
+        platform = raw_args[idx + 1]
+        raw_args = raw_args[:idx] + raw_args[idx + 2:]
+
     if "--db" in raw_args:
         idx = raw_args.index("--db")
         if idx + 1 >= len(raw_args):
@@ -331,28 +343,37 @@ def main() -> None:
 
     print(f"Opening {metadata_zip_path}...")
     with zipfile.ZipFile(metadata_zip_path, "r") as zf:
-        # Primary: Box - Front images. Extensions include .gif because some
-        # older eXoDOS entries (e.g. "3-D Pitfall") ship animated-era GIFs
-        # as their only box-front asset; Pillow handles GIF → JPEG fine.
+        # Cover sources in descending preference. Each layer only fills titles
+        # no earlier layer covered, so an official box scan always wins.
+        #
+        # Screenshots are in the chain because box art is not a given outside
+        # eXoDOS: 230 of 1,140 eXoWin3x titles ship no box front of any kind,
+        # and a title screen reads far better in the grid than an empty tile.
+        # eXoDOS barely reaches past the first layer.
+        #
+        # Extensions include .gif because some older eXoDOS entries (e.g.
+        # "3-D Pitfall") ship animated-era GIFs as their only box-front asset;
+        # Pillow handles GIF → JPEG fine.
         allowed_ext = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-        box_front = [
-            n for n in zf.namelist()
-            if n.startswith("Images/MS-DOS/Box - Front/")
-            and n.lower().endswith(allowed_ext)
+        cover_categories = [
+            "Box - Front",
+            "Fanart - Box - Front",
+            "Screenshot - Game Title",
+            "Screenshot - Gameplay",
         ]
-        # Fallback layer: for titles with NO Box - Front entry at all, use
-        # Fanart - Box - Front (e.g. "3-K Trivia" only ships fan-rendered
-        # cover art, no official box scan). Index primary titles first so
-        # fanart only fills genuine gaps and never overrides.
-        primary_titles = {image_stem_to_title(n) for n in box_front}
-        fanart = [
-            n for n in zf.namelist()
-            if n.startswith("Images/MS-DOS/Fanart - Box - Front/")
-            and n.lower().endswith(allowed_ext)
-            and image_stem_to_title(n) not in primary_titles
-        ]
-        box_front.extend(fanart)
-        print(f"  {len(box_front) - len(fanart)} Box - Front + {len(fanart)} Fanart fallback images")
+        names = zf.namelist()
+        box_front: list[str] = []
+        covered: set[str] = set()
+        for category in cover_categories:
+            layer = [
+                n for n in names
+                if n.startswith(f"Images/{platform}/{category}/")
+                and n.lower().endswith(allowed_ext)
+                and image_stem_to_title(n) not in covered
+            ]
+            covered.update(image_stem_to_title(n) for n in layer)
+            box_front.extend(layer)
+            print(f"  {len(layer):5d} from {category}")
 
         matched = 0
         skipped = 0
@@ -388,14 +409,22 @@ def main() -> None:
                     img = img.resize((new_w, new_h), Image.LANCZOS)
                     img.save(out_path, "JPEG", quality=90, optimize=True)
                     matched += 1
-                    # Generate Tier 0 low-quality preview alongside full-size.
+                    # Generate the Tier 0 preview alongside the full-size art.
+                    #
+                    # 120 px, not the grid's 165: a tile upscales it by 1.4x,
+                    # which stays legible, while 80 px meant a 2x upscale that
+                    # turned every subtitle into texture. Above 120 the bundle
+                    # grows faster than the visible gain - 160 px would add
+                    # ~49 MB across all collections instead of ~19 MB, and the
+                    # detail-panel hero (rendered 380-560 px wide) needs the
+                    # 400 px poster pack either way.
                     if preview_dir is not None:
                         preview_path = preview_dir / f"{key}.jpg"
                         if not preview_path.exists() or force:
-                            pw = 80
+                            pw = 120
                             ph = max(1, int(h * pw / w))
                             preview = img.resize((pw, ph), Image.LANCZOS)
-                            preview.save(preview_path, "JPEG", quality=40, optimize=True)
+                            preview.save(preview_path, "JPEG", quality=55, optimize=True)
                 except Exception as e:
                     print(f"  WARN: failed to process {name}: {e}")
 
