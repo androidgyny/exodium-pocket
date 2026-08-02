@@ -135,9 +135,13 @@ pub async fn get_section_keys(
 }
 
 #[tauri::command]
-pub async fn get_game_variants(state: State<'_, DbState>, shortcode: String) -> Result<Vec<Game>, String> {
+pub async fn get_game_variants(
+    state: State<'_, DbState>,
+    shortcode: String,
+    collection: String,
+) -> Result<Vec<Game>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    queries::fetch_game_variants(&conn, &shortcode).map_err(|e| e.to_string())
+    queries::fetch_game_variants(&conn, &shortcode, &collection).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1569,6 +1573,35 @@ fn lp_autoexec_compatible(
     true
 }
 
+/// Rewrite eXo's `.\`-relative HOST paths, leaving everything else alone.
+///
+/// `resolve` receives the token after `.\` (e.g. `eXoDOS\SQ5`) and returns the
+/// absolute path to substitute. Quoted tokens run to the closing quote so paths
+/// with spaces survive; unquoted ones end at the first whitespace.
+///
+/// The narrow scope is the point: a blanket backslash swap also rewrites text
+/// meant for the GUEST. `path=C:\;z:\;c:\windows\` became `path=C:/;...`,
+/// which DOS does not resolve, so Windows 3.x could not find `RUNEXIT.EXE` and
+/// 1,122 of 1,138 eXoWin3x games died at Program Manager. Every host path in
+/// both packs is `.\`-relative (2,149 + 9,691, no exceptions), so this is also
+/// complete.
+fn rewrite_host_paths(text: &str, resolve: &dyn Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut rest = text;
+    while let Some(idx) = rest.find(".\\") {
+        out.push_str(&rest[..idx]);
+        let quoted = out.ends_with('"');
+        let tail = &rest[idx + 2..];
+        let end = tail
+            .find(|c: char| if quoted { c == '"' } else { c.is_whitespace() })
+            .unwrap_or(tail.len());
+        out.push_str(&resolve(&tail[..end]));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Patch a DOSBox config file: convert Windows-style relative paths to absolute Linux paths.
 /// The eXoDOS configs use `.\eXoDOS\game\` which doesn't work on Linux.
 ///
@@ -1589,7 +1622,11 @@ fn patch_dosbox_conf(
     let content = std::fs::read_to_string(conf_path)
         .map_err(|e| format!("Failed to read {}: {}", conf_path.display(), e))?;
 
-    let abs_prefix = format!("{}/", working_dir.to_string_lossy());
+    // Forward slashes even on Windows: DOSBox accepts them on every platform,
+    // and it keeps the substituted host path free of backslashes that a later
+    // reader could mistake for guest-side DOS text.
+    let abs_prefix = format!("{}/", working_dir.to_string_lossy()).replace('\\', "/");
+    let to_working_dir = |body: &str| format!("{}{}", abs_prefix, body.replace('\\', "/"));
 
     let patched = if let Some((shortcode, lang_dir, game_folder, game_dir)) = lp_info {
         // Strategy 1: overlay mount. The EN autoexec is ground truth authored
@@ -1617,13 +1654,14 @@ fn patch_dosbox_conf(
                 game_dir.display()
             );
             let staging_fwd = staging.to_string_lossy().replace('\\', "/");
-            let mut result = content
-                // Route eXoDOS-root references through the overlay first...
-                .replace(&format!(".\\{}\\", game_folder), &format!("{}/", staging_fwd))
-                .replace(&format!(".\\{}", game_folder), &staging_fwd)
-                // ...then the usual absolute-path + slash rewriting for the rest.
-                .replace(".\\", &abs_prefix)
-                .replace('\\', "/");
+            // Route eXoDOS-root references through the overlay, everything else
+            // to the real working dir. Both only touch `.\`-relative host paths.
+            let mut result = rewrite_host_paths(&content, &|body| {
+                match body.replace('\\', "/").strip_prefix(game_folder) {
+                    Some(tail) => format!("{}{}", staging_fwd, tail),
+                    None => to_working_dir(body),
+                }
+            });
 
             // If autoexec has no actual launch command (e.g., all commented out with #),
             // append one found by inspecting the LP game directory.
@@ -1656,9 +1694,7 @@ fn patch_dosbox_conf(
                 .next()
                 .unwrap_or(&content);
 
-            let mut patched = settings
-                .replace(".\\", &abs_prefix)
-                .replace('\\', "/");
+            let mut patched = rewrite_host_paths(settings, &to_working_dir);
 
             let game_dir_abs = game_dir.to_string_lossy();
             patched.push_str("[autoexec]\n");
@@ -1677,10 +1713,8 @@ fn patch_dosbox_conf(
             patched
         }
     } else {
-        // EN game: simple path replacement
-        content
-            .replace(".\\", &abs_prefix)
-            .replace('\\', "/")
+        // EN game: rewrite host paths only - guest-side DOS text stays as authored.
+        rewrite_host_paths(&content, &to_working_dir)
     };
 
     let patched = if translate_for_staging {
@@ -2971,6 +3005,42 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, content).unwrap();
         path
+    }
+
+    /// eXoWin3x boots Windows 3.x and hands Program Manager `runexit <prog>`,
+    /// which it resolves over the DOS PATH the autoexec just set. That PATH is
+    /// guest-side text: rewriting its backslashes turned it into
+    /// `path=C:/;z:/;c:/windows/`, which DOS does not resolve, and every such
+    /// game (1,122 of 1,138) died at "Cannot find file 'runexit'".
+    #[test]
+    fn patch_dosbox_conf_keeps_guest_dos_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let working_dir = tmp.path();
+
+        let conf_content = "[autoexec]\nmount c .\\eXoWin3x\\20k3x\n\
+             imgmount d .\\eXoWin3x\\20k3x\\cd\\cd.cue -t cdrom\nc:\n\
+             path=C:\\;z:\\;c:\\windows\\\n@cd 20000\n@win runexit 20000\nexit\n";
+        let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);
+
+        let patched_path = patch_dosbox_conf(&conf_path, working_dir, None, true).unwrap();
+        let patched = fs::read_to_string(&patched_path).unwrap();
+
+        // Guest-side DOS text is untouched.
+        assert!(
+            patched.contains("path=C:\\;z:\\;c:\\windows\\"),
+            "DOS PATH must keep its backslashes: {}", patched
+        );
+        assert!(patched.contains("@win runexit 20000"), "launch line intact: {}", patched);
+        // Host paths still become absolute and forward-slashed.
+        let abs = format!("{}/", working_dir.to_string_lossy()).replace('\\', "/");
+        assert!(
+            patched.contains(&format!("mount c {}eXoWin3x/20k3x", abs)),
+            "mount must be absolute: {}", patched
+        );
+        assert!(
+            patched.contains(&format!("{}eXoWin3x/20k3x/cd/cd.cue -t cdrom", abs)),
+            "imgmount must be absolute: {}", patched
+        );
     }
 
     #[test]
