@@ -22,6 +22,13 @@ pub struct ContentPackInfo {
     /// Pack IDs this pack replaces (e.g. media supersedes posters).
     #[serde(default)]
     pub supersedes: Vec<String>,
+    /// Oldest installed version still usable with this app build. An installed
+    /// pack BELOW it is deleted on startup; anything at or above it stays and
+    /// is merely offered as an update. Without this, every content change
+    /// silently wiped the user's art and left them to notice - the poster pack
+    /// grew by 34 covers and would have cost everyone their 376 MB.
+    #[serde(default)]
+    pub min_compatible_version: u32,
     /// If set, install via torrent selective-download instead of HTTP. Value
     /// is the file path inside the collection's torrent
     /// (e.g. "Content/XODOSMetadata.zip"). The extractor expects a .zip.

@@ -9,13 +9,14 @@
       "content_packs": {
         "posters": {
           "display_name": "Box Art",
-          "description": "HD game box-art thumbnails for all 7,600+ games",
-          "url": "https://github.com/tvollstaedt/exodium/releases/download/content-v3/posters-eXoDOS-v3.tar.gz",
-          "sha256": "a8d9f9c7c05e0b4689dcf1ae7d6893c5b5ff7bb8db08f709bcd5b4add99c96e0",
-          "size_bytes": 394685501,
-          "version": 4,
+          "description": "HD game box-art thumbnails for all 8,100+ games",
+          "url": "https://github.com/tvollstaedt/exodium/releases/download/content-v4/posters-eXoDOS-v5.tar.gz",
+          "sha256": "7399983a4ff412a6b8b0444944346b24ba17b8901ba577bab0fa4b76ab23d1d8",
+          "size_bytes": 396948419,
+          "version": 5,
           "install_path": "content/posters",
-          "supersedes": []
+          "supersedes": [],
+          "min_compatible_version": 3
         },
         "metadata": {
           "display_name": "Game Metadata",
@@ -77,6 +78,33 @@
           "size_bytes": 4104388102,
           "version": 1,
           "install_path": "content/metadata/eXoDOS_SLP",
+          "supersedes": []
+        }
+      }
+    },
+    "eXoWin3x": {
+      "torrent_infohash": "9c63aeb02edfdc26bf9e0d399064c7f8902af2c9",
+      "game_count": 1138,
+      "content_packs": {
+        "posters": {
+          "display_name": "Box Art",
+          "description": "HD box art for all 1,138 Windows 3.x games",
+          "url": "https://github.com/tvollstaedt/exodium/releases/download/content-v4/posters-eXoWin3x-v1.tar.gz",
+          "sha256": "21c68369e4affb28f3409361f4c868a0ef1fcdb70d402b0075232c90eace3443",
+          "size_bytes": 66784296,
+          "version": 1,
+          "install_path": "content/posters",
+          "supersedes": []
+        },
+        "metadata": {
+          "display_name": "Game Metadata",
+          "description": "Box art, screenshots and manuals for all 1,138 Windows 3.x games (sourced from the eXoWin3x torrent)",
+          "url": "",
+          "sha256": "",
+          "torrent_file_path": "Content/XOWin3xMetadata.zip",
+          "size_bytes": 2367017468,
+          "version": 1,
+          "install_path": "content/metadata/eXoWin3x",
           "supersedes": []
         }
       }

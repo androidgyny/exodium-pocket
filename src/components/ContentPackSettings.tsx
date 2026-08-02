@@ -132,6 +132,14 @@ export function ContentPackSettings() {
                 const progress = () => job()?.progress ?? 0;
                 const pendingAction = () => pending()[key()];
 
+                /** Installed, but the manifest has moved on. The old pack keeps
+                 *  working - content packs are replaced whole, so an update is
+                 *  the user's call, not something to force on them. */
+                const hasUpdate = () =>
+                  pack.installed
+                  && pack.installed_version !== undefined
+                  && pack.installed_version < pack.version;
+
                 const isSupersededByInstalled = () =>
                   col.packs.some((other) =>
                     other.supersedes.includes(pack.id) && other.installed
@@ -175,8 +183,25 @@ export function ContentPackSettings() {
                     <Show when={!isActive() && !job()}>
                       <Show when={pack.installed}>
                         <span class="pack-status-inline">
-                          {pendingAction() === "remove" ? "Removing…" : `Installed · v${pack.installed_version}`}
+                          {pendingAction() === "remove"
+                            ? "Removing…"
+                            : hasUpdate()
+                              ? `v${pack.installed_version} · v${pack.version} available`
+                              : `Installed · v${pack.installed_version}`}
                         </span>
+                        <Show when={hasUpdate()}>
+                          <Button
+                            loading={pendingAction() === "install"}
+                            loadingLabel="Starting…"
+                            disabled={blockedOffline()}
+                            title={blockedOffline()
+                              ? "Offline mode - nothing is downloaded. Enable downloads in Settings → Network."
+                              : `Re-downloads the whole pack (${formatBytes(pack.size_bytes)})`}
+                            onClick={() => handleInstall(col.id, pack.id, pack.display_name)}
+                          >
+                            Update
+                          </Button>
+                        </Show>
                         <Button
                           variant="danger"
                           class="btn-small"

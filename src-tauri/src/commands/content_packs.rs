@@ -162,6 +162,53 @@ pub struct ContentPackStatus {
     pub installed_version: Option<u32>,
 }
 
+/// Record packs that are on disk but missing from the install ledger.
+///
+/// The ledger lives in `config.content_packs`, and `factory_reset` clears the
+/// whole config table while only deleting `content/` when the user also asked
+/// for their game data to go. A reset that keeps the data therefore forgot
+/// every pack it kept - Settings offered "Install" for 30 GB the user already
+/// had, and the grid used art the app believed was absent.
+///
+/// Disk wins: a pack directory that exists IS the pack. It is adopted at the
+/// manifest's current version, because the alternative - version 0 - makes
+/// `cleanup_stale_content_packs` delete it on the next start.
+fn adopt_packs_on_disk(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    col: &crate::commands::updates::CollectionManifest,
+) {
+    let Ok(Some(data_dir)) = queries::get_config(conn, "data_dir") else { return };
+    let mut state = read_installed_packs(conn);
+    let recorded = state.entry(collection.to_string()).or_default();
+    let mut adopted = Vec::new();
+    for (id, info) in &col.content_packs {
+        if recorded.contains_key(id) {
+            continue;
+        }
+        let dir = Path::new(&data_dir).join(&info.install_path).join(collection);
+        if !dir.is_dir() || std::fs::read_dir(&dir).map(|mut d| d.next().is_none()).unwrap_or(true) {
+            continue;
+        }
+        recorded.insert(
+            id.clone(),
+            InstalledPack {
+                version: info.version,
+                size_bytes: info.size_bytes,
+                installed_at: chrono_now(),
+            },
+        );
+        adopted.push(id.clone());
+    }
+    if adopted.is_empty() {
+        return;
+    }
+    log::info!("Adopting content packs found on disk for {}: {:?}", collection, adopted);
+    if let Err(e) = write_installed_packs(conn, &state) {
+        log::warn!("Could not record adopted packs: {}", e);
+    }
+}
+
 #[tauri::command]
 pub async fn list_content_packs(
     db_state: State<'_, DbState>,
@@ -174,6 +221,7 @@ pub async fn list_content_packs(
         .ok_or_else(|| format!("Unknown collection '{}'", collection))?;
 
     let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    adopt_packs_on_disk(&conn, &collection, col);
     let installed = read_installed_packs(&conn);
     let col_installed = installed.get(&collection);
 
@@ -872,6 +920,15 @@ pub fn cleanup_stale_content_packs(conn: &rusqlite::Connection, data_dir: &Path)
         log::debug!("cleanup_stale_content_packs: manifest unavailable, skipping");
         return;
     };
+    cleanup_stale_content_packs_with(conn, data_dir, &manifest);
+}
+
+/// Split out so the compatibility rule can be tested without a manifest file.
+fn cleanup_stale_content_packs_with(
+    conn: &rusqlite::Connection,
+    data_dir: &Path,
+    manifest: &crate::commands::updates::Manifest,
+) {
     let installed = read_installed_packs(conn);
     let data_dir_str = data_dir.to_string_lossy().to_string();
 
@@ -880,8 +937,13 @@ pub fn cleanup_stale_content_packs(conn: &rusqlite::Connection, data_dir: &Path)
         let Some(col_manifest) = manifest.collections.get(col_id) else { continue };
         for (pack_id, installed_pack) in col_packs {
             let Some(info) = col_manifest.content_packs.get(pack_id) else { continue };
-            if installed_pack.version >= info.version {
-                continue; // up-to-date
+            // Newer manifest version alone is NOT a reason to delete: the pack
+            // still works, and Settings offers the update. Only a version below
+            // the compatibility floor is unusable - the v0.2 posters were
+            // shortcode-keyed and 404'd every tile against the hash-keyed
+            // lookup, which is what this cleanup was written for.
+            if installed_pack.version >= info.min_compatible_version {
+                continue;
             }
             let install_path = resolve_pack_install_dir(
                 &data_dir_str,
@@ -890,8 +952,8 @@ pub fn cleanup_stale_content_packs(conn: &rusqlite::Connection, data_dir: &Path)
                 &col_manifest.content_packs,
             );
             log::info!(
-                "Removing stale content pack {}/{} (installed v{}, manifest v{})",
-                col_id, pack_id, installed_pack.version, info.version
+                "Removing incompatible content pack {}/{} (installed v{}, minimum v{})",
+                col_id, pack_id, installed_pack.version, info.min_compatible_version
             );
             if install_path.exists() {
                 if let Err(e) = std::fs::remove_dir_all(&install_path) {
@@ -972,5 +1034,121 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / 1_048_576.0)
     } else {
         format!("{} KB", bytes / 1024)
+    }
+}
+
+#[cfg(test)]
+mod adopt_tests {
+    use super::*;
+    use crate::commands::updates::{CollectionManifest, ContentPackInfo};
+
+    fn pack(install_path: &str) -> ContentPackInfo {
+        ContentPackInfo {
+            display_name: "Box Art".into(),
+            description: String::new(),
+            url: String::new(),
+            sha256: String::new(),
+            torrent_file_path: None,
+            size_bytes: 42,
+            version: 3,
+            install_path: install_path.into(),
+            supersedes: Vec::new(),
+            min_compatible_version: 0,
+        }
+    }
+
+    fn manifest(install_path: &str) -> CollectionManifest {
+        let mut content_packs = HashMap::new();
+        content_packs.insert("posters".to_string(), pack(install_path));
+        CollectionManifest {
+            torrent_infohash: String::new(),
+            game_count: 0,
+            content_packs,
+        }
+    }
+
+    /// factory_reset wipes the whole config table but keeps `content/` unless
+    /// the user also asked for their game data to go. The packs it kept must
+    /// not come back as "not installed" - 30 GB re-downloaded for nothing.
+    #[test]
+    fn adopts_a_pack_directory_the_ledger_forgot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
+
+        let dir = tmp.path().join("content/posters/eXoDOS");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("abc.jpg"), b"x").unwrap();
+
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters"));
+
+        let state = read_installed_packs(&conn);
+        let entry = state.get("eXoDOS").and_then(|c| c.get("posters")).expect("adopted");
+        // Adopted at the manifest version - version 0 would make
+        // cleanup_stale_content_packs delete the directory on next start.
+        assert_eq!(entry.version, 3);
+    }
+
+    fn full_manifest(col: CollectionManifest) -> crate::commands::updates::Manifest {
+        let mut collections = HashMap::new();
+        collections.insert("eXoDOS".to_string(), col);
+        crate::commands::updates::Manifest {
+            schema_version: 2,
+            generated_at: String::new(),
+            collections,
+        }
+    }
+
+    fn scenario(installed_version: u32, floor: u32) -> (tempfile::TempDir, rusqlite::Connection) {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
+        let dir = tmp.path().join("content/posters/eXoDOS");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("abc.jpg"), b"x").unwrap();
+        mark_pack_installed(&conn, "eXoDOS", "posters", installed_version, 1).unwrap();
+
+        let mut col = manifest("content/posters");
+        let p = col.content_packs.get_mut("posters").unwrap();
+        p.version = 5;
+        p.min_compatible_version = floor;
+        cleanup_stale_content_packs_with(&conn, tmp.path(), &full_manifest(col));
+        (tmp, conn)
+    }
+
+    /// An outdated pack still works - content packs are replaced whole, so the
+    /// user decides when to spend the bandwidth. Deleting it left them with
+    /// blurry covers and no explanation.
+    #[test]
+    fn keeps_an_outdated_but_compatible_pack() {
+        let (tmp, conn) = scenario(3, 3);
+        assert!(tmp.path().join("content/posters/eXoDOS").exists(), "usable pack must survive");
+        assert!(read_installed_packs(&conn)["eXoDOS"].contains_key("posters"));
+    }
+
+    /// Below the floor the layout itself is wrong (v0.2 posters were
+    /// shortcode-keyed and 404'd every tile), so it has to go.
+    #[test]
+    fn removes_a_pack_below_the_compatibility_floor() {
+        let (tmp, conn) = scenario(2, 3);
+        assert!(!tmp.path().join("content/posters/eXoDOS").exists(), "unusable pack must go");
+        // The collection entry itself may be dropped once its last pack goes.
+        let recorded = read_installed_packs(&conn);
+        assert!(recorded.get("eXoDOS").is_none_or(|c| !c.contains_key("posters")));
+    }
+
+    #[test]
+    fn ignores_a_missing_or_empty_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
+        std::fs::create_dir_all(tmp.path().join("content/posters/eXoDOS")).unwrap();
+
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters"));
+
+        assert!(read_installed_packs(&conn).get("eXoDOS").is_none_or(|c| c.is_empty()));
     }
 }
