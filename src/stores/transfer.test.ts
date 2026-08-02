@@ -72,6 +72,33 @@ describe("transfer stats", () => {
     stopTransferPolling();
   });
 
+  // Pieces arrive in bursts, so a mid-download sample regularly reads idle.
+  // Acting on that single sample made the badge swap between a rate readout
+  // and plain "Online" every few seconds.
+  it("keeps a transfer active across a sampling dip", async () => {
+    mockInvoke.mockResolvedValue({
+      download_bps: 500_000, upload_bps: 0, uploaded_bytes: 0, active: true,
+    });
+    const { startTransferPolling, stopTransferPolling, isTransferring } =
+      await import("./transfer");
+
+    startTransferPolling();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(isTransferring()).toBe(true);
+
+    // One idle sample must not flip it...
+    mockInvoke.mockResolvedValue({
+      download_bps: 0, upload_bps: 0, uploaded_bytes: 0, active: true,
+    });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(isTransferring()).toBe(true);
+
+    // ...but a genuinely finished download settles.
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(isTransferring()).toBe(false);
+    stopTransferPolling();
+  });
+
   it("does not start a second loop", async () => {
     mockInvoke.mockResolvedValue({
       download_bps: 0, upload_bps: 0, uploaded_bytes: 0, active: false,

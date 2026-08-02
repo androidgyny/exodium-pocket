@@ -5,9 +5,27 @@ import { isOffline } from "./network";
 const IDLE_MS = 4000;
 /** While bytes are moving the badge is a live readout, so it updates faster. */
 const ACTIVE_MS = 1500;
+/** How long a transfer still counts as running after a sample reads idle.
+ *
+ *  Rates are sampled, and pieces arrive in bursts: mid-download a single
+ *  sample regularly dips under the 1 KB/s floor. Deciding on that sample alone
+ *  made the badge swap between the rate readout and plain "Online" every few
+ *  seconds, and dropped the poll to IDLE_MS so it took another 4 s to come
+ *  back. Long enough to bridge a dip, short enough that a finished download
+ *  settles within one idle cycle. */
+const TRANSFER_GRACE_MS = 8000;
+/** Below this a rate reads as idle - see `formatRate`. */
+const MOVING_BPS = 1024;
 
 const [stats, setStats] = createSignal<TransferStats | null>(null);
 export { stats as transferStats };
+
+const [transferring, setTransferring] = createSignal(false);
+/** Is a transfer running right now, dips included? Drives whether the badge
+ *  shows a rate readout at all - the rate itself comes from `transferStats`. */
+export { transferring as isTransferring };
+
+let lastMovingAt = 0;
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
@@ -23,6 +41,7 @@ async function poll() {
   // Keep polling (cheaply) rather than stopping: the user can switch back.
   if (isOffline()) {
     setStats(null);
+    setTransferring(false);
     schedule(IDLE_MS);
     return;
   }
@@ -32,12 +51,17 @@ async function poll() {
     // its result after the stop cleared the signal.
     if (!running) { return; }
     setStats(next);
-    const moving = next.download_bps > 0 || next.upload_bps > 0;
-    schedule(moving ? ACTIVE_MS : IDLE_MS);
+    const moving = next.download_bps >= MOVING_BPS || next.upload_bps >= MOVING_BPS;
+    if (moving) { lastMovingAt = Date.now(); }
+    const active = moving || Date.now() - lastMovingAt < TRANSFER_GRACE_MS;
+    setTransferring(active);
+    schedule(active ? ACTIVE_MS : IDLE_MS);
   } catch (e) {
     // A missing manager is normal right after a mode switch; don't spam.
+    // The last reading stays: one failed poll is not evidence that traffic
+    // stopped, and clearing it blanked the badge mid-download. Offline and
+    // stop clear it explicitly, which is when it is genuinely unknown.
     console.debug("[transfer] stats unavailable:", e);
-    setStats(null);
     schedule(IDLE_MS);
   }
 }
@@ -54,12 +78,14 @@ export function stopTransferPolling() {
   running = false;
   if (timer) { clearTimeout(timer); timer = null; }
   setStats(null);
+  setTransferring(false);
+  lastMovingAt = 0;
 }
 
 /** Bytes/s as a short label. Below 1 KB/s reads as idle: BitTorrent keep-alive
  *  traffic never quite reaches zero and a flickering "312 B/s" is noise. */
 export function formatRate(bps: number): string {
-  if (bps < 1024) { return "0 KB/s"; }
+  if (bps < MOVING_BPS) { return "0 KB/s"; }
   if (bps < 1024 * 1024) { return `${Math.round(bps / 1024)} KB/s`; }
   return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
 }

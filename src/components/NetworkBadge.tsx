@@ -2,7 +2,9 @@ import { Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Tooltip } from "@ark-ui/solid/tooltip";
 import { isOffline } from "../stores/network";
-import { transferStats, formatRate } from "../stores/transfer";
+import { transferStats, isTransferring, formatRate } from "../stores/transfer";
+import { downloads } from "../stores/downloads";
+import { activeJobs } from "../stores/contentPacks";
 import { seedingOn } from "../stores/seeding";
 import { formatBytes } from "../util";
 
@@ -30,10 +32,18 @@ const IconUp = () => (
  *  in placement and wording. */
 export function NetworkBadge(props: Props) {
   const s = () => transferStats();
-  const moving = () => {
-    const v = s();
-    return !!v && (v.download_bps >= 1024 || v.upload_bps >= 1024);
-  };
+  /** Is a download running? Rates alone are the wrong question for the badge:
+   *  they are sampled, they dip to zero between piece bursts, and they say
+   *  nothing while a finished torrent is being assembled. Anchoring the
+   *  readout to the actual jobs keeps it on screen for the whole download
+   *  instead of blinking in and out with the sampling. */
+  const busy = () =>
+    Object.values(downloads()).some((d) => d.downloading) ||
+    Object.values(activeJobs()).some((j) => j && !j.finished);
+
+  // `isTransferring` (sticky, see stores/transfer.ts) covers traffic with no
+  // job behind it - seeding, or a preview video being streamed.
+  const moving = () => !!s() && (busy() || isTransferring());
 
   /** What "Online" actually means right now.
    *

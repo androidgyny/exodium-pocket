@@ -32,15 +32,22 @@ export function DownloadIndicator() {
     for (const [key, job] of Object.entries(jobs)) {
       if (!job.finished && job.phase === "downloading") {
         const id = `cp:${key}`;
-        newSnapshot[id] = { bytes: job.downloaded_bytes, time: now };
         const prev = prevSnapshot[id];
+        // Hold the baseline until the byte counter actually moves. Torrent
+        // progress lands in whole pieces, so a 2 s window regularly sees no
+        // change at all; re-basing every tick made the label read 0 and drop
+        // out, then reappear on the next piece. Holding it lets the window
+        // grow instead, which averages the real rate over the gap.
+        const advanced = !prev || job.downloaded_bytes > prev.bytes;
+        newSnapshot[id] = advanced ? { bytes: job.downloaded_bytes, time: now } : prev;
         if (prev) {
           const dt = (now - prev.time) / 1000;
           if (dt > 0.5) {
-            const bps = (job.downloaded_bytes - prev.bytes) / dt;
-            if (bps > 0) {
-              newSpeeds[id] = `${formatBytes(Math.round(bps))}/s`;
-            }
+            const bps = Math.max(0, (job.downloaded_bytes - prev.bytes) / dt);
+            newSpeeds[id] = `${formatBytes(Math.round(bps))}/s`;
+          } else {
+            // Too soon to measure - keep what is on screen rather than blank it.
+            newSpeeds[id] = speeds()[id] ?? "";
           }
         }
       }
