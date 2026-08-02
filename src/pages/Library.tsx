@@ -16,6 +16,7 @@ import {
   playlists, userPlaylists, curatedPlaylists, loadPlaylists,
   setPlaylistDialog, deletePlaylist,
 } from "../stores/playlists";
+import { PackHintBanner } from "../components/PackHintBanner";
 import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, getAvailableCollections, getSectionKeys, getGames, type Game, type Playlist } from "../api/tauri";
 import { GameCard } from "../components/GameCard";
 import { GameDetailPanel } from "../components/GameDetailPanel";
@@ -655,6 +656,8 @@ export function Library() {
             >✕</button>
           </div>
         </Show>
+
+        <PackHintBanner collection={collectionFilter()} />
 
         <Show when={error()}>
           <div class="error">{error()}</div>

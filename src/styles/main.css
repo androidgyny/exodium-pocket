@@ -566,6 +566,64 @@ body {
   top: 80px;
 }
 
+/* ── Pack hint (one-time, dismissible nudge above the Browse grid) ── */
+.pack-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0 12px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-lg);
+}
+
+.pack-hint-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.pack-hint-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pack-hint-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* Buttons in this app default to width:100% (they live in dialogs); in a
+   flex row that starves the text column down to one word per line. */
+.pack-hint-action {
+  flex-shrink: 0;
+  width: auto;
+  white-space: nowrap;
+}
+
+.pack-hint-dismiss {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pack-hint-dismiss:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
 /* ── Playlist hero (active playlist banner above the Browse grid) ── */
 .playlist-hero {
   display: flex;

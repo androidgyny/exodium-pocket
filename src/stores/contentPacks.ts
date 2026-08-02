@@ -6,6 +6,7 @@ import {
   getContentPackProgress,
   cancelContentPackInstall,
   getAvailableCollections,
+  type ContentPackStatus,
 } from "../api/tauri";
 import { loadThumbnailDir } from "./thumbnails";
 import { showToast } from "./toasts";
@@ -15,14 +16,24 @@ import { showToast } from "./toasts";
 const [installedPacks, setInstalledPacks] = createSignal<Set<string>>(new Set());
 export { installedPacks };
 
-/** Refresh the set of installed content packs from the backend. */
+/** Every collection's packs, keyed by collection id. Kept alongside the
+ *  installed set because the same sweep already fetched it: consumers that ask
+ *  "what could this collection still get?" would otherwise fire their own
+ *  request per collection - and a per-view fetch arrives late, which makes the
+ *  pack hint pop in after the grid and shift it down. */
+const [packsByCollection, setPacksByCollection] = createSignal<Record<string, ContentPackStatus[]>>({});
+export { packsByCollection };
+
+/** Refresh installed state and the per-collection pack lists. */
 export async function refreshInstalledPacks() {
   try {
     const collections = await getAvailableCollections();
     const allInstalled = new Set<string>();
+    const byCollection: Record<string, ContentPackStatus[]> = {};
     for (const col of collections) {
       try {
         const packs = await listContentPacks(col.id);
+        byCollection[col.id] = packs;
         for (const p of packs) {
           if (p.installed) {
             allInstalled.add(`${col.id}:${p.id}`);
@@ -33,6 +44,7 @@ export async function refreshInstalledPacks() {
       }
     }
     setInstalledPacks(allInstalled);
+    setPacksByCollection(byCollection);
   } catch {
     // Manifest unavailable - leave current state
   }
