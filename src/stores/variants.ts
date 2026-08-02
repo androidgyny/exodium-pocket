@@ -22,21 +22,24 @@ createEffect(() => {
   cache.clear();
 });
 
-export function loadVariants(shortcode: string, force = false): Promise<Game[]> {
-  if (force) { cache.delete(shortcode); }
-  const hit = cache.get(shortcode);
+/** A group is (collection family, shortcode): the same shortcode names a
+ *  different game in another pack. Both come off the row so a caller cannot
+ *  pair them up wrongly, and the cache key carries both. */
+export function loadVariants(
+  game: Pick<Game, "shortcode" | "torrent_source">,
+  force = false,
+): Promise<Game[]> {
+  const shortcode = game.shortcode ?? "";
+  const collection = game.torrent_source ?? "eXoDOS";
+  const key = `${collection}\u001f${shortcode}`;
+  if (force) { cache.delete(key); }
+  const hit = cache.get(key);
   if (hit) { return hit; }
-  const request = getGameVariants(shortcode).catch((e) => {
+  const request = getGameVariants(shortcode, collection).catch((e) => {
     // Don't cache a failure - the next card (or a retry) should try again.
-    cache.delete(shortcode);
+    cache.delete(key);
     throw e;
   });
-  cache.set(shortcode, request);
+  cache.set(key, request);
   return request;
-}
-
-/** Drop cached rows for one group - used after an uninstall, where the panel
- *  needs the fresh state immediately rather than at the next invalidation. */
-export function invalidateVariants(shortcode: string) {
-  cache.delete(shortcode);
 }

@@ -67,11 +67,48 @@ pub struct CollectionDef {
     /// Language subdirectory inside game_prefix for LP variant games.
     /// None for the base English collection.
     pub lang_dir: Option<&'static str>,
+    /// LaunchBox platform name. Names the media subtree in the metadata pack
+    /// (`Images/<platform>/`, `Manuals/<platform>/`) and matches the XML's
+    /// `<Platform>` value.
+    pub platform: &'static str,
 }
 
 /// Look up a collection definition by ID.  Returns None for unknown IDs.
 pub fn collection_def(id: &str) -> Option<&'static CollectionDef> {
     COLLECTION_MAP.iter().find(|c| c.id == id)
+}
+
+/// The collection to consult for assets `collection` has none of its own.
+///
+/// Language packs borrow their base collection's art and manuals - their
+/// variants hash to the EN title's key. A collection with its own game tree
+/// borrows nothing: its games are not in the other pack, so a same-title hit
+/// would show a different game's cover. `None` means "no fallback".
+pub fn asset_fallback(collection: &str) -> Option<&'static str> {
+    let base = collection_base_id(collection);
+    (base != collection).then_some(base)
+}
+
+/// The base (non-language-pack) collection a source belongs to.
+///
+/// Language packs share the base collection's game tree and its GameData
+/// archives, so "eXoDOS_GLP" resolves to "eXoDOS". A collection with its own
+/// game tree resolves to itself. Used wherever a lookup may only cross
+/// collection boundaries WITHIN one pack family - shortcodes are unique per
+/// family, not globally, so an unqualified match can hit a different game in
+/// another pack that happens to share the code.
+pub fn collection_base_id(source: &str) -> &'static str {
+    let Some(def) = collection_def(source) else {
+        return "eXoDOS";
+    };
+    if def.lang_dir.is_none() {
+        return def.id;
+    }
+    COLLECTION_MAP
+        .iter()
+        .find(|c| c.lang_dir.is_none() && c.game_prefix == def.game_prefix)
+        .map(|c| c.id)
+        .unwrap_or("eXoDOS")
 }
 
 /// Config value of `network_mode` that keeps the torrent engine shut down.
@@ -829,9 +866,9 @@ pub async fn get_preview_dir(collection: String) -> Result<String, String> {
     // Only eXoDOS ships a preview pack; the language packs share it. That is
     // by design, not a missing file, so it must not be a warning - three of
     // them fired at every startup and buried the real ones.
-    if collection != "eXoDOS" {
-        log::debug!("get_preview_dir({}): no dedicated pack, falling back to eXoDOS", collection);
-        return Box::pin(get_preview_dir("eXoDOS".to_string())).await;
+    if let Some(base) = asset_fallback(&collection) {
+        log::debug!("get_preview_dir({}): no dedicated pack, falling back to {}", collection, base);
+        return Box::pin(get_preview_dir(base.to_string())).await;
     }
 
     let checked: Vec<String> = candidates
@@ -867,8 +904,7 @@ pub async fn get_poster_dir(
     if poster_path.exists() {
         return Ok(path_to_fwd_slash(&poster_path));
     }
-    if collection != "eXoDOS" {
-        let fallback = base.join("eXoDOS");
+    if let Some(fallback) = asset_fallback(&collection).map(|c| base.join(c)) {
         if fallback.exists() {
             return Ok(path_to_fwd_slash(&fallback));
         }
@@ -1178,20 +1214,23 @@ fn scan_game_metadata(
 ) -> Result<GameMetadata, String> {
     let base = PathBuf::from(data_dir).join("content").join("metadata");
 
-    // LP collections fall back to the main eXoDOS metadata if their own pack
-    // isn't installed (mirrors get_poster_dir). Both are checked so an
+    // LP collections fall back to their base collection's metadata if their own
+    // pack isn't installed (mirrors get_poster_dir). Both are checked so an
     // LP-installed user still picks up eXoDOS box art when no LP pack exists.
+    // A collection with its own game tree gets no fallback - its games are not
+    // in the other pack, and a same-title hit would show the wrong art.
     let mut roots: Vec<PathBuf> = vec![base.join(collection)];
-    if collection != "eXoDOS" {
-        roots.push(base.join("eXoDOS"));
-    }
+    roots.extend(asset_fallback(collection).map(|c| base.join(c)));
+
+    // Media subtrees are per LaunchBox platform, not per collection.
+    let platform = collection_def(collection).map(|c| c.platform).unwrap_or("MS-DOS");
 
     let target_norm = normalize_alnum(title);
     let mut by_category: std::collections::BTreeMap<usize, Vec<String>> =
         std::collections::BTreeMap::new();
 
     for root in &roots {
-        let images_root = root.join("Images").join("MS-DOS");
+        let images_root = root.join("Images").join(platform);
         if !images_root.is_dir() {
             continue;
         }
@@ -1235,7 +1274,10 @@ fn scan_game_metadata(
     //   2. Content metadata pack for this collection (ships manuals without download)
     //   3. eXoDOS metadata pack as LP fallback (LP packs share EN manuals)
     //   4. Lazy-extract from GameData ZIP (legacy path before metadata packs)
-    let torrent_root = PathBuf::from(data_dir).join("eXoDOS");
+    let inner_folder = collection_def(collection)
+        .map(|c| c.inner_folder)
+        .unwrap_or("eXoDOS");
+    let torrent_root = PathBuf::from(data_dir).join(inner_folder);
     let (resolved_manual, manual_kind) = if let Some(mp) = manual_path {
         let normalized = mp.replace('\\', "/");
         let pack_base = PathBuf::from(data_dir).join("content").join("metadata");
@@ -1243,9 +1285,9 @@ fn scan_game_metadata(
             torrent_root.join(&normalized),
             pack_base.join(collection).join(&normalized),
         ];
-        if collection != "eXoDOS" {
-            candidates.push(pack_base.join("eXoDOS").join(&normalized));
-        }
+        candidates.extend(
+            asset_fallback(collection).map(|c| pack_base.join(c).join(&normalized)),
+        );
 
         let found = candidates.into_iter().find(|p| p.is_file());
         if let Some(path) = found {
@@ -1404,6 +1446,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         game_prefix: "eXo/eXoDOS",
         shortcode_segment: "!dos",
         lang_dir: Some("!german"),
+        platform: "MS-DOS",
     },
     CollectionDef {
         id: "eXoDOS_PLP",
@@ -1415,6 +1458,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         game_prefix: "eXo/eXoDOS",
         shortcode_segment: "!dos",
         lang_dir: Some("!polish"),
+        platform: "MS-DOS",
     },
     CollectionDef {
         id: "eXoDOS_SLP",
@@ -1426,6 +1470,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         game_prefix: "eXo/eXoDOS",
         shortcode_segment: "!dos",
         lang_dir: Some("!spanish"),
+        platform: "MS-DOS",
     },
     CollectionDef {
         id: "eXoDOS",
@@ -1437,6 +1482,22 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         game_prefix: "eXo/eXoDOS",
         shortcode_segment: "!dos",
         lang_dir: None,
+        platform: "MS-DOS",
+    },
+    // First collection with an inner_folder of its own: the eXoWin3x torrent
+    // carries the internal name "eXoWin3x", so it cannot collide with the four
+    // eXoDOS torrents and writes to <data_dir>/eXoWin3x/ instead.
+    CollectionDef {
+        id: "eXoWin3x",
+        display_name: "eXoWin3x",
+        metadata_file: "Win3x.xml.gz",
+        torrent_file: "eXoWin3x.torrent",
+        configs_zip: Some("Win3x_configs.zip"),
+        inner_folder: "eXoWin3x",
+        game_prefix: "eXo/eXoWin3x",
+        shortcode_segment: "!win3x",
+        lang_dir: None,
+        platform: "Windows 3x",
     },
 ];
 

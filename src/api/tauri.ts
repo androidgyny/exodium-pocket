@@ -128,8 +128,8 @@ export async function getThumbnailDir(collection: string): Promise<string> {
   return invoke("get_thumbnail_dir", { collection });
 }
 
-export async function getGameVariants(shortcode: string): Promise<Game[]> {
-  return invoke("get_game_variants", { shortcode });
+export async function getGameVariants(shortcode: string, collection: string): Promise<Game[]> {
+  return invoke("get_game_variants", { shortcode, collection });
 }
 
 export async function getInstalledGames(): Promise<Game[]> {

@@ -5,22 +5,31 @@ import { getPreviewDir, getPosterDir, getAvailableCollections } from "../api/tau
 
 const [previewDirs, setPreviewDirs] = createSignal<Record<string, string>>({});
 const [posterDirs, setPosterDirs] = createSignal<Record<string, string>>({});
+/** False until the first resolve finishes. Callers that ask "is this
+ *  collection on the low-res tier?" would otherwise read the empty startup
+ *  state as "yes" and act on it. */
+const [dirsLoaded, setDirsLoaded] = createSignal(false);
 
-export { previewDirs, posterDirs };
+export { previewDirs, posterDirs, dirsLoaded as thumbnailDirsLoaded };
+
+/** Which collection's art a pack borrows is decided in Rust (`asset_fallback`)
+ *  and already baked into the resolved dir, so there is nothing to fall back to
+ *  here - a second, string-prefix copy of that rule would only drift from it. */
+function dirForCollection(
+  dirs: Record<string, string>,
+  collectionId: string | null | undefined,
+): string | null {
+  return dirs[collectionId ?? "eXoDOS"] ?? null;
+}
 
 /** Return the Tier 0 preview dir for a collection (bundled, always available). */
 export function previewDirForCollection(collectionId: string | null | undefined): string | null {
-  const dirs = previewDirs();
-  if (!collectionId) { return dirs["eXoDOS"] ?? null; }
-  return dirs[collectionId] ?? dirs["eXoDOS"] ?? null;
+  return dirForCollection(previewDirs(), collectionId);
 }
 
-/** Return the Tier 1 poster dir for a collection (runtime-downloaded).
- *  Falls back to eXoDOS since all poster thumbnails live in one directory. */
+/** Return the Tier 1 poster dir for a collection (runtime-downloaded). */
 export function posterDirForCollection(collectionId: string | null | undefined): string | null {
-  const dirs = posterDirs();
-  if (!collectionId) { return dirs["eXoDOS"] ?? null; }
-  return dirs[collectionId] ?? dirs["eXoDOS"] ?? null;
+  return dirForCollection(posterDirs(), collectionId);
 }
 
 // ── Backward compat alias (used by existing callers during migration) ────────
@@ -105,5 +114,7 @@ export async function loadThumbnailDir() {
   } catch {
     setPreviewDirs({});
     setPosterDirs({});
+  } finally {
+    setDirsLoaded(true);
   }
 }

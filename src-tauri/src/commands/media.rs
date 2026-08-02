@@ -187,12 +187,19 @@ pub async fn start_game_video(
                 game.torrent_source.unwrap_or_else(|| "eXoDOS".to_string()),
             ),
             None => {
+                // Only within the same pack family: shortcodes are unique per
+                // family, not globally, so an unqualified match would hand a
+                // Win3x game the DOS game's archive when the codes collide.
+                let base = crate::commands::setup::collection_base_id(
+                    game.torrent_source.as_deref().unwrap_or("eXoDOS"),
+                );
                 let sibling = game.shortcode.as_deref().and_then(|sc| {
                     conn.query_row(
-                        "SELECT gamedata_torrent_index, torrent_source FROM games \
-                         WHERE shortcode = ?1 AND gamedata_torrent_index IS NOT NULL \
-                         ORDER BY CASE WHEN language = 'EN' THEN 0 ELSE 1 END LIMIT 1",
-                        rusqlite::params![sc],
+                        "SELECT g.gamedata_torrent_index, g.torrent_source FROM games g \
+                         WHERE g.shortcode = ?1 AND g.gamedata_torrent_index IS NOT NULL \
+                           AND COALESCE(g.torrent_source, 'eXoDOS') = ?2 \
+                         ORDER BY CASE WHEN g.language = 'EN' THEN 0 ELSE 1 END LIMIT 1",
+                        rusqlite::params![sc, base],
                         |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
                     )
                     .ok()

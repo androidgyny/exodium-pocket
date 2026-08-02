@@ -6,7 +6,7 @@ pub mod torrent;
 
 // Re-export utilities used by the generate_db binary and integration tests
 pub use commands::game_name_from_app_path;
-pub use commands::{collection_data_dir, CollectionDef, COLLECTION_MAP};
+pub use commands::{collection_base_id, collection_data_dir, CollectionDef, COLLECTION_MAP};
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -237,6 +237,33 @@ fn open_or_reinstall_db(db_path: &Path) -> Result<rusqlite::Connection, String> 
             db::init(&c).map_err(|e| format!("failed to initialize schema: {}", e))?;
             Ok(c)
         }
+    }
+}
+
+/// Append collections this release added to the user's `collections` config.
+///
+/// A catalog refresh brings a new pack's games into an existing install, but
+/// `init_download_manager` only starts managers for the ids listed in that
+/// config - written once at setup. Without this the new games render with a
+/// download button that can only fail ("No torrent manager for collection").
+/// Existing entries are preserved and their order kept; nothing is removed.
+fn enable_new_collections(conn: &rusqlite::Connection) {
+    let Ok(Some(current)) = db::queries::get_config(conn, "collections") else {
+        return;
+    };
+    let mut ids: Vec<&str> = current.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let added: Vec<&str> = COLLECTION_MAP
+        .iter()
+        .map(|c| c.id)
+        .filter(|id| !ids.contains(id))
+        .collect();
+    if added.is_empty() {
+        return;
+    }
+    ids.extend(added.iter().copied());
+    match db::queries::set_config(conn, "collections", &ids.join(",")) {
+        Ok(_) => log::info!("Enabled newly shipped collections: {}", added.join(", ")),
+        Err(e) => log::error!("Could not enable new collections {:?}: {}", added, e),
     }
 }
 
@@ -507,10 +534,13 @@ pub fn run() {
                 match stage_bundled_catalog(&data_dir) {
                     Ok(cat_path) => {
                         match db::refresh_catalog(&mut conn, &cat_path) {
-                            Ok((updated, inserted)) => log::info!(
-                                "Catalog refreshed v{} -> v{}: {} rows updated, {} inserted",
-                                installed_ver, db::CATALOG_VERSION, updated, inserted
-                            ),
+                            Ok((updated, inserted)) => {
+                                log::info!(
+                                    "Catalog refreshed v{} -> v{}: {} rows updated, {} inserted",
+                                    installed_ver, db::CATALOG_VERSION, updated, inserted
+                                );
+                                enable_new_collections(&conn);
+                            }
                             Err(e) => log::error!("Catalog refresh failed: {}", e),
                         }
                         let _ = std::fs::remove_file(&cat_path);
@@ -607,6 +637,48 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod collection_migration_tests {
+    use super::*;
+
+    fn config_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init(&conn).unwrap();
+        conn
+    }
+
+    /// The upgrade path for a pack shipped after the user's install: its games
+    /// arrive with the catalog refresh, so its manager has to start too.
+    #[test]
+    fn appends_collections_the_install_predates() {
+        let conn = config_db();
+        db::queries::set_config(&conn, "collections", "eXoDOS,eXoDOS_GLP").unwrap();
+        enable_new_collections(&conn);
+        let after = db::queries::get_config(&conn, "collections").unwrap().unwrap();
+        let ids: Vec<&str> = after.split(',').collect();
+        for c in COLLECTION_MAP {
+            assert!(ids.contains(&c.id), "{} missing from {:?}", c.id, ids);
+        }
+        // The user's existing entries keep their place.
+        assert_eq!(&ids[..2], &["eXoDOS", "eXoDOS_GLP"]);
+    }
+
+    /// Nothing to do must mean no write - and no key must stay no key, so a
+    /// pre-setup install is not handed a collection list it never chose.
+    #[test]
+    fn leaves_complete_and_unset_configs_alone() {
+        let conn = config_db();
+        let all = COLLECTION_MAP.iter().map(|c| c.id).collect::<Vec<_>>().join(",");
+        db::queries::set_config(&conn, "collections", &all).unwrap();
+        enable_new_collections(&conn);
+        assert_eq!(db::queries::get_config(&conn, "collections").unwrap().unwrap(), all);
+
+        let fresh = config_db();
+        enable_new_collections(&fresh);
+        assert_eq!(db::queries::get_config(&fresh, "collections").unwrap(), None);
+    }
 }
 
 #[cfg(all(test, unix))]

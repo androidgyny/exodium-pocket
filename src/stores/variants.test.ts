@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 const mockInvoke = vi.mocked(invoke);
 
+/** Minimal row: loadVariants only reads these two fields. */
+const g = (shortcode: string, torrent_source = "eXoDOS") =>
+  ({ shortcode, torrent_source }) as never;
+
 describe("variant cache", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -16,9 +20,9 @@ describe("variant cache", () => {
     const { loadVariants } = await import("./variants");
 
     const results = await Promise.all([
-      loadVariants("MagCarp"),
-      loadVariants("MagCarp"),
-      loadVariants("MagCarp"),
+      loadVariants(g("MagCarp")),
+      loadVariants(g("MagCarp")),
+      loadVariants(g("MagCarp")),
     ]);
 
     expect(mockInvoke).toHaveBeenCalledTimes(1);
@@ -29,8 +33,8 @@ describe("variant cache", () => {
     mockInvoke.mockResolvedValue([{ id: 1 }]);
     const { loadVariants } = await import("./variants");
 
-    await loadVariants("SQ5");
-    await loadVariants("SQ5");
+    await loadVariants(g("SQ5"));
+    await loadVariants(g("SQ5"));
     expect(mockInvoke).toHaveBeenCalledTimes(1);
   });
 
@@ -38,8 +42,19 @@ describe("variant cache", () => {
     mockInvoke.mockResolvedValue([{ id: 1 }]);
     const { loadVariants } = await import("./variants");
 
-    await loadVariants("DESCENT");
-    await loadVariants("DESCENT", true);
+    await loadVariants(g("DESCENT"));
+    await loadVariants(g("DESCENT"), true);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
+
+  // The same shortcode names different games in different packs, so the two
+  // must not share a cache slot (eXoWin3x reuses ten eXoDOS codes).
+  it("keys the cache by collection as well as shortcode", async () => {
+    mockInvoke.mockResolvedValue([{ id: 1 }]);
+    const { loadVariants } = await import("./variants");
+
+    await loadVariants(g("EarthQue"));
+    await loadVariants(g("EarthQue", "eXoWin3x"));
     expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
@@ -50,8 +65,8 @@ describe("variant cache", () => {
     mockInvoke.mockResolvedValue([{ id: 2 }]);
     const { loadVariants } = await import("./variants");
 
-    await expect(loadVariants("BOOM")).rejects.toThrow("db locked");
-    const second = await loadVariants("BOOM");
+    await expect(loadVariants(g("BOOM"))).rejects.toThrow("db locked");
+    const second = await loadVariants(g("BOOM"));
     expect(second).toEqual([{ id: 2 }]);
     expect(mockInvoke).toHaveBeenCalledTimes(2);
   });

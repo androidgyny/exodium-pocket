@@ -174,18 +174,58 @@ pub struct GameFilter<'a> {
     pub playlist_id: Option<i64>,
 }
 
-/// Build WHERE clause from filters.
-/// One grid row per game: rows sharing a shortcode are one multi-language
-/// group, represented by its primary row (EN preferred, lowest id as
-/// tiebreak). Rows without a shortcode stand alone. Filters are evaluated
-/// against EVERY variant of a group (EXISTS subquery), so searching a
-/// localized title or filtering an LP collection still surfaces the merged
-/// primary card - see CLAUDE.md "Multi-language games are merged".
-/// All consumers must alias the table as `g` (FROM games g).
-const PRIMARY_ROW_CONDITION: &str = "(g.shortcode IS NULL OR g.id = (
-        SELECT p.id FROM games p WHERE p.shortcode = g.shortcode
-        ORDER BY CASE WHEN p.language = 'EN' THEN 0 ELSE 1 END, p.id LIMIT 1))";
+/// SQL expression yielding a row's pack family: its collection's base id, so
+/// the four eXoDOS language packs share one family and a collection with its
+/// own game tree forms its own. Built from COLLECTION_MAP - adding a pack
+/// needs no SQL edit here.
+fn family_expr(alias: &str) -> String {
+    // Only the packs that resolve elsewhere need an arm; a CASE without a match
+    // yields NULL, so COALESCE lets every other collection stand for itself.
+    let arms: String = crate::COLLECTION_MAP
+        .iter()
+        .filter(|c| c.id != crate::collection_base_id(c.id))
+        .map(|c| format!(" WHEN '{}' THEN '{}'", c.id, crate::collection_base_id(c.id)))
+        .collect();
+    format!(
+        "COALESCE(CASE {a}.torrent_source{arms} END, {a}.torrent_source, 'eXoDOS')",
+        a = alias,
+        arms = arms
+    )
+}
 
+/// Do two rows belong to the same multi-language group?
+///
+/// Shortcodes are unique per pack family, NOT globally: eXoWin3x reuses ten
+/// eXoDOS codes for unrelated games ("EarthQue" is Earthquest under DOS and
+/// Eyewitness Earth Quest under Win3x). Pairing on the shortcode alone would
+/// merge those into one card and hide the other game from the catalogue.
+fn same_group(a: &str, b: &str) -> String {
+    format!(
+        "{a}.shortcode = {b}.shortcode AND {fa} = {fb}",
+        a = a,
+        b = b,
+        fa = family_expr(a),
+        fb = family_expr(b)
+    )
+}
+
+/// One grid row per game: rows sharing a shortcode (within one pack family)
+/// are one multi-language group, represented by its primary row (EN preferred,
+/// lowest id as tiebreak). Rows without a shortcode stand alone.
+/// All consumers must alias the table as `g` (FROM games g).
+fn primary_row_condition() -> String {
+    format!(
+        "(g.shortcode IS NULL OR g.id = (
+        SELECT p.id FROM games p WHERE {}
+        ORDER BY CASE WHEN p.language = 'EN' THEN 0 ELSE 1 END, p.id LIMIT 1))",
+        same_group("p", "g")
+    )
+}
+
+/// Build WHERE clause from filters. Filters are evaluated against EVERY
+/// variant of a group (EXISTS subquery), so searching a localized title or
+/// filtering an LP collection still surfaces the merged primary card - see
+/// CLAUDE.md "Multi-language games are merged".
 fn build_where_clause(f: &GameFilter) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     let mut variant_conds = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -210,7 +250,7 @@ fn build_where_clause(f: &GameFilter) -> (String, Vec<Box<dyn rusqlite::types::T
         variant_conds.push("v.favorited = 1".to_string());
     }
 
-    let mut conditions = vec![PRIMARY_ROW_CONDITION.to_string()];
+    let mut conditions = vec![primary_row_condition()];
 
     if let Some(pid) = f.playlist_id {
         // Top-level condition, NOT part of the per-variant EXISTS: curated
@@ -223,18 +263,20 @@ fn build_where_clause(f: &GameFilter) -> (String, Vec<Box<dyn rusqlite::types::T
         params.push(Box::new(pid));
         conditions.push(format!(
             "g.id IN (SELECT CASE WHEN m.shortcode IS NULL THEN m.id ELSE (
-                 SELECT p.id FROM games p WHERE p.shortcode = m.shortcode
+                 SELECT p.id FROM games p WHERE {}
                  ORDER BY CASE WHEN p.language = 'EN' THEN 0 ELSE 1 END, p.id LIMIT 1) END
              FROM playlist_games pg JOIN games m ON m.id = pg.game_id
              WHERE pg.playlist_id = ?{})",
+            same_group("p", "m"),
             params.len()
         ));
     }
     if !variant_conds.is_empty() {
         conditions.push(format!(
             "EXISTS (SELECT 1 FROM games v \
-             WHERE (v.id = g.id OR (g.shortcode IS NOT NULL AND v.shortcode = g.shortcode)) \
+             WHERE (v.id = g.id OR (g.shortcode IS NOT NULL AND {})) \
              AND {})",
+            same_group("v", "g"),
             variant_conds.join(" AND ")
         ));
     }
@@ -310,41 +352,46 @@ fn attach_language_maps(conn: &Connection, games: &mut [Game]) -> DbResult<()> {
     }
 
     let placeholders: Vec<String> = (1..=shortcodes.len()).map(|i| format!("?{}", i)).collect();
+    // Grouped by (family, shortcode), not shortcode alone - see `same_group`.
     let sql = format!(
-        "SELECT shortcode, language, installed, in_library, title FROM games \
-         WHERE shortcode IN ({}) \
-         ORDER BY CASE WHEN language = 'EN' THEN 0 ELSE 1 END, language",
+        "SELECT {}, g.shortcode, g.language, g.installed, g.in_library, g.title \
+         FROM games g WHERE g.shortcode IN ({}) \
+         ORDER BY CASE WHEN g.language = 'EN' THEN 0 ELSE 1 END, g.language",
+        family_expr("g"),
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    type GroupKey = (String, String);
+    let mut map: std::collections::HashMap<GroupKey, Vec<String>> = std::collections::HashMap::new();
     // Localized titles of the group, so a client-side search over already
     // loaded rows (My Library) can match "Zauberteppich" the way the Browse
     // SQL filter does. Only multi-variant groups get one attached.
-    let mut titles: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut titles: std::collections::HashMap<GroupKey, Vec<String>> = std::collections::HashMap::new();
     let rows = stmt.query_map(rusqlite::params_from_iter(shortcodes.iter()), |row| {
-        let sc: String = row.get(0)?;
-        let lang: Option<String> = row.get(1)?;
-        let installed: i32 = row.get::<_, i32>(2).unwrap_or(0);
-        let in_library: i32 = row.get::<_, i32>(3).unwrap_or(0);
-        let title: String = row.get::<_, Option<String>>(4)?.unwrap_or_default();
-        Ok((sc, lang.unwrap_or_else(|| "EN".to_string()), installed, in_library, title))
+        let key: GroupKey = (row.get(0)?, row.get(1)?);
+        let lang: Option<String> = row.get(2)?;
+        let installed: i32 = row.get::<_, i32>(3).unwrap_or(0);
+        let in_library: i32 = row.get::<_, i32>(4).unwrap_or(0);
+        let title: String = row.get::<_, Option<String>>(5)?.unwrap_or_default();
+        Ok((key, lang.unwrap_or_else(|| "EN".to_string()), installed, in_library, title))
     })?;
     for row in rows {
-        let (sc, lang, installed, in_library, title) = row?;
+        let (key, lang, installed, in_library, title) = row?;
         let state = if installed != 0 { 2 } else if in_library != 0 { 1 } else { 0 };
-        map.entry(sc.clone()).or_default().push(format!("{}:{}", lang, state));
+        map.entry(key.clone()).or_default().push(format!("{}:{}", lang, state));
         if !title.is_empty() {
-            titles.entry(sc).or_default().push(title);
+            titles.entry(key).or_default().push(title);
         }
     }
 
     for game in games.iter_mut() {
         if let Some(sc) = game.shortcode.as_deref() {
-            if let Some(entries) = map.get(sc) {
+            let base = crate::collection_base_id(game.torrent_source.as_deref().unwrap_or("eXoDOS"));
+            let key: GroupKey = (base.to_string(), sc.to_string());
+            if let Some(entries) = map.get(&key) {
                 if entries.len() > 1 {
                     game.available_languages = Some(entries.join(","));
-                    if let Some(group_titles) = titles.get(sc) {
+                    if let Some(group_titles) = titles.get(&key) {
                         let others: Vec<&str> = group_titles
                             .iter()
                             .map(|t| t.as_str())
@@ -362,15 +409,23 @@ fn attach_language_maps(conn: &Connection, games: &mut [Game]) -> DbResult<()> {
 }
 
 
-/// Get all language variants for a shortcode.
-pub fn fetch_game_variants(conn: &Connection, shortcode: &str) -> DbResult<Vec<Game>> {
+/// Get all language variants for a shortcode within `collection`'s pack family.
+/// The family is required, not optional: a shortcode alone can name a different
+/// game in another pack - see `same_group`.
+pub fn fetch_game_variants(
+    conn: &Connection,
+    shortcode: &str,
+    collection: &str,
+) -> DbResult<Vec<Game>> {
     let sql = format!(
-        "SELECT {} FROM games WHERE shortcode = ?1 ORDER BY CASE language WHEN 'EN' THEN 0 ELSE 1 END, language",
-        GAME_COLUMNS
+        "SELECT {} FROM games g WHERE g.shortcode = ?1 AND {} = ?2 \
+         ORDER BY CASE g.language WHEN 'EN' THEN 0 ELSE 1 END, g.language",
+        GAME_COLUMNS,
+        family_expr("g")
     );
     let mut stmt = conn.prepare_cached(&sql)?;
     let mut games = stmt
-        .query_map(params![shortcode], row_to_game)?
+        .query_map(params![shortcode, crate::collection_base_id(collection)], row_to_game)?
         .collect::<Result<Vec<_>, _>>()?;
 
     // LP overlay ZIPs (< 1 MB) are just localized bat files - they require the EN base game
@@ -498,10 +553,11 @@ pub fn get_section_keys(conn: &Connection, f: &GameFilter) -> DbResult<Vec<Strin
 pub fn fetch_installed_games(conn: &Connection) -> DbResult<Vec<Game>> {
     let sql = format!(
         "SELECT {} FROM games g WHERE g.installed = 1 AND (g.shortcode IS NULL OR g.id = (
-            SELECT p.id FROM games p WHERE p.shortcode = g.shortcode AND p.installed = 1
+            SELECT p.id FROM games p WHERE {} AND p.installed = 1
             ORDER BY CASE WHEN p.language = 'EN' THEN 0 ELSE 1 END, p.id LIMIT 1))
          ORDER BY title, language",
-        GAME_COLUMNS
+        GAME_COLUMNS,
+        same_group("p", "g")
     );
     let mut stmt = conn.prepare(&sql)?;
     let mut games: Vec<Game> = stmt
@@ -517,10 +573,11 @@ pub fn fetch_installed_games(conn: &Connection) -> DbResult<Vec<Game>> {
 pub fn fetch_recently_played(conn: &Connection, limit: usize) -> DbResult<Vec<Game>> {
     let sql = format!(
         "SELECT {} FROM games g WHERE g.last_played IS NOT NULL AND (g.shortcode IS NULL OR g.id = (
-            SELECT p.id FROM games p WHERE p.shortcode = g.shortcode AND p.last_played IS NOT NULL
+            SELECT p.id FROM games p WHERE {} AND p.last_played IS NOT NULL
             ORDER BY p.last_played DESC, p.id LIMIT 1))
          ORDER BY last_played DESC LIMIT ?1",
-        GAME_COLUMNS
+        GAME_COLUMNS,
+        same_group("p", "g")
     );
     let mut stmt = conn.prepare(&sql)?;
     let mut games: Vec<Game> = stmt
@@ -700,11 +757,14 @@ pub fn set_playlist_membership(
         // installed LP row), and an exact-id DELETE would silently no-op
         // while the checkmark keeps coming back.
         conn.execute(
-            "DELETE FROM playlist_games WHERE playlist_id = ?1 AND game_id IN (
+            &format!(
+                "DELETE FROM playlist_games WHERE playlist_id = ?1 AND game_id IN (
                 SELECT v.id FROM games v
                 JOIN games me ON me.id = ?2
                 WHERE v.id = me.id
-                   OR (me.shortcode IS NOT NULL AND v.shortcode = me.shortcode))",
+                   OR (me.shortcode IS NOT NULL AND {}))",
+                same_group("v", "me")
+            ),
             params![playlist_id, game_id],
         )?;
     }
@@ -714,14 +774,15 @@ pub fn set_playlist_membership(
 /// Playlist ids a game belongs to (any variant of its shortcode group, so
 /// the check works no matter which variant row the caller holds).
 pub fn fetch_game_playlist_ids(conn: &Connection, game_id: i64) -> DbResult<Vec<i64>> {
-    let mut stmt = conn.prepare_cached(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT DISTINCT pg.playlist_id FROM playlist_games pg
          WHERE pg.game_id = ?1
             OR pg.game_id IN (
                 SELECT v.id FROM games v
                 JOIN games me ON me.id = ?1
-                WHERE me.shortcode IS NOT NULL AND v.shortcode = me.shortcode)",
-    )?;
+                WHERE me.shortcode IS NOT NULL AND {})",
+        same_group("v", "me")
+    ))?;
     let ids = stmt
         .query_map(params![game_id], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -844,6 +905,39 @@ mod tests {
         assert_eq!(solo.variant_titles, None);
     }
 
+    /// eXoWin3x reuses ten eXoDOS shortcodes for entirely different games
+    /// ("EarthQue" is Earthquest under DOS, Eyewitness Earth Quest under
+    /// Win3x). They must stay two cards - merging them hides one game.
+    #[test]
+    fn same_shortcode_in_another_pack_is_not_a_variant() {
+        let conn = open_test_db();
+        let mut dos = make_game("Earthquest");
+        dos.shortcode = Some("EarthQue".to_string());
+        let mut win3x = make_game("Eyewitness Virtual Reality: Earth Quest");
+        win3x.shortcode = Some("EarthQue".to_string());
+        insert_games(&conn, &[dos, win3x]).unwrap();
+        conn.execute(
+            "UPDATE games SET torrent_source = 'eXoWin3x' WHERE title LIKE 'Eyewitness%'", [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE games SET torrent_source = 'eXoDOS' WHERE title = 'Earthquest'", [],
+        ).unwrap();
+
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "", favorites_only: false, playlist_id: None };
+        let games = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+        assert_eq!(games.len(), 2, "got {:?}", games.iter().map(|g| &g.title).collect::<Vec<_>>());
+        // Neither may claim the other as a language variant.
+        assert!(games.iter().all(|g| g.available_languages.is_none()));
+
+        // Variant lookup is scoped the same way.
+        let dos_variants = fetch_game_variants(&conn, "EarthQue", "eXoDOS").unwrap();
+        assert_eq!(dos_variants.len(), 1);
+        assert_eq!(dos_variants[0].title, "Earthquest");
+        let w3x_variants = fetch_game_variants(&conn, "EarthQue", "eXoWin3x").unwrap();
+        assert_eq!(w3x_variants.len(), 1);
+        assert_eq!(w3x_variants[0].title, "Eyewitness Virtual Reality: Earth Quest");
+    }
+
     #[test]
     fn merged_grid_one_card_per_shortcode() {
         let conn = open_test_db();
@@ -855,7 +949,7 @@ mod tests {
         let solo = make_game("Bloxit");
         insert_games(&conn, &[en, de, solo]).unwrap();
         conn.execute(
-            "UPDATE games SET installed = 1, torrent_source = 'GLP' WHERE language = 'DE'", [],
+            "UPDATE games SET installed = 1, torrent_source = 'eXoDOS_GLP' WHERE language = 'DE'", [],
         ).unwrap();
         conn.execute(
             "UPDATE games SET torrent_source = 'eXoDOS' WHERE language = 'EN'", [],
@@ -879,7 +973,7 @@ mod tests {
         assert_eq!(hits[0].language, "EN");
 
         // Filtering by the LP collection also surfaces the EN primary.
-        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "GLP", favorites_only: false, playlist_id: None };
+        let f = GameFilter { query: "", genre: "", sort_by: "", collection: "eXoDOS_GLP", favorites_only: false, playlist_id: None };
         let hits = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].language, "EN");

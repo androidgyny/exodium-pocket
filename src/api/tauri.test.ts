@@ -78,10 +78,13 @@ describe("API invoke mapping", () => {
     expect(mockInvoke).toHaveBeenCalledWith("get_genres", { collection: undefined });
   });
 
-  it("getGameVariants passes shortcode", async () => {
+  it("getGameVariants passes shortcode and collection", async () => {
     mockInvoke.mockResolvedValue([]);
-    await getGameVariants("SQ5");
-    expect(mockInvoke).toHaveBeenCalledWith("get_game_variants", { shortcode: "SQ5" });
+    await getGameVariants("SQ5", "eXoDOS");
+    expect(mockInvoke).toHaveBeenCalledWith("get_game_variants", {
+      shortcode: "SQ5",
+      collection: "eXoDOS",
+    });
   });
 
   it("getInstalledGames sends no args", async () => {

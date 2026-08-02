@@ -187,7 +187,7 @@ export function GameDetailPanel(props: Props) {
     lastMetaKey = null;
     if (g.shortcode && isMultiLang()) {
       const shortcode = g.shortcode;
-      loadVariants(shortcode).then((v) => {
+      loadVariants(g).then((v) => {
         // Guard: game may have changed while the async call was in flight
         if (props.game?.shortcode !== shortcode) { return; }
         setVariants(v);
@@ -241,7 +241,7 @@ export function GameDetailPanel(props: Props) {
     const g = props.game;
     if (!g?.shortcode || !isMultiLang()) { return; }
     const shortcode = g.shortcode;
-    loadVariants(shortcode, true).then((v) => {
+    loadVariants(g, true).then((v) => {
       if (props.game?.shortcode === shortcode) { setVariants(v); }
     }).catch(() => {});
   });
@@ -400,7 +400,9 @@ export function GameDetailPanel(props: Props) {
     try {
       await performUninstall(gameId, statusSink, async () => {
         if (shortcode) {
-          const v = await loadVariants(shortcode, true).catch(() => []);
+          const v = props.game
+            ? await loadVariants(props.game, true).catch(() => [])
+            : [];
           setVariants(v);
         }
       }, title);

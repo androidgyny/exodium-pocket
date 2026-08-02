@@ -48,7 +48,7 @@ export function GameCard(props: GameCardProps) {
   createEffect(() => {
     const shortcode = props.game.shortcode;
     if (!isMultiLang() || !shortcode) { return; }
-    loadVariants(shortcode)
+    loadVariants(props.game)
       .then((v) => { if (props.game.shortcode === shortcode) { setVariants(v); } })
       .catch(() => {});
   });
