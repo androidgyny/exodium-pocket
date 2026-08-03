@@ -1829,7 +1829,26 @@ fn patch_dosbox_conf(
     // and it keeps the substituted host path free of backslashes that a later
     // reader could mistake for guest-side DOS text.
     let abs_prefix = format!("{}/", working_dir.to_string_lossy()).replace('\\', "/");
-    let to_working_dir = |body: &str| format!("{}{}", abs_prefix, body.replace('\\', "/"));
+    // A `.\` token is only a host path when the target actually exists - eXo
+    // also writes `.\` GUEST paths resolved on the mounted drive (11th Hour:
+    // `imgmount d ".\cd\11HDISK1.cue"` after `c:` means C:\cd\..., the game
+    // dir's own cd folder; there is no eXo/cd on the host). Rewriting those
+    // produced dead absolute paths, the imgmounts failed silently, and the
+    // game booted without its CDs.
+    let to_working_dir = |body: &str| {
+        // Bare `.\` is guest text for "current directory" (OxydGold passes it
+        // as a program argument) - it would resolve to the working dir, which
+        // always exists, so the existence gate alone can't catch it.
+        if body.is_empty() {
+            return ".\\".to_string();
+        }
+        let resolved = format!("{}{}", abs_prefix, body.replace('\\', "/"));
+        if std::path::Path::new(&resolved).exists() {
+            resolved
+        } else {
+            format!(".\\{}", body)
+        }
+    };
 
     let patched = if let Some((shortcode, lang_dir, game_folder, game_dir)) = lp_info {
         // Strategy 1: overlay mount. The EN autoexec is ground truth authored
@@ -1860,10 +1879,13 @@ fn patch_dosbox_conf(
             // Route eXoDOS-root references through the overlay, everything else
             // to the real working dir. Both only touch `.\`-relative host paths.
             let mut result = rewrite_host_paths(&content, &|body| {
-                match body.replace('\\', "/").strip_prefix(game_folder) {
-                    Some(tail) => format!("{}{}", staging_fwd, tail),
-                    None => to_working_dir(body),
+                if let Some(tail) = body.replace('\\', "/").strip_prefix(game_folder) {
+                    let staged = format!("{}{}", staging_fwd, tail);
+                    if std::path::Path::new(&staged).exists() {
+                        return staged;
+                    }
                 }
+                to_working_dir(body)
             });
 
             // If autoexec has no actual launch command (e.g., all commented out with #),
@@ -3316,6 +3338,9 @@ mod tests {
     fn patch_dosbox_conf_keeps_guest_dos_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let working_dir = tmp.path();
+        let game_dir = working_dir.join("eXoWin3x/20k3x/cd");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::write(game_dir.join("cd.cue"), b"").unwrap();
 
         let conf_content = "[autoexec]\nmount c .\\eXoWin3x\\20k3x\n\
              imgmount d .\\eXoWin3x\\20k3x\\cd\\cd.cue -t cdrom\nc:\n\
@@ -3340,6 +3365,42 @@ mod tests {
         assert!(
             patched.contains(&format!("{}eXoWin3x/20k3x/cd/cd.cue -t cdrom", abs)),
             "imgmount must be absolute: {}", patched
+        );
+    }
+
+    /// 11th Hour (DE) shape: eXo's imgmount lines can be GUEST paths - after
+    /// `c:`, `imgmount d ".\cd\11HDISK1.cue"` means C:\cd\... on the mounted
+    /// drive, and no eXo/cd exists on the host. Rewriting them to absolute
+    /// host paths made every imgmount fail and the game booted without CDs.
+    #[test]
+    fn patch_dosbox_conf_keeps_guest_imgmount_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let working_dir = tmp.path();
+        let cd_dir = working_dir.join("eXoDOS/11thHour/cd");
+        fs::create_dir_all(&cd_dir).unwrap();
+        fs::write(cd_dir.join("11HDISK1.cue"), b"").unwrap();
+
+        let conf_content = "[autoexec]\necho off\nmount c .\\eXoDOS\\11thHour\nc:\n\
+             imgmount d \".\\cd\\11HDISK1.cue\" -t iso\ngame.exe /9 .\\ .\\\n@call run\nexit\n";
+        let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);
+
+        let patched_path = patch_dosbox_conf(&conf_path, working_dir, None, true).unwrap();
+        let patched = fs::read_to_string(&patched_path).unwrap();
+
+        let abs = format!("{}/", working_dir.to_string_lossy()).replace('\\', "/");
+        assert!(
+            patched.contains(&format!("mount c {}eXoDOS/11thHour", abs)),
+            "existing mount target still becomes absolute: {}", patched
+        );
+        assert!(
+            patched.contains("imgmount d \".\\cd\\11HDISK1.cue\" -t iso"),
+            "guest-relative imgmount must stay as authored: {}", patched
+        );
+        // Bare `.\` is a guest argument (OxydGold) - the working dir itself
+        // always exists, so it must be excluded from the existence gate.
+        assert!(
+            patched.contains("game.exe /9 .\\ .\\"),
+            "bare .\\ arguments must stay as authored: {}", patched
         );
     }
 
@@ -3475,6 +3536,7 @@ mod tests {
     fn patch_dosbox_conf_converts_windows_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let working_dir = tmp.path();
+        fs::create_dir_all(working_dir.join("eXoDOS/SQ5")).unwrap();
 
         let conf_content = "[sdl]\nfullscreen=false\n[autoexec]\n@mount c .\\eXoDOS\\SQ5\nc:\nSQ5.bat\nexit\n";
         let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);

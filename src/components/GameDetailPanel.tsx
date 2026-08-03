@@ -326,10 +326,14 @@ export function GameDetailPanel(props: Props) {
   // permanent label on the game.
   const [showNoVideo, setShowNoVideo] = createSignal(false);
   createEffect(() => {
-    if (videoState()?.phase !== "none") { return; }
+    // Reset on the way out: switching to another game re-runs this effect and
+    // cancels the timer via onCleanup, so an early return without the reset
+    // left the pill stuck on - overlapping the next game's "Looking for a
+    // video" spinner.
+    if (videoState()?.phase !== "none") { setShowNoVideo(false); return; }
     // Offline reports "none" because nothing can be fetched, which is not the
     // same statement as "this game has no video" - so say nothing at all.
-    if (isOffline()) { return; }
+    if (isOffline()) { setShowNoVideo(false); return; }
     setShowNoVideo(true);
     const timer = window.setTimeout(() => setShowNoVideo(false), 2600);
     onCleanup(() => clearTimeout(timer));

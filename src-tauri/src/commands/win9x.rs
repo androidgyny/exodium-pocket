@@ -108,12 +108,44 @@ fn do_extract_win9x_support(util_zip: &Path, torrent_root: &Path) -> Result<usiz
             std::fs::rename(entry.path(), &dst)
                 .map_err(|e| format!("moving {} into place: {}", rel.display(), e))?;
         }
+        add_parent_case_aliases(&dest_root);
         Ok(extracted)
     })();
 
     let _ = std::fs::remove_file(&tmp_path);
     let _ = std::fs::remove_dir_all(&staging_root);
     result
+}
+
+/// The pack's play.confs reference the x98 parent VHDs in inconsistent case
+/// (`win98jap` / `Win98Jap`, `Win95dx8` / `win95Dx8` / `Win95DX8`), which is
+/// invisible on Windows/macOS but breaks ~24 games on Linux's case-sensitive
+/// filesystems. Symlink every observed conf spelling to the real file. No-op
+/// for aliases that already exist and on non-Unix platforms.
+fn add_parent_case_aliases(dest_root: &Path) {
+    #[cfg(unix)]
+    {
+        let parent_dir = dest_root.join("emulators/dosbox/x98/parent");
+        const ALIASES: [(&str, &str); 5] = [
+            ("win98jap.vhd", "win98Jap.vhd"),
+            ("Win98Jap.vhd", "win98Jap.vhd"),
+            ("Win95dx8.vhd", "Win95DX8.vhd"),
+            ("win95Dx8.vhd", "Win95DX8.vhd"),
+            ("win98chinese.vhd", "Win98Chinese.vhd"),
+        ];
+        for (alias, target) in ALIASES {
+            let link = parent_dir.join(alias);
+            if parent_dir.join(target).exists() && !link.exists() {
+                if let Err(e) = std::os::unix::fs::symlink(target, &link) {
+                    log::warn!("Failed to create parent-VHD case alias {}: {}", alias, e);
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dest_root;
+    }
 }
 
 /// Watch utilWin9x.zip until it finishes downloading, then extract the

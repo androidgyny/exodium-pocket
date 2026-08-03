@@ -118,16 +118,19 @@ pub fn create_differencing(child: &Path, parent: &Path, parent_rel: &str) -> Res
     let w2ru_offset = w2ku_offset + 512;
     let footer_offset = w2ru_offset + 512;
 
-    // Absolute parent path for W2ku. On Windows this is the native form;
-    // elsewhere it is best-effort (both bundled emulators resolve the
-    // relative W2ru locator, which is the one that matters).
+    // Locator paths use FORWARD slashes and native absolute form. 86Box's
+    // minivhd resolves W2ru via cwalk with the path style GUESSED FROM THE
+    // CHILD'S OWN directory - on macOS/Linux that is POSIX style, where a
+    // backslash is just a filename character and eXo's Windows-style
+    // ".\parent\x.vhd" locators dead-end (measured: "parent VHD image not
+    // found"). Windows-style cwalk accepts '/' too, so '/' works everywhere.
     let parent_abs = parent
         .canonicalize()
         .unwrap_or_else(|_| parent.to_path_buf())
         .to_string_lossy()
-        .replace('/', "\\");
+        .replace('\\', "/");
     let w2ku_data = utf16le(&parent_abs);
-    let w2ru_data = utf16le(parent_rel);
+    let w2ru_data = utf16le(&parent_rel.replace('\\', "/"));
     if w2ku_data.len() > 512 || w2ru_data.len() > 512 {
         return Err("parent path too long for a locator sector".to_string());
     }
@@ -166,10 +169,22 @@ pub fn create_differencing(child: &Path, parent: &Path, parent_rel: &str) -> Res
     // Parent timestamp: 0, exactly like eXo's makevhd.exe (verified against
     // a real child). The spec wants the parent's mtime here, but extraction
     // rewrites mtimes arbitrarily - a real value would make emulators reject
-    // the chain as "parent modified"; 0 is the tool-proven escape hatch.
+    // the chain as "parent modified"; 0 is the tool-proven escape hatch
+    // (minivhd treats the mismatch as a warning, not an error).
     dh[0x38..0x3C].copy_from_slice(&0u32.to_be_bytes());
-    // Parent unicode name (0x40, UTF-16BE): left empty, matching eXo's tool -
-    // both bundled emulators resolve the parent via the locators below.
+    // Parent unicode name (0x40, UTF-16BE): the parent's FILE NAME. Must not
+    // be empty: minivhd's fallback parent probe joins <child dir> + this
+    // name, and with an empty name that join IS the directory - fopen() on a
+    // directory succeeds on POSIX and the "parent" then fails cookie
+    // validation as "file is not a VHD image".
+    let parent_name: Vec<u8> = parent
+        .file_name()
+        .map(|n| n.to_string_lossy().encode_utf16().flat_map(|u| u.to_be_bytes()).collect())
+        .unwrap_or_default();
+    if parent_name.len() > 512 {
+        return Err("parent file name too long for the sparse header".to_string());
+    }
+    dh[0x40..0x40 + parent_name.len()].copy_from_slice(&parent_name);
     // Parent locator entries start at 0x240: {code, data space, data length,
     // reserved, data offset}.
     let locators: [(&[u8; 4], usize, u64); 2] = [
@@ -281,7 +296,8 @@ mod tests {
         h[0x24..0x28].copy_from_slice(&[0; 4]);
         assert_eq!(stored, checksum(&h));
 
-        // W2ru locator holds the relative path in UTF-16LE.
+        // W2ru locator holds the relative path in UTF-16LE, with FORWARD
+        // slashes (backslashes dead-end in minivhd's POSIX path joining).
         let e = 0x240 + 24; // second entry
         assert_eq!(&dh[e..e + 4], b"W2ru");
         let len = u32::from_be_bytes(dh[e + 8..e + 12].try_into().unwrap()) as usize;
@@ -291,7 +307,17 @@ mod tests {
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .map(|u| char::from_u32(u as u32).unwrap())
             .collect();
-        assert_eq!(decoded, r".\parent\W98-P.vhd");
+        assert_eq!(decoded, "./parent/W98-P.vhd");
+
+        // Parent unicode name is the parent's file name (UTF-16BE), never
+        // empty - minivhd's fallback probe otherwise opens the child's
+        // DIRECTORY as the parent.
+        let pname: String = dh[0x40..0x40 + 2 * "W98-P.vhd".len()]
+            .chunks(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .map(|u| char::from_u32(u as u32).unwrap())
+            .collect();
+        assert_eq!(pname, "W98-P.vhd");
 
         // BAT is all 0xFF (no blocks allocated).
         let bat_off = u64::from_be_bytes(dh[0x10..0x18].try_into().unwrap()) as usize;
