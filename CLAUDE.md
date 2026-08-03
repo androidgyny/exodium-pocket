@@ -636,20 +636,35 @@ eXoDOS's util.zip). `win9x.rs` queues it with the first Win9x game download
 `eXo/emulators/dosbox/x98/parent` (x98) / `eXo/emulators/86Box98/parent`
 (86box*) exists; `get_win9x_support_status` feeds the panel.
 
-**Assets**: `scripts/gen_win9x_assets.py` builds `metadata/Win9x.xml.gz`
-(from `xml/Windows 9x.xml` in `XOWin9xMetadata.zip`), `Win9x_configs.zip`
-(`.conf/.bat/.cfg` stripped from the 8.4 GB `!Win9Xmetadata.zip`) and
-`metadata/dosbox9x.txt`, whose "variant" is really WHICH `9xlaunch*.bat` the
-per-game bat calls (slugs `x98|86box|86boxME|86boxNetHost|86boxNetJoin|pcbox`,
-encoded `<title>:<slug>\dosbox.exe` so generate_db's parser is unchanged).
-`init-dev.sh --win9x` fetches both Content zips (~13 GB).
+**Assets**: `scripts/gen_win9x_assets.py` builds `metadata/Win9x.xml.gz`,
+`Win9x_configs.zip` (`.conf/.bat/.cfg` stripped from the 8.4 GB
+`!Win9Xmetadata.zip`, 16.7 MB) and `metadata/dosbox9x.txt`, whose "variant"
+is really WHICH `9xlaunch*.bat` the per-game bat calls (found: **x98 635,
+86box 28, 86boxME 1** - no game's primary launcher is pcbox or NetHost/Join),
+encoded `<title>:<slug>\dosbox.exe` so generate_db's parser is unchanged.
+Variant matching keys on the launcher BAT STEM from application_path first,
+title second - title-only left 88 Win9x games unmatched. NOTE: the metadata
+zip has NO finished `Windows 9x.xml`; it ships per-volume body fragments
+(`xml/all/*.9x`) that the script wraps in the LaunchBox root itself, exactly
+like eXo's merge_9xall.bat. `init-dev.sh --win9x` fetches both Content zips
+(~13 GB).
 
-**Still open**: launch coverage is untested pending first end-to-end runs
-(Connect4 → 3D Maze for x98); DOSBox-X official-build parity with eXo's
-custom x98 build on macOS/Linux; 86Box ROM discovery via `-P` with a
-non-adjacent exe; NetHost/NetJoin games are launched via their play.cfg (solo)
-- the host/join multiplayer menu flow is out of scope; no poster pack
-published yet (manifest carries only the metadata pack until content-v5).
+**Validated 2026-08-04** (Connect4 (1995), macOS arm64, OFFICIAL DOSBox-X
+2025.02.01 build): Windows 98 boots from the parent image and the game runs.
+Key finding: the per-launch C: differencing child is created by DOSBox-X's
+OWN `vhdmake -f -l` inside play.conf's autoexec (plus `IMGMOUNT c/d`,
+`MOUNT e <game zip>`, `BOOT -l c`) - x98 games are fully self-contained and
+`vhd.rs` is needed ONLY for the 29 86Box games, whose bats call the external
+makevhd.exe. Catalogue gate: 664 rows (2 multi-entry titles beyond the 662
+count), 0 NULL shortcodes, 664/664 torrent indices, 664/664 variants,
+662/662 covers + Tier-0 previews.
+
+**Still open**: 86Box end-to-end run (28+1 games - ROM discovery via `-P`
+with a non-adjacent exe is the open question); full in-app flow (download →
+install → launch through Exodium itself); NetHost/NetJoin multiplayer menus
+out of scope (solo play.cfg only); `posters-eXoWin9x-v1.tar.gz` (38.9 MB,
+sha256 in manifest) is built in `thumbnails/` but content-v5 is NOT published
+yet - per §10 it must go up BEFORE any app release referencing it.
 
 ## Conventions
 
