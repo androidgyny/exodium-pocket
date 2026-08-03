@@ -4,6 +4,12 @@
 
 ### Added
 
+- **New collection: eXoWin3x.** 1,138 Windows 3.x games join eXoDOS and the
+  language packs as a fifth collection - browsable, downloadable and launchable
+  like the rest, running under the bundled DOSBox Staging. Existing installs
+  pick it up automatically on the next start. Fair warning: the median Win3x
+  game is ~237 MB (these ship as full machine images), so installs are real
+  downloads rather than eXoDOS's click-and-play few megabytes.
 - **Collection shelf.** The collection picker above the Browse grid is now a
   shelf of box covers - eXo's real section art for eXoDOS, the three language
   packs and eXoWin3x, each card lit in its own accent color when active, with
