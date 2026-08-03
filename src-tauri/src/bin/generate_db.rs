@@ -683,7 +683,11 @@ fn main() {
     // Matching is scoped to the family the index belongs to: eXoDOS and eXoWin3x
     // share 100+ titles (Myst, SimCity, Civilization), and an unscoped title
     // match handed Win3x games the DOS build's variant.
-    for (index_file, family) in [("dosbox.txt", "eXoDOS"), ("dosbox3x.txt", "eXoWin3x")] {
+    for (index_file, family) in [
+        ("dosbox.txt", "eXoDOS"),
+        ("dosbox3x.txt", "eXoWin3x"),
+        ("dosbox9x.txt", "eXoWin9x"),
+    ] {
         let dosbox_txt = root.join("metadata").join(index_file);
         if dosbox_txt.exists() {
             let content = std::fs::read_to_string(&dosbox_txt).unwrap_or_default();

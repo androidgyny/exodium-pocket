@@ -8,6 +8,7 @@
 #   pnpm run init-dev --slp        # also download Spanish language pack (~3.8 GB)
 #   pnpm run init-dev --plp        # also download Polish language pack (~800 MB)
 #   pnpm run init-dev --win3x      # also download eXoWin3x box art (~2.3 GB)
+#   pnpm run init-dev --win9x      # also download eXoWin9x metadata (~13 GB)
 #   pnpm run init-dev --all-packs  # download all language packs
 #
 # Environment:
@@ -24,6 +25,7 @@ WANT_GLP=0
 WANT_SLP=0
 WANT_PLP=0
 WANT_WIN3X=0
+WANT_WIN9X=0
 PACKS_EXPLICIT=0   # set to 1 if any pack flag was passed (skip interactive prompt)
 
 for arg in "$@"; do
@@ -33,7 +35,8 @@ for arg in "$@"; do
     --slp)       WANT_SLP=1; PACKS_EXPLICIT=1 ;;
     --plp)       WANT_PLP=1; PACKS_EXPLICIT=1 ;;
     --win3x)     WANT_WIN3X=1; PACKS_EXPLICIT=1 ;;
-    --all-packs) WANT_GLP=1; WANT_SLP=1; WANT_PLP=1; WANT_WIN3X=1; PACKS_EXPLICIT=1 ;;
+    --win9x)     WANT_WIN9X=1; PACKS_EXPLICIT=1 ;;
+    --all-packs) WANT_GLP=1; WANT_SLP=1; WANT_PLP=1; WANT_WIN3X=1; WANT_WIN9X=1; PACKS_EXPLICIT=1 ;;
   esac
 done
 
@@ -99,6 +102,8 @@ if [[ "$PACKS_EXPLICIT" -eq 0 && -t 0 ]]; then
   [[ "$ans" =~ ^[Yy] ]] && WANT_PLP=1
   read -r -p "  eXoWin3x       (~2.3 GB): download? [y/N] " ans
   [[ "$ans" =~ ^[Yy] ]] && WANT_WIN3X=1
+  read -r -p "  eXoWin9x       (~13 GB):  download? [y/N] " ans
+  [[ "$ans" =~ ^[Yy] ]] && WANT_WIN9X=1
   echo ""
 fi
 
@@ -191,6 +196,8 @@ GLP_ZIP="$DATA_DIR/eXoDOS_GLP/eXoDOS/Content/eXoDOS_GLP_Metadata.zip"
 SLP_ZIP="$DATA_DIR/eXoDOS_SLP/eXoDOS/Content/eXoDOS_SLP_Metadata.zip"
 PLP_ZIP="$DATA_DIR/eXoDOS_PLP/eXoDOS/Content/eXoDOS_PLP_Metadata.zip"
 WIN3X_ZIP="$DATA_DIR/eXoWin3x/eXoWin3x/Content/XOWin3xMetadata.zip"
+WIN9X_ZIP="$DATA_DIR/eXoWin9x/eXoWin9x/Content/XOWin9xMetadata.zip"
+WIN9X_CONFIGS_ZIP="$DATA_DIR/eXoWin9x/eXoWin9x/Content/!Win9Xmetadata.zip"
 
 if [[ "$WANT_GLP" -eq 1 ]]; then
   echo "── GLP (German) metadata ────────────────────────────────────────────────────"
@@ -237,6 +244,33 @@ if [[ "$WANT_WIN3X" -eq 1 ]]; then
       "$DATA_DIR/eXoWin3x" "$WIN3X_ZIP"
   else
     echo "XOWin3xMetadata.zip already present, skipping."
+  fi
+fi
+
+if [[ "$WANT_WIN9X" -eq 1 ]]; then
+  echo "── eXoWin9x metadata ────────────────────────────────────────────────────────"
+  # Two zips: XOWin9xMetadata.zip carries covers + the catalogue XML,
+  # !Win9Xmetadata.zip carries the per-game launch confs/bats that
+  # gen_win9x_assets.py strips into the bundled Win9x_configs.zip.
+  if ! validate_zip "$WIN9X_ZIP"; then
+    echo "Downloading XOWin9xMetadata.zip (~4.6 GB)..."
+    download_torrent_file "$REPO_ROOT/torrents/eXoWin9x.torrent" \
+      "$(torrent_file_index "$REPO_ROOT/torrents/eXoWin9x.torrent" "XOWin9xMetadata.zip" 7)" \
+      "$DATA_DIR/eXoWin9x" "$WIN9X_ZIP"
+  else
+    echo "XOWin9xMetadata.zip already present, skipping."
+  fi
+  if ! validate_zip "$WIN9X_CONFIGS_ZIP"; then
+    echo "Downloading !Win9Xmetadata.zip (~8.4 GB)..."
+    download_torrent_file "$REPO_ROOT/torrents/eXoWin9x.torrent" \
+      "$(torrent_file_index "$REPO_ROOT/torrents/eXoWin9x.torrent" '!Win9Xmetadata.zip' 1)" \
+      "$DATA_DIR/eXoWin9x" "$WIN9X_CONFIGS_ZIP"
+  else
+    echo "!Win9Xmetadata.zip already present, skipping."
+  fi
+  if [[ ! -s "$REPO_ROOT/metadata/Win9x.xml.gz" || "$FORCE" -eq 1 ]]; then
+    echo "Regenerating bundled eXoWin9x metadata (gen_win9x_assets.py)..."
+    $PYTHON "$SCRIPT_DIR/gen_win9x_assets.py"
   fi
 fi
 
@@ -305,6 +339,19 @@ if [[ "$WANT_WIN3X" -eq 1 && -s "$WIN3X_ZIP" ]]; then
     "$REPO_ROOT/thumbnails/eXoWin3x" \
     --preview-dir "$REPO_ROOT/src-tauri/resources/previews/eXoWin3x" \
     --platform "Windows 3x" \
+    --db "$REPO_ROOT/metadata/exodium.db" \
+    $FORCE_FLAG
+fi
+
+if [[ "$WANT_WIN9X" -eq 1 && -s "$WIN9X_ZIP" ]]; then
+  echo "eXoWin9x (Windows 9x)..."
+  # Own platform subtree and own thumbnail dir, like eXoWin3x.
+  $PYTHON "$SCRIPT_DIR/gen_thumbnails.py" \
+    "$WIN9X_ZIP" \
+    "$REPO_ROOT/metadata/Win9x.xml.gz" \
+    "$REPO_ROOT/thumbnails/eXoWin9x" \
+    --preview-dir "$REPO_ROOT/src-tauri/resources/previews/eXoWin9x" \
+    --platform "Windows 9x" \
     --db "$REPO_ROOT/metadata/exodium.db" \
     $FORCE_FLAG
 fi

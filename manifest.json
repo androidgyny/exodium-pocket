@@ -108,6 +108,23 @@
           "supersedes": []
         }
       }
+    },
+    "eXoWin9x": {
+      "torrent_infohash": "dd8a867f62a6c9cc939d51c742143de2ac98c9f2",
+      "game_count": 662,
+      "content_packs": {
+        "metadata": {
+          "display_name": "Game Metadata",
+          "description": "Box art, screenshots, manuals and videos for all 662 Windows 9x games (sourced from the eXoWin9x torrent)",
+          "url": "",
+          "sha256": "",
+          "torrent_file_path": "Content/XOWin9xMetadata.zip",
+          "size_bytes": 4589061615,
+          "version": 1,
+          "install_path": "content/metadata/eXoWin9x",
+          "supersedes": []
+        }
+      }
     }
   }
 }

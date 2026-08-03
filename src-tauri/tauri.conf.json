@@ -50,7 +50,8 @@
       "../torrents": "torrents",
       "../manifest.json": "manifest.json",
       "resources/previews/eXoDOS": "previews/eXoDOS",
-        "resources/previews/eXoWin3x": "previews/eXoWin3x",
+      "resources/previews/eXoWin3x": "previews/eXoWin3x",
+      "resources/previews/eXoWin9x": "previews/eXoWin9x",
       "resources/dosbox-glshaders": "glshaders",
       "resources/dosbox-bin": "dosbox-bin"
     },

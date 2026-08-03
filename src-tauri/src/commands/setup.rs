@@ -71,6 +71,11 @@ pub struct CollectionDef {
     /// (`Images/<platform>/`, `Manuals/<platform>/`) and matches the XML's
     /// `<Platform>` value.
     pub platform: &'static str,
+    /// Games live under a 4-digit year subdirectory and are keyed by their
+    /// title directory instead of an 8-char shortcode:
+    /// `<game_prefix>/<year>/<Title (Year)>/` (eXoWin9x layout). All path
+    /// derivation keys off this flag, never off the collection id.
+    pub year_subdirs: bool,
 }
 
 /// Look up a collection definition by ID.  Returns None for unknown IDs.
@@ -1471,6 +1476,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: Some("!german"),
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     CollectionDef {
         id: "eXoDOS_PLP",
@@ -1483,6 +1489,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: Some("!polish"),
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     CollectionDef {
         id: "eXoDOS_SLP",
@@ -1495,6 +1502,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: Some("!spanish"),
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     CollectionDef {
         id: "eXoDOS",
@@ -1507,6 +1515,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: None,
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     // First collection with an inner_folder of its own: the eXoWin3x torrent
     // carries the internal name "eXoWin3x", so it cannot collide with the four
@@ -1522,6 +1531,24 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!win3x",
         lang_dir: None,
         platform: "Windows 3x",
+        year_subdirs: false,
+    },
+    // eXoWin9x nests its games one level deeper than every other pack
+    // (`eXo/eXoWin9x/<year>/<Title (Year)>.zip`) and has no 8-char shortcodes:
+    // the title directory doubles as the shortcode. Games boot Windows 95/98
+    // inside DOSBox-X (or 86Box) from VHD images - Staging cannot run them.
+    CollectionDef {
+        id: "eXoWin9x",
+        display_name: "eXoWin9x",
+        metadata_file: "Win9x.xml.gz",
+        torrent_file: "eXoWin9x.torrent",
+        configs_zip: Some("Win9x_configs.zip"),
+        inner_folder: "eXoWin9x",
+        game_prefix: "eXo/eXoWin9x",
+        shortcode_segment: "!win9x",
+        lang_dir: None,
+        platform: "Windows 9x",
+        year_subdirs: true,
     },
 ];
 
@@ -2224,15 +2251,16 @@ fn scan_installed_games_with_db(
     db: &std::sync::Mutex<rusqlite::Connection>,
     data_dir: &str,
 ) -> Result<usize, String> {
-    // The eXoDOS torrent always creates a folder called "eXoDOS" inside data_dir.
-    // Extracted game data lives at:
+    // Each collection's extracted game data lives under its own tree
+    // (<data_dir>/<inner_folder>/<game_prefix>):
     //   eXo/eXoDOS/<shortcode>/           - English (eXoDOS)
-    //   eXo/eXoDOS/!german/<shortcode>/   - German LP (GLP)
-    //   eXo/eXoDOS/!polish/<shortcode>/   - Polish LP (PLP)
-    //   eXo/eXoDOS/!spanish/<shortcode>/  - Spanish LP (SLP)
+    //   eXo/eXoDOS/!german/<shortcode>/   - German LP (GLP; !polish/!spanish alike)
+    //   eXo/eXoWin3x/<shortcode>/         - eXoWin3x
+    //   eXo/eXoWin9x/<year>/<title dir>/  - eXoWin9x (year_subdirs)
     //
-    // Note: eXo/eXoDOS/!dos/<shortcode>/ contains only config/script files and is
-    // ALWAYS present in any eXoDOS installation - it is NOT an indicator of game installation.
+    // Note: the shortcode_segment dirs (eXo/eXoDOS/!dos/ etc.) contain only
+    // config/script files and are ALWAYS present - the '!' filter below keeps
+    // them from counting as installs.
     let game_base = PathBuf::from(data_dir)
         .join("eXoDOS")
         .join("eXo")
@@ -2253,40 +2281,70 @@ fn scan_installed_games_with_db(
     let mut total = 0usize;
 
     for col in COLLECTION_MAP {
+        let col_base = PathBuf::from(data_dir).join(col.inner_folder).join(col.game_prefix);
+        let list_game_dirs = |dir: &PathBuf| -> Option<Vec<String>> {
+            match std::fs::read_dir(dir) {
+                Ok(entries) => Some(
+                    entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().is_dir())
+                        .filter_map(|e| e.file_name().into_string().ok())
+                        .filter(|name| !name.starts_with('!') && !name.starts_with('.'))
+                        .collect(),
+                ),
+                Err(e) => {
+                    log::warn!("scan_installed_games: cannot read {}: {}", dir.display(), e);
+                    None
+                }
+            }
+        };
         let shortcodes: Vec<String> = if let Some(lang_dir) = col.lang_dir {
-            // LP collection: extracted game data is at game_base/<lang_dir>/<shortcode>/
-            let seg_dir = game_base.join(lang_dir);
+            // LP collection: extracted game data is at <col_base>/<lang_dir>/<shortcode>/
+            let seg_dir = col_base.join(lang_dir);
             if !seg_dir.is_dir() {
                 continue;
             }
-            match std::fs::read_dir(&seg_dir) {
-                Ok(entries) => entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect(),
-                Err(e) => {
-                    log::warn!("scan_installed_games: cannot read {}: {}", seg_dir.display(), e);
-                    continue;
-                }
+            match list_game_dirs(&seg_dir) {
+                Some(dirs) => dirs,
+                None => continue,
             }
-        } else {
-            // Base EN collection: extracted game data is directly at game_base/<shortcode>/
-            // Filter out system/language dirs (starting with '!' or '.') which are always present.
-            if !game_base.is_dir() {
+        } else if col.year_subdirs {
+            // eXoWin9x layout: title dirs nested under 4-digit year dirs.
+            // The title dir IS the shortcode; `!save/` backups are filtered
+            // out by the '!' rule inside list_game_dirs.
+            if !col_base.is_dir() {
                 continue;
             }
-            match std::fs::read_dir(&game_base) {
+            let year_dirs: Vec<PathBuf> = match std::fs::read_dir(&col_base) {
                 Ok(entries) => entries
                     .filter_map(|e| e.ok())
                     .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .filter(|name| !name.starts_with('!') && !name.starts_with('.'))
+                    .filter(|e| {
+                        let n = e.file_name();
+                        let n = n.to_string_lossy();
+                        n.len() == 4 && n.bytes().all(|b| b.is_ascii_digit())
+                    })
+                    .map(|e| e.path())
                     .collect(),
                 Err(e) => {
-                    log::warn!("scan_installed_games: cannot read {}: {}", game_base.display(), e);
+                    log::warn!("scan_installed_games: cannot read {}: {}", col_base.display(), e);
                     continue;
                 }
+            };
+            year_dirs
+                .iter()
+                .filter_map(list_game_dirs)
+                .flatten()
+                .collect()
+        } else {
+            // Base EN collection: extracted game data is directly at <col_base>/<shortcode>/
+            // (the '!'/'.' filter drops the always-present config and lang dirs).
+            if !col_base.is_dir() {
+                continue;
+            }
+            match list_game_dirs(&col_base) {
+                Some(dirs) => dirs,
+                None => continue,
             }
         };
 
@@ -2370,30 +2428,50 @@ fn scan_installed_games_with_db(
                 .collect()
         };
 
-        let zip_ids: Vec<i64> = match std::fs::read_dir(&game_base) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
-                        // Skip zero-byte stubs and tiny torrent placeholders (<1 KB)
-                        && e.metadata().map(|m| m.len() >= 1024).unwrap_or(false)
-                })
-                .filter_map(|e| {
-                    let stem = e.path().file_stem()?.to_string_lossy().into_owned();
-                    name_to_id.get(&stem).copied()
-                })
-                .collect(),
-            Err(e) => {
-                log::warn!(
-                    "scan_installed_games: cannot scan {} for ZIPs: {}",
-                    game_base.display(),
-                    e
-                );
-                vec![]
+        let collect_zip_ids = |dir: &PathBuf| -> Vec<i64> {
+            match std::fs::read_dir(dir) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+                            // Skip zero-byte stubs and tiny torrent placeholders (<1 KB)
+                            && e.metadata().map(|m| m.len() >= 1024).unwrap_or(false)
+                    })
+                    .filter_map(|e| {
+                        let stem = e.path().file_stem()?.to_string_lossy().into_owned();
+                        name_to_id.get(&stem).copied()
+                    })
+                    .collect(),
+                Err(e) => {
+                    log::warn!(
+                        "scan_installed_games: cannot scan {} for ZIPs: {}",
+                        dir.display(),
+                        e
+                    );
+                    vec![]
+                }
             }
         };
+        let mut zip_ids: Vec<i64> = collect_zip_ids(&game_base);
+        // year_subdirs collections keep their ZIPs under year folders
+        // (eXo/eXoWin9x/<year>/<Title (Year)>.zip) - scan those too.
+        for col in COLLECTION_MAP.iter().filter(|c| c.year_subdirs) {
+            let col_base = PathBuf::from(data_dir).join(col.inner_folder).join(col.game_prefix);
+            let Ok(entries) = std::fs::read_dir(&col_base) else { continue };
+            for year_dir in entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let n = n.to_string_lossy();
+                    n.len() == 4 && n.bytes().all(|b| b.is_ascii_digit())
+                })
+            {
+                zip_ids.extend(collect_zip_ids(&year_dir.path()));
+            }
+        }
 
         if !zip_ids.is_empty() {
             let placeholders = zip_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
