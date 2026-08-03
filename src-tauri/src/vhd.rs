@@ -31,9 +31,6 @@ struct ParentInfo {
     geometry: [u8; 4],
     block_size: u32,
     uuid: [u8; 16],
-    /// Parent file's mtime in VHD epoch seconds - the dynamic header stores
-    /// it and emulators refuse the child when it disagrees with the file.
-    timestamp: u32,
 }
 
 fn read_parent_info(parent: &Path) -> Result<ParentInfo, String> {
@@ -71,20 +68,12 @@ fn read_parent_info(parent: &Path) -> Result<ParentInfo, String> {
         0x0020_0000 // 2 MB default
     };
 
-    let mtime = std::fs::metadata(parent)
-        .and_then(|m| m.modified())
-        .map_err(|e| e.to_string())?
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs();
-
     Ok(ParentInfo {
         original_size: u64::from_be_bytes(footer[0x28..0x30].try_into().unwrap()),
         current_size: u64::from_be_bytes(footer[0x30..0x38].try_into().unwrap()),
         geometry: footer[0x38..0x3C].try_into().unwrap(),
         uuid: footer[0x44..0x54].try_into().unwrap(),
         block_size,
-        timestamp: mtime.saturating_sub(VHD_EPOCH_OFFSET) as u32,
     })
 }
 
@@ -174,7 +163,11 @@ pub fn create_differencing(child: &Path, parent: &Path, parent_rel: &str) -> Res
     dh[0x1C..0x20].copy_from_slice(&table_entries.to_be_bytes());
     dh[0x20..0x24].copy_from_slice(&info.block_size.to_be_bytes());
     dh[0x28..0x38].copy_from_slice(&info.uuid); // parent UUID
-    dh[0x38..0x3C].copy_from_slice(&info.timestamp.to_be_bytes());
+    // Parent timestamp: 0, exactly like eXo's makevhd.exe (verified against
+    // a real child). The spec wants the parent's mtime here, but extraction
+    // rewrites mtimes arbitrarily - a real value would make emulators reject
+    // the chain as "parent modified"; 0 is the tool-proven escape hatch.
+    dh[0x38..0x3C].copy_from_slice(&0u32.to_be_bytes());
     // Parent unicode name (0x40, UTF-16BE): left empty, matching eXo's tool -
     // both bundled emulators resolve the parent via the locators below.
     // Parent locator entries start at 0x240: {code, data space, data length,
