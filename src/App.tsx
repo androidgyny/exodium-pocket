@@ -10,10 +10,9 @@ import { Setup } from "./pages/Setup";
 import { SearchBar } from "./components/SearchBar";
 import { WelcomeModal } from "./components/WelcomeModal";
 import { SeedingConsentDialog } from "./components/SeedingConsentDialog";
-import { NetworkBadge } from "./components/NetworkBadge";
+import { ActivityBadge } from "./components/ActivityBadge";
 import { needsSeedingConsent, seedingOn, applySeeding, loadSeeding } from "./stores/seeding";
 import { ContentPackSettings } from "./components/ContentPackSettings";
-import { DownloadIndicator } from "./components/DownloadIndicator";
 import { WindowFrame } from "./components/WindowFrame";
 import { ToastContainer } from "./components/ToastContainer";
 import {
@@ -392,8 +391,7 @@ function App() {
             {/* Offline is a mode with visible consequences (no downloads, no
                 videos, no sharing), so it says so permanently rather than only
                 inside Settings. */}
-            <NetworkBadge onOpenSettings={openSettings} />
-            <DownloadIndicator />
+            <ActivityBadge onOpenSettings={openSettings} />
             <Tooltip.Root openDelay={400}>
               <Tooltip.Trigger asChild={(props) =>
                 <button {...props()} class="icon-btn icon-btn-heart" onClick={() => openUrl("https://ko-fi.com/tvollstaedt")}>

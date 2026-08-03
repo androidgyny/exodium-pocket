@@ -117,7 +117,7 @@ export function WelcomeModal(props: Props) {
               Exodium is an unofficial launcher. Every game, config, and piece
               of artwork is the work of the{" "}
               <button
-                class="welcome-credit-link"
+                class="link-btn"
                 onClick={() => openUrl("https://www.retro-exo.com/exodos.html")}
               >eXoDOS preservation project</button>.
             </p>
