@@ -171,20 +171,44 @@ pub struct CollectionInfo {
     pub id: String,
     pub display_name: String,
     pub torrent_file: String,
+    /// Catalogue rows in this collection (variant rows, not merged groups) -
+    /// rendered on the collection shelf cards.
+    pub game_count: i64,
 }
 
 /// Return the list of all known collections (for the frontend to render
 /// collection pickers / labels without hardcoding IDs).
 #[tauri::command]
-pub async fn get_available_collections() -> Vec<CollectionInfo> {
-    COLLECTION_MAP
+pub async fn get_available_collections(
+    db_state: State<'_, DbState>,
+) -> Result<Vec<CollectionInfo>, String> {
+    // NULL torrent_source rows (a handful of unmatched variants and the pack
+    // sentinel) are deliberately NOT attributed to eXoDOS: the grid's
+    // collection filter can't reach them, so counting them would make the
+    // shelf number disagree with the grid it opens.
+    let counts: std::collections::HashMap<String, i64> = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT torrent_source, COUNT(*) FROM games GROUP BY torrent_source")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok())
+            .filter_map(|(k, v)| k.map(|k| (k, v)))
+            .collect()
+    };
+    Ok(COLLECTION_MAP
         .iter()
         .map(|c| CollectionInfo {
             id: c.id.to_string(),
             display_name: c.display_name.to_string(),
             torrent_file: c.torrent_file.to_string(),
+            game_count: counts.get(c.id).copied().unwrap_or(0),
         })
-        .collect()
+        .collect())
 }
 
 /// Return the directory where Exodium writes its log file. Served from the

@@ -152,39 +152,30 @@ body {
 }
 
 
-/* ── Download indicator (top bar pill) ────────────────────────────────────── */
+/* ── Activity badge: download segment + sheet (top bar pill) ─────────────── */
 
-.download-indicator {
-  display: flex;
+/* Download segment inside the activity pill (net-badge): appears only while
+   something is downloading, separated from the rate readout by a hairline. */
+.net-badge-dl {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  background: rgba(251, 191, 36, 0.12);
-  border: 1px solid rgba(251, 191, 36, 0.25);
-  border-radius: 12px;
-  cursor: pointer;
-  font-size: 11px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
   color: #fbbf24;
-  height: 26px;
-  min-width: 60px;
-  transition: background 0.15s;
 }
 
-.download-indicator:hover {
-  background: rgba(251, 191, 36, 0.2);
-}
-
-.download-indicator .indicator-progress .ark-progress-track {
+.net-badge-dl .indicator-progress .ark-progress-track {
   width: 32px;
   height: 3px;
 }
 
-.download-indicator-count {
+.net-badge-dl-count {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
-.download-indicator-count::after {
+.net-badge-dl-count::after {
   content: " \25BC";
   font-size: 8px;
   opacity: 0.6;
@@ -300,6 +291,34 @@ body {
 
 .download-sheet-cancel:hover {
   background: rgba(233, 69, 96, 0.15);
+}
+
+.download-sheet-empty {
+  padding: 14px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Status line + settings shortcut that used to live in the pill's tooltip
+   and click target. */
+.download-sheet-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px 4px;
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.download-sheet-net {
+  min-width: 0;
+}
+
+.download-sheet-footer .link-btn {
+  white-space: nowrap;
 }
 
 
@@ -518,37 +537,195 @@ body {
 }
 
 /* ── Tab bar height = 40px ── sticky offsets for Browse subtabs ── */
+/* ── Collection shelf: one box per collection above the Browse grid.
+   Deliberately NOT sticky - it scrolls away with the content, the toolbar
+   below stays pinned, and the grid gets the vertical space back. ── */
 .collection-bar {
+  padding: 10px 0 0;
+}
+
+.collection-shelf {
   display: flex;
-  gap: 4px;
-  padding: 12px 0 0;
-  position: sticky;
-  top: 40px;
-  z-index: 11;
-  background: var(--bg-primary);
+  gap: 6px;
+  overflow-x: auto;
+  /* Room for the cover reflection, which paints outside the box. */
+  padding: 4px 2px 10px;
 }
 
-.collection-btn {
-  padding: 6px 14px;
+.collection-card {
+  --card-accent: var(--accent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 16px 8px;
+  min-width: 116px;
   background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: var(--border-radius);
+  border: 1px solid transparent;
+  border-radius: 12px;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  perspective: 320px;
+  transition: background 0.2s, border-color 0.2s;
 }
 
-.collection-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+/* Ambient glow in the collection's own box color - faint on hover, full on
+   the active card. */
+.collection-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: radial-gradient(
+    60% 55% at 50% 30%,
+    color-mix(in srgb, var(--card-accent) 22%, transparent),
+    transparent 72%
+  );
+  opacity: 0;
+  transition: opacity 0.25s;
+  pointer-events: none;
 }
 
-.collection-btn.active {
-  color: var(--accent-hover);
-  background: var(--accent-glow);
+.collection-card:hover::before {
+  opacity: 0.5;
+}
+
+.collection-card.active::before {
+  opacity: 1;
+}
+
+.collection-card.active {
+  background: rgba(255, 255, 255, 0.03);
   border-color: rgba(124, 92, 252, 0.3);
+  border-color: color-mix(in srgb, var(--card-accent) 45%, transparent);
+}
+
+/* The box itself. Inactive boxes sit dimmed and desaturated on the shelf; the
+   active one is lit, tilted back and lifted off the board, with a soft
+   reflection below. Effects live on the wrap so the sheen and reflection
+   move with the tilt. */
+.collection-cover-wrap {
+  position: relative;
+  border-radius: 5px;
+  transform-origin: bottom center;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  filter: saturate(0.45) brightness(0.72);
+  transition: filter 0.25s, transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1), box-shadow 0.3s;
+  -webkit-box-reflect: below 3px linear-gradient(transparent 74%, rgba(255, 255, 255, 0.1));
+}
+
+.collection-card:hover .collection-cover-wrap {
+  filter: saturate(0.95) brightness(0.95);
+  transform: rotateX(6deg) translateY(-3px) scale(1.03);
+}
+
+.collection-card.active .collection-cover-wrap {
+  filter: none;
+  transform: rotateX(6deg) translateY(-4px) scale(1.06);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.55),
+    0 0 16px color-mix(in srgb, var(--card-accent) 45%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.collection-cover {
+  display: block;
+  width: 74px;
+  height: 96px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
+/* "All" card: 2x2 mosaic of the shelf's own covers. */
+.collection-cover-all {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+  padding: 3px;
+  background: linear-gradient(160deg, #2a2a34, #17171d);
+}
+
+.collection-cover-all img {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: cover;
+  border-radius: 2px;
+}
+
+/* Future collection without bundled art: initials box in the accent tint. */
+.collection-cover-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--card-accent) 65%, #222),
+    color-mix(in srgb, var(--card-accent) 30%, #111)
+  );
+}
+
+.collection-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+
+.collection-card-count {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.collection-card-count b {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.collection-card.active .collection-card-name {
+  color: var(--text-primary);
+}
+
+/* ── Back to top: appears only while scrolling UP below the shelf. ── */
+.back-to-top {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translate(-50%, 12px);
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: rgba(30, 30, 38, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.25s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.back-to-top.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+
+.back-to-top:hover {
+  background: rgba(44, 44, 56, 0.92);
+  border-color: rgba(124, 92, 252, 0.4);
 }
 
 .library-toolbar {
@@ -560,10 +737,6 @@ body {
   top: 40px;
   z-index: 10;
   background: var(--bg-primary);
-}
-
-.library-toolbar.has-collection-bar {
-  top: 80px;
 }
 
 /* ── Pack hint (one-time, dismissible nudge above the Browse grid) ── */
@@ -2225,7 +2398,9 @@ body {
   margin-top: 16px;
 }
 
-.welcome-credit-link {
+/* Inline link-styled button - shared by the welcome credit and the download
+   sheet's settings shortcut. */
+.link-btn {
   background: none;
   border: none;
   padding: 0;
@@ -2234,7 +2409,7 @@ body {
   cursor: pointer;
 }
 
-.welcome-credit-link:hover {
+.link-btn:hover {
   color: var(--accent-hover);
   text-decoration: underline;
 }
@@ -2861,8 +3036,15 @@ body {
   color: #fbbf24;
 }
 
-.btn-manual:hover {
+.btn-manual:hover:not(:disabled) {
   background: rgba(251, 191, 36, 0.22);
+}
+
+/* While the metadata scan runs (or no manual resolved) the button is inert -
+   without this it kept its amber + hover and read as clickable. */
+.btn-manual:disabled {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
 }
 
 .btn-settings {

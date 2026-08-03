@@ -17,10 +17,11 @@ import {
   setPlaylistDialog, deletePlaylist,
 } from "../stores/playlists";
 import { PackHintBanner } from "../components/PackHintBanner";
-import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, getAvailableCollections, getSectionKeys, getGames, type Game, type Playlist } from "../api/tauri";
+import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, getAvailableCollections, getSectionKeys, getGames, type CollectionInfo, type Game, type Playlist } from "../api/tauri";
 import { GameCard } from "../components/GameCard";
 import { GameDetailPanel } from "../components/GameDetailPanel";
 import { PlaylistNameDialog } from "../components/PlaylistNameDialog";
+import { CollectionShelf } from "../components/CollectionShelf";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Select } from "../components/Select";
 import { showToast } from "../stores/toasts";
@@ -81,12 +82,16 @@ export function Library() {
     if (tab === activeTab()) { return; }
     setTabSlideDir(TAB_ORDER[tab] > TAB_ORDER[activeTab()] ? "right" : "left");
     setActiveTab(tab);
+    // The scroll container is shared between tabs - without the reset a
+    // back-to-top button made visible in one tab sat orphaned on the other.
+    setShowBackToTop(false);
+    lastScrollTop = libraryRef?.scrollTop ?? 0;
   };
   const [genres, setGenres] = createSignal<string[]>([]);
   const [recentGames, setRecentGames] = createSignal<Game[]>([]);
   const [installedGames, setInstalledGames] = createSignal<Game[]>([]);
   const [favoriteGames, setFavoriteGames] = createSignal<Game[]>([]);
-  const [collections, setCollections] = createSignal<{id: string, label: string}[]>([]);
+  const [collections, setCollections] = createSignal<{id: string, label: string, count: number, sub?: string}[]>([]);
   const [detailGame, setDetailGame] = createSignal<Game | null>(null);
 
   // Keep detailGame in sync with the games store so installed/in_library flags stay current
@@ -121,6 +126,22 @@ export function Library() {
       }).catch(() => {});
     }
   });
+
+  // "Back to top" appears on UPWARD scroll only, well below the (non-sticky)
+  // collection shelf - scrolling up is the signal the user wants to get back
+  // to something above; while reading downwards the button stays out of the
+  // way. A small delta filter keeps trackpad jitter from flickering it.
+  const [showBackToTop, setShowBackToTop] = createSignal(false);
+  let lastScrollTop = 0;
+  const onLibraryScroll = () => {
+    if (!libraryRef) { return; }
+    const top = libraryRef.scrollTop;
+    const delta = top - lastScrollTop;
+    if (Math.abs(delta) > 2) {
+      setShowBackToTop(top > 600 && delta < 0);
+      lastScrollTop = top;
+    }
+  };
 
   const scrollToGame = (gameId: number) => {
     requestAnimationFrame(() => {
@@ -178,8 +199,9 @@ export function Library() {
     return result;
   });
 
-  // Sticky top for separators: tab bar (40px) + toolbar (60px) [+ collection bar (40px) if visible]
-  const separatorTop = () => collections().length > 1 ? "140px" : "100px";
+  // Sticky top for separators: tab bar (40px) + toolbar (60px). The collection
+  // shelf scrolls away with the content, so it never joins the sticky stack.
+  const separatorTop = () => "100px";
 
   const refreshSectionKeys = async () => {
     try {
@@ -532,13 +554,29 @@ export function Library() {
           getAvailableCollections(),
         ]);
         if (colStr) {
-          const labelMap: Record<string, string> = {};
+          const infoMap: Record<string, CollectionInfo> = {};
           for (const c of available) {
-            labelMap[c.id] = c.display_name;
+            infoMap[c.id] = c;
           }
-          const cols = colStr.split(",")
-            .map((id) => ({ id, label: labelMap[id] || id }))
+          const cols: {id: string, label: string, count: number, sub?: string}[] = colStr.split(",")
+            .map((id) => ({
+              id,
+              label: infoMap[id]?.display_name || id,
+              count: infoMap[id]?.game_count ?? 0,
+            }))
             .sort((a, b) => a.id === "eXoDOS" ? -1 : b.id === "eXoDOS" ? 1 : 0);
+          // "All" (empty id = backend's no-collection-filter) leads the shelf:
+          // one place to search the entire catalogue across collections. No
+          // game count on it - summing the per-collection row counts would
+          // double-count merged language variants and disagree with the grid.
+          if (cols.length > 1) {
+            cols.unshift({
+              id: "",
+              label: "All",
+              count: 0,
+              sub: `${cols.length} collections`,
+            });
+          }
           setCollections(cols);
           if (cols.length > 0 && !collectionFilter()) {
             setCollectionFilter(cols[0].id);
@@ -564,8 +602,9 @@ export function Library() {
     refreshSectionKeys();
   };
 
+
   return (
-    <div class="library" ref={libraryRef}>
+    <div class="library" ref={libraryRef} onScroll={onLibraryScroll}>
       {/* ── Tab bar ── */}
       <div class="lib-tabs">
         <button
@@ -593,17 +632,14 @@ export function Library() {
         <div class={`tab-pane tab-pane-${tabSlideDir()}`}>
         <Show when={collections().length > 1}>
           <div class="collection-bar">
-            <For each={collections()}>
-              {(col) => (
-                <button
-                  class={`collection-btn ${collectionFilter() === col.id ? "active" : ""}`}
-                  onClick={() => switchCollection(col.id)}
-                >{col.label}</button>
-              )}
-            </For>
+            <CollectionShelf
+              collections={collections()}
+              active={collectionFilter()}
+              onSelect={switchCollection}
+            />
           </div>
         </Show>
-        <div class={`library-toolbar ${collections().length > 1 ? "has-collection-bar" : ""}`}>
+        <div class="library-toolbar">
           <Show when={genres().length > 1}>
             <Select
               class="select-wide"
@@ -657,7 +693,11 @@ export function Library() {
           </div>
         </Show>
 
-        <PackHintBanner collection={collectionFilter()} />
+        {/* In the All view the grid is dominated by eXoDOS covers, so the
+            poster-pack nudge keys on eXoDOS there - without the mapping the
+            banner never fired again once All became the default (its empty-id
+            guard reads "" as "not loaded"). */}
+        <PackHintBanner collection={collectionFilter() || "eXoDOS"} />
 
         <Show when={error()}>
           <div class="error">{error()}</div>
@@ -881,6 +921,18 @@ export function Library() {
           </div>
         </Portal>
       </Show>
+
+      {/* Hidden while the detail panel is open: its backdrop sits above the
+          button, so a visible-but-dimmed pill would only eat the click that
+          closes the panel. */}
+      <button
+        class={`back-to-top ${showBackToTop() && !detailGame() ? "visible" : ""}`}
+        onClick={() => libraryRef?.scrollTo({ top: 0, behavior: "smooth" })}
+        aria-hidden={!showBackToTop()}
+        tabIndex={showBackToTop() && !detailGame() ? 0 : -1}
+      >
+        ↑ Top
+      </button>
 
       <GameDetailPanel game={detailGame()} onClose={() => setDetailGame(null)} onDownloadStart={scrollToGame} />
     </div>
