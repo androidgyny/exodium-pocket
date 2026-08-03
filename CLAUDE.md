@@ -216,7 +216,7 @@ DOSBox Staging ships as a Tauri `externalBin` in `src-tauri/binaries/`. Platform
 2. Dev mode: first `dosbox-staging-*` found in `resource_dir/binaries/`
 3. Fallback: `dosbox-staging` on system PATH
 
-`metadata/dosbox.txt` maps game titles to eXoDOS emulator variants (`ece4230`, `staging0.81.1`, etc.). `generate_db.rs` reads this file and stores the variant slug in `games.dosbox_variant`. On WINDOWS, ece* variants run eXo's actual DOSBox ECE build, extracted on demand from the torrent's util.zip (nested EXTDOS.zip -> eXo/emulators/dosbox/ece4230/); the launch-time MIDI translation and glshader override are skipped for ECE (it understands the original keys natively). On macOS/Linux everything runs under DOSBox Staging (ECE has no cross-platform build) and the game detail panel shows an "experience may vary" note for ece-variant games.
+`metadata/dosbox.txt` maps game titles to eXoDOS emulator variants (`ece4230`, `staging0.81.1`, etc.). `generate_db.rs` reads this file and stores the variant slug in `games.dosbox_variant`. On WINDOWS, ece* variants run eXo's actual DOSBox ECE build, extracted on demand from the torrent's util.zip (nested EXTDOS.zip -> eXo/emulators/dosbox/ece4230/); the launch-time MIDI translation and glshader override are skipped for ECE (it understands the original keys natively). On macOS/Linux everything runs under DOSBox Staging (ECE has no cross-platform build) and the game detail panel shows an "experience may vary" note for ece-variant games, plus a printer-unavailable note for the 13 eXoDOS titles whose conf enables eXo's virtual printer (`game_printing_unavailable` - decided backend-side with launch_game's own engine selection, so it answers false on Windows once the ECE build is on disk; Staging is expected to gain printing upstream, branch `jn/printing`).
 
 Variant distribution: ~63% classic `dosbox`, ~27% ECE4230, ~9% Staging - all handled by DOSBox Staging.
 
@@ -506,20 +506,28 @@ What differs:
   `generate_db` drops down to one row because `refresh_catalog` keys on
   `application_path`.
 
+**Solved since the initial import:**
+
+- **55 games enable `[ide, primary/secondary]`** (DOSBox-X syntax) so the guest
+  OS booted from an HDD image reaches the CD through its own ATAPI driver
+  (VIDE-CDD.SYS + MSCDEX live inside the image; after `boot` DOSBox's DOS-level
+  MSCDEX shim is gone). Staging has no `[ide]` section but offers the same as
+  an `-ide` flag on `imgmount ... -t cdrom|iso` - `translate_ide_for_staging`
+  adds it (and normalizes DOSBox-X's `-ide 2m` slot form) whenever a
+  non-comment `[ide` section is present. Measured (Masque Solitaire Antics):
+  without the flag the guest boots but never sees the CD; with it the ATAPI
+  drive attaches and CD playback works. 4 configs pair `[ide]` with plain
+  `mount` (no image, no boot) and are correctly left alone.
+
 **Still open** (nothing below is a blocker for shipping the collection):
 
-- **Launch coverage is one game.** 3D Maze runs end to end after the PATH fix.
-  Nothing else has been started, and the pack has never seen DOSBox Staging.
+- **Launch coverage is two games.** 3D Maze (PATH fix) and Masque Solitaire
+  Antics (IDE translation, boots MS-DOS 6.22 + Win 3.1 from an HDD image) run
+  end to end under Staging. Nothing else has been started.
 - **11 games want DOSBox-X** (`dosbox3x.txt` variant `x`), which is not bundled.
-  They fall back to Staging.
-- **55 games enable `[ide, primary/secondary]`** so the guest's own drivers
-  reach an emulated ATA/ATAPI controller - Windows 3.x needs that for 32-bit
-  disk access (15 mount a hard-disk `.img`) and for CD drivers that speak
-  ATAPI rather than DOSBox's MSCDEX shim. Staging has no `[ide]` section at
-  all and ignores the lines. Whether those games actually break is untested.
-- Measured emulation gaps against Staging 0.82.2 are in issue #15, including
-  the finding that one DOSBox-X sidecar would cover these 11 games, the 55 IDE
-  ones and eXoDOS's 13 printer titles at once.
+  They fall back to Staging. With IDE translated and printing coming upstream
+  (Staging's `jn/printing` branch), these 11 are what remains of the sidecar
+  question from issue #15.
 
 Bundled cost: `Win3x.xml.gz` 0.7 MB, `Win3x_configs.zip` 4.7 MB (the pack's own
 `!Win3Xmetadata.zip` is 648 MB - stripped to `.conf`/`.bat`, as `eXoDOS_configs.zip`
@@ -538,17 +546,21 @@ Cover art comes in two tiers and the metadata pack is NEITHER: `content/metadata
 is title-named originals for the detail-panel gallery, while the grid reads
 hash-keyed files from the bundled Tier 0 previews and the downloadable Tier 1
 `content/posters/<col>/`. Win3x's poster pack is the same artefact
-`gen_thumbnails.py` writes to `thumbnails/eXoWin3x/`, tarred (63.7 MB) - it sits
-in the manifest with a `TODO:` URL until it is uploaded, which keeps it inert.
+`gen_thumbnails.py` writes to `thumbnails/eXoWin3x/`, tarred (63.7 MB) -
+published as `content-v4` (`posters-eXoWin3x-v1.tar.gz`, alongside the eXoDOS
+v5 refresh).
 It is deliberately NOT merged into the eXoDOS poster pack: packs are versioned
 whole, so a merge would make `cleanup_stale_content_packs` delete every existing
 user's 376 MB and re-fetch 440 MB for 64 MB of new art.
 
 **No UI was added for it** - every collection surface is a projection of
-`COLLECTION_MAP` (`get_available_collections`) crossed with the `collections`
-config: the filter bar (`Library.tsx:595`), the content-pack settings
-(`ContentPackSettings.tsx:44`), the installed-pack store. A new pack shows up by
-existing.
+`COLLECTION_MAP` (`get_available_collections`, which also carries a per-source
+`game_count` for the shelf cards) crossed with the `collections` config: the
+collection shelf (`CollectionShelf.tsx`, rendered from `Library.tsx` - box-art
+covers and accent colors are per-id maps there, unknown ids get an initials-box
+fallback, and an "All" card with empty id maps to the backend's
+no-collection-filter), the content-pack settings (`ContentPackSettings.tsx`),
+the installed-pack store. A new pack shows up by existing.
 
 **Shipping a collection to EXISTING installs takes two steps, and one without
 the other is broken.** Bumping `CATALOG_VERSION` brings the games in via

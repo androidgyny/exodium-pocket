@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.11.0 - 2026-08-03
+
+### Added
+
+- **Collection shelf.** The collection picker above the Browse grid is now a
+  shelf of box covers - eXo's real section art for eXoDOS, the three language
+  packs and eXoWin3x, each card lit in its own accent color when active, with
+  its game count underneath. A new "All" card searches and browses the entire
+  catalogue across collections in one view (and is the default).
+- **Back to top.** Scrolling upwards in a long list shows a floating button
+  back to the shelf; it stays out of the way while you scroll down.
+- **eXoWin3x CD support under DOSBox Staging.** 55 Windows 3.x games ask for an
+  IDE/ATAPI controller so the guest OS can see the CD (their CD driver runs
+  inside the booted image, where DOSBox's usual CD emulation doesn't reach).
+  Exodium now translates that request into Staging's `-ide` mount flag at
+  launch - measured on a boot-image game: the drive attaches and CD playback
+  works where the disc was previously invisible.
+- **Printer heads-up.** 13 eXoDOS titles exist to print (The New Print Shop,
+  The Newsroom, ...). DOSBox Staging cannot print yet, so their detail panel
+  now says so instead of failing silently - the note disappears by itself on
+  setups where eXo's DOSBox ECE build handles printing, and printer support is
+  on its way into Staging upstream.
+- The activity pill and the downloads indicator in the top bar merged into one:
+  transfer rates, download progress and count in a single control whose flyout
+  lists the downloads, the sharing status and a network-settings shortcut.
+
+### Fixed
+
+- The Manual button no longer looks clickable while a game's media is still
+  being scanned (it shows a spinner), and a temporary scan failure no longer
+  leaves it dead until the next app start.
+- The screenshot lightbox no longer jumps back to the first image when the
+  game's preview video finishes loading while you are browsing.
+- The collection counts on the shelf no longer include a handful of catalogue
+  rows that no collection filter can reach.
+- "I Can Be a Dinosaur Finder" (eXoWin3x) is downloadable again: its launcher
+  and its archive disagree in letter case, which the torrent matching now
+  ignores (catalogue v5, applied to existing installs on next start).
+
 ## 0.10.0 - 2026-08-01
 
 ### Added
