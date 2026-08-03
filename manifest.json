@@ -117,8 +117,8 @@
           "display_name": "Box Art",
           "description": "HD box art for all 662 Windows 9x games",
           "url": "https://github.com/tvollstaedt/exodium/releases/download/content-v5/posters-eXoWin9x-v1.tar.gz",
-          "sha256": "95e5d4962ff36002c18b36725af654ac619db8da1d55baa55e0254a4c63d1f7b",
-          "size_bytes": 38864901,
+          "sha256": "1f9244321a98b2c96cd8faf25bf62c6dcbb16888ec831000d1d0e18eba321578",
+          "size_bytes": 39508524,
           "version": 1,
           "install_path": "content/posters",
           "supersedes": []
