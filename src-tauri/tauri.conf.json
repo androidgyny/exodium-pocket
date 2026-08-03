@@ -53,7 +53,11 @@
       "resources/previews/eXoWin3x": "previews/eXoWin3x",
       "resources/previews/eXoWin9x": "previews/eXoWin9x",
       "resources/dosbox-glshaders": "glshaders",
-      "resources/dosbox-bin": "dosbox-bin"
+      "resources/dosbox-bin": "dosbox-bin",
+      "resources/dosbox-x": "dosbox-x",
+      "resources/dosbox-x-bin": "dosbox-x-bin",
+      "resources/86box": "86box",
+      "resources/86box-bin": "86box-bin"
     },
     "icon": [
       "icons/32x32.png",

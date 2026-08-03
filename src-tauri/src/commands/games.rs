@@ -72,7 +72,7 @@ fn collection_year_dir(source: &str, app_path: Option<&str>) -> Option<String> {
 /// Standard: <game_prefix>[/<lang_dir>]/<shortcode>
 /// year_subdirs (eXoWin9x): <game_prefix>/<year>/<shortcode> - the shortcode
 /// IS the title directory there ("Connect4 (1995)").
-fn collection_rel_game_dir(source: &str, shortcode: &str, app_path: Option<&str>) -> String {
+pub(crate) fn collection_rel_game_dir(source: &str, shortcode: &str, app_path: Option<&str>) -> String {
     let prefix = collection_game_prefix(source);
     if let Some(year) = collection_year_dir(source, app_path) {
         return format!("{}/{}/{}", prefix, year, shortcode);
@@ -84,7 +84,7 @@ fn collection_rel_game_dir(source: &str, shortcode: &str, app_path: Option<&str>
 }
 
 /// Torrent-relative path of a game's ZIP (same year/lang nesting as the dir).
-fn collection_rel_zip(source: &str, game_name: &str, app_path: Option<&str>) -> String {
+pub(crate) fn collection_rel_zip(source: &str, game_name: &str, app_path: Option<&str>) -> String {
     let prefix = collection_game_prefix(source);
     if let Some(year) = collection_year_dir(source, app_path) {
         return format!("{}/{}/{}.zip", prefix, year, game_name);
@@ -1209,7 +1209,7 @@ fn running_game_key(game: &Game) -> String {
 /// mid-launch-extraction became clickable - and would rename the game dir
 /// out from under the extractor, polluting the !save backup. Real locks
 /// replace the accidental ones.
-fn game_op_lock(id: i64) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn game_op_lock(id: i64) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     > = std::sync::OnceLock::new();
@@ -2423,7 +2423,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
 }
 
 /// Extract a game ZIP in place, then restore saves from !save/ if available.
-fn extract_game_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+pub(crate) fn extract_game_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
     let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
@@ -2685,7 +2685,7 @@ pub async fn get_recently_played(state: State<'_, DbState>, limit: Option<usize>
 /// one report) with nothing ever cleaning them up. They are derived from
 /// settings and rewritten on every launch, so the app's own directory is the
 /// right home - and `sweep_legacy_launch_confs` removes the old ones.
-fn launch_conf_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn launch_conf_dir(app: &AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
     let dir = app
         .path()
@@ -2772,6 +2772,23 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
 
     if !game.installed {
         return Err(format!("{} is not installed. Download it first.", game.title));
+    }
+
+    // Win9x games boot Windows 95/98 from VHDs inside DOSBox-X or 86Box -
+    // they have their own engine pipeline and none of the Staging conf
+    // machinery below applies (their confs run verbatim, §10a).
+    if crate::commands::setup::collection_def(game.torrent_source.as_deref().unwrap_or("eXoDOS"))
+        .is_some_and(|c| c.year_subdirs)
+    {
+        return crate::commands::win9x::launch_win9x_game(
+            &app,
+            game,
+            id,
+            &data_dir,
+            fullscreen_enabled,
+            &per_game_config,
+        )
+        .await;
     }
 
     let dosbox_conf = game
@@ -3020,6 +3037,22 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         }
     }
 
+    spawn_emulator_and_track(cmd, &dosbox_bin, &game, id)
+}
+
+/// Platform-correct stdio setup, spawn and child-reaping for an emulator
+/// process. Shared by the Staging/ECE path above and the Win9x engines
+/// (DOSBox-X / 86Box) - the macOS EBADF workarounds and the per-game log
+/// capture must not fork per engine.
+pub(crate) fn spawn_emulator_and_track(
+    mut cmd: Command,
+    emulator_bin: &Path,
+    game: &Game,
+    id: i64,
+) -> Result<String, String> {
+    // id names the per-game emulator log file; macOS nulls stdio instead.
+    #[cfg(target_os = "macos")]
+    let _ = id;
     // macOS dev builds: the binary extracted from the .app DMG has a bundle-anchored
     // code signature that becomes invalid without the surrounding bundle. Re-sign
     // ad-hoc if the signature is broken so macOS doesn't SIGKILL the process.
@@ -3027,19 +3060,19 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     {
         let _ = std::process::Command::new("xattr")
             .args(["-d", "com.apple.quarantine"])
-            .arg(&dosbox_bin)
+            .arg(emulator_bin)
             .output();
         let sig_ok = std::process::Command::new("codesign")
             .arg("-v")
-            .arg(&dosbox_bin)
+            .arg(emulator_bin)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !sig_ok {
-            log::warn!("DOSBox binary has invalid signature, re-signing ad-hoc: {}", dosbox_bin.display());
+            log::warn!("Emulator binary has invalid signature, re-signing ad-hoc: {}", emulator_bin.display());
             let _ = std::process::Command::new("codesign")
                 .args(["--force", "--sign", "-"])
-                .arg(&dosbox_bin)
+                .arg(emulator_bin)
                 .output();
         }
     }
@@ -3101,26 +3134,26 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         unsafe { cmd.pre_exec(|| Ok(())); }
     }
 
-    log::info!("Spawning DOSBox: {}", dosbox_bin.display());
+    log::info!("Spawning emulator: {}", emulator_bin.display());
     let mut child = cmd.spawn().map_err(|e| {
-        log::error!("DOSBox spawn failed for {}: {} (raw_os_error={:?})",
-            dosbox_bin.display(), e, e.raw_os_error());
+        log::error!("Emulator spawn failed for {}: {} (raw_os_error={:?})",
+            emulator_bin.display(), e, e.raw_os_error());
         format!(
-            "Failed to launch DOSBox Staging ({}): {}",
-            dosbox_bin.display(), e
+            "Failed to launch emulator ({}): {}",
+            emulator_bin.display(), e
         )
     })?;
 
     // Reap the child (dropped Child handles become zombies on Unix) and track
-    // the running game so uninstall can refuse while DOSBox holds its files
-    // open - deleting/renaming a live game dir on Windows fails per-file and
-    // used to silently lose saves through the copy fallback.
-    let run_key = running_game_key(&game);
+    // the running game so uninstall can refuse while the emulator holds its
+    // files open - deleting/renaming a live game dir on Windows fails
+    // per-file and used to silently lose saves through the copy fallback.
+    let run_key = running_game_key(game);
     running_games().lock().map(|mut s| s.insert(run_key.clone())).ok();
     tauri::async_runtime::spawn_blocking(move || {
         match child.wait() {
-            Ok(status) => log::info!("DOSBox exited ({}) for {}", status, run_key),
-            Err(e) => log::warn!("DOSBox wait failed for {}: {}", run_key, e),
+            Ok(status) => log::info!("Emulator exited ({}) for {}", status, run_key),
+            Err(e) => log::warn!("Emulator wait failed for {}: {}", run_key, e),
         }
         running_games().lock().map(|mut s| s.remove(&run_key)).ok();
     });

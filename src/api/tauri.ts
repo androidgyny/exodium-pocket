@@ -178,6 +178,23 @@ export async function gamePrintingUnavailable(id: number): Promise<boolean> {
   return invoke("game_printing_unavailable", { id });
 }
 
+/** Whether the emulator a Win9x game needs (DOSBox-X / 86Box) is resolvable
+ *  on this machine. Backend answers with the launcher's own resolver, so the
+ *  panel note can never disagree with an actual launch. */
+export async function win9xEngineAvailable(variant: string | null): Promise<boolean> {
+  return invoke("win9x_engine_available", { variant });
+}
+
+export interface Win9xSupportStatus {
+  phase: "ready" | "downloading" | "missing";
+  progress: number;
+}
+
+/** State of the shared Win9x support files (OS parent images + emulators). */
+export async function getWin9xSupportStatus(): Promise<Win9xSupportStatus> {
+  return invoke("get_win9x_support_status");
+}
+
 export async function getConfig(key: string): Promise<string | null> {
   return invoke("get_config", { key });
 }

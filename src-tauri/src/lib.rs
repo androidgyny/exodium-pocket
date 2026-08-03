@@ -3,6 +3,7 @@ pub mod db;
 pub mod import;
 pub mod models;
 pub mod torrent;
+pub mod vhd;
 
 // Re-export utilities used by the generate_db binary and integration tests
 pub use commands::game_name_from_app_path;
@@ -624,6 +625,7 @@ pub fn run() {
             validate_exodos_dir,
             scan_installed_games,
             commands::win9x::get_win9x_support_status,
+            commands::win9x::win9x_engine_available,
             list_content_packs,
             install_content_pack,
             uninstall_content_pack,

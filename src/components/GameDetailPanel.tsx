@@ -8,7 +8,7 @@ import { GameSettingsDialog } from "./GameSettingsDialog";
 import { PlaylistMenu } from "./PlaylistMenu";
 import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame, gamePrintingUnavailable } from "../api/tauri";
+import { launchGame, gamePrintingUnavailable, win9xEngineAvailable } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
@@ -60,6 +60,13 @@ export function GameDetailPanel(props: Props) {
   // emulation yet, so those get a heads-up note. The backend owns the whole
   // answer (conf + engine selection), so no platform logic lives here.
   const [printingUnavailable, setPrintingUnavailable] = createSignal(false);
+  // Win9x games run in DOSBox-X/86Box, not Staging. The variant slugs only
+  // exist in the eXoWin9x catalogue, so they double as the collection test.
+  const isWin9x = (g: Game | null) => {
+    const v = g?.dosbox_variant;
+    return v === "x98" || v === "pcbox" || (v?.startsWith("86box") ?? false);
+  };
+  const [win9xEngineMissing, setWin9xEngineMissing] = createSignal(false);
   let heroVideoRef: HTMLVideoElement | undefined;
   const openPlaylistMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -190,6 +197,13 @@ export function GameDetailPanel(props: Props) {
       const id = g.id;
       gamePrintingUnavailable(id)
         .then((p) => { if (props.game?.id === id) { setPrintingUnavailable(p); } })
+        .catch(() => {});
+    }
+    setWin9xEngineMissing(false);
+    if (isWin9x(g)) {
+      const id = g.id;
+      win9xEngineAvailable(g.dosbox_variant ?? null)
+        .then((ok) => { if (props.game?.id === id) { setWin9xEngineMissing(!ok); } })
         .catch(() => {});
     }
     // Force a metadata refetch: the cache key below would otherwise match the
@@ -609,6 +623,38 @@ export function GameDetailPanel(props: Props) {
                 DOSBox Staging does not support yet. The game runs, but its
                 printing features are unavailable for now - printer support is
                 expected in a future DOSBox Staging update.
+              </div>
+            </Show>
+
+            {/* Win9x engine notes: these games boot a real Windows 95/98
+                inside DOSBox-X (x98) or 86Box (86box*) - a different world
+                from the instant DOS launches. pcbox needs a Windows-only
+                fork Exodium does not ship. */}
+            <Show when={isWin9x(props.game) && props.game?.dosbox_variant === "x98"}>
+              <div class="game-detail-note">
+                This game boots Windows 98 inside DOSBox-X - the first start
+                takes noticeably longer than a DOS game.
+              </div>
+            </Show>
+            <Show when={props.game?.dosbox_variant?.startsWith("86box")}>
+              <div class="game-detail-note">
+                This game runs under 86Box, a full PC hardware emulator -
+                startup is slower and the system requirements are higher than
+                for other games.
+              </div>
+            </Show>
+            <Show when={props.game?.dosbox_variant === "pcbox"}>
+              <div class="game-detail-note">
+                This game needs PCBox, a Windows-only emulator Exodium does
+                not ship yet - launching it will fail for now.
+              </div>
+            </Show>
+            <Show when={win9xEngineMissing() && props.game?.dosbox_variant !== "pcbox"}>
+              <div class="game-detail-note">
+                The emulator this game needs was not found on this system.
+                {props.game?.dosbox_variant === "x98"
+                  ? " Install DOSBox-X via your package manager or Flatpak (com.dosbox_x.DOSBox-X)."
+                  : " Re-run the installer or place 86Box on your PATH."}
               </div>
             </Show>
 
