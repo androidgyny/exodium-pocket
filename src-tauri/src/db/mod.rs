@@ -201,10 +201,23 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
             [],
         )?;
 
+        // Stamp the version OF THE BUNDLED DB, not the code constant: during
+        // development the code can be ahead of a not-yet-regenerated bundled
+        // catalog, and stamping the constant would mark that stale import as
+        // current forever (seen live: CATALOG_VERSION 6 shipped hours before
+        // the v6 exodium.db - installs that started in between imported zero
+        // eXoWin9x rows and never refreshed again).
+        let bundled_version: String = tx
+            .query_row(
+                "SELECT value FROM cat.config WHERE key = 'catalog_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| CATALOG_VERSION.to_string());
         tx.execute(
             "INSERT INTO config (key, value) VALUES ('catalog_version', ?1) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [CATALOG_VERSION.to_string()],
+            [bundled_version],
         )?;
         tx.commit()?;
         Ok((updated, inserted))
