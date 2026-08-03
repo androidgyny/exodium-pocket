@@ -709,18 +709,30 @@ fn main() {
             }
             println!("Loaded {} dosbox variant entries from {}", variant_map.len(), index_file);
 
-            // Match by title within this family and update
+            // Match within this family and update. The index keys are the
+            // launcher BAT stems, and application_path carries that exact
+            // stem - so match on it first and fall back to the title (the
+            // title-only match left 88 Win9x games unmatched where the bat
+            // name and the XML title disagree).
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, title FROM games
+                    "SELECT id, title, application_path FROM games
                      WHERE COALESCE(torrent_source, 'eXoDOS') LIKE ?1 || '%'",
                 )
                 .unwrap();
-            let rows: Vec<(i64, String)> = stmt
-                .query_map(params![family], |row| Ok((row.get(0)?, row.get(1)?)))
+            let rows: Vec<(i64, String, Option<String>)> = stmt
+                .query_map(params![family], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
+
+            let bat_stem = |app_path: &str| -> Option<String> {
+                let norm = app_path.replace('\\', "/");
+                let file = norm.rsplit('/').next()?;
+                Some(file.strip_suffix(".bat").unwrap_or(file).to_string())
+            };
 
             let tx = conn.unchecked_transaction().unwrap();
             {
@@ -728,8 +740,12 @@ fn main() {
                     .prepare_cached("UPDATE games SET dosbox_variant = ?1 WHERE id = ?2")
                     .unwrap();
                 let mut matched = 0usize;
-                for (id, title) in &rows {
-                    if let Some(variant) = variant_map.get(&normalize_title(title)) {
+                for (id, title, app_path) in &rows {
+                    let by_stem = app_path
+                        .as_deref()
+                        .and_then(&bat_stem)
+                        .and_then(|s| variant_map.get(&normalize_title(&s)));
+                    if let Some(variant) = by_stem.or_else(|| variant_map.get(&normalize_title(title))) {
                         update.execute(params![variant, id]).unwrap();
                         matched += 1;
                     }

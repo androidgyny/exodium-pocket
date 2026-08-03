@@ -54,7 +54,10 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 fetch() { # fetch <url> <out>
   echo "Downloading $(basename "$2")..."
-  curl -fL --progress-bar -o "$2" "$1"
+  # Retries with resume: these downloads share bandwidth with torrent
+  # traffic and HTTP/2 streams were observed dying mid-transfer.
+  curl -fL --progress-bar --retry 5 --retry-delay 3 --retry-all-errors \
+    -C - -o "$2" "$1"
 }
 
 # ── DOSBox-X ─────────────────────────────────────────────────────────────────
@@ -70,6 +73,9 @@ dbx_url() { # dbx_url <grep-pattern>
 
 case "$OS" in
   Darwin)
+    if [[ -d "$RES_DIR/dosbox-x/dosbox-x.app" && "$FORCE" -eq 0 ]]; then
+      echo "dosbox-x.app already present, skipping DOSBox-X download."
+    else
     case "$ARCH" in
       arm64)  DBX_URL="$(dbx_url 'macosx-arm64-[^"]*\.zip')" ;;
       x86_64) DBX_URL="$(dbx_url 'macosx-x86_64-[^"]*\.zip')" ;;
@@ -89,6 +95,7 @@ case "$OS" in
     xattr -cr "$RES_DIR/dosbox-x/dosbox-x.app" 2>/dev/null || true
     codesign --force --deep --sign - "$RES_DIR/dosbox-x/dosbox-x.app"
     echo "Installed: $RES_DIR/dosbox-x/dosbox-x.app"
+    fi
     ;;
   Linux)
     echo "DOSBox-X: no official Linux binaries - resolved from PATH/Flatpak at runtime."

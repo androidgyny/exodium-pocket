@@ -58,11 +58,23 @@ def main() -> None:
         if not p.is_file():
             sys.exit(f"Missing {p}\nRun: pnpm run init-dev --win9x")
 
+    # Unlike Win3x there is no finished "Windows 9x.xml" in the zip: eXo ships
+    # per-volume body fragments (xml/all/1994-1996.9x, more volumes to come)
+    # and merge_9xall.bat wraps them in the LaunchBox root element at setup
+    # time. Replicate that merge, using the "all" set (the "family" set is the
+    # same minus adult titles - Exodium does not curate).
     with zipfile.ZipFile(media_zip) as zf:
-        xml = zf.read("xml/Windows 9x.xml")
+        fragments = sorted(n for n in zf.namelist()
+                           if n.startswith("xml/all/") and n.endswith(".9x"))
+        if not fragments:
+            sys.exit(f"No xml/all/*.9x fragments found in {media_zip}")
+        parts = [b'<?xml version="1.0" standalone="yes"?>\n<LaunchBox>\n']
+        parts += [zf.read(n) for n in fragments]
+        parts.append(b"\n</LaunchBox>\n")
+        xml = b"".join(parts)
     out = REPO / "metadata/Win9x.xml.gz"
     out.write_bytes(gzip.compress(xml, 9))
-    print(f"{out.name}: {out.stat().st_size / 1048576:.1f} MB")
+    print(f"{out.name}: {out.stat().st_size / 1048576:.1f} MB ({len(fragments)} volume fragment(s))")
 
     with zipfile.ZipFile(configs_zip) as zin:
         # Read the launcher bats BEFORE writing the output zip: writestr()
