@@ -111,16 +111,23 @@ impl TorrentIndex {
         // Anchor the match on a path boundary: a bare ends_with would let
         // "Billiards (1993).zip" match "eXo/eXoDOS/4 Balls Billiards (1993).zip"
         // (34 such collisions across the bundled torrents).
+        //
+        // Case-insensitive: eXo authored the launcher bats and the zips on a
+        // case-insensitive filesystem and they disagree in places ("I can be a
+        // Dinosaur Finder (1997).bat" vs "I Can be a ... .zip"), which left
+        // such games permanently unmatched.
         let game_zip_anchored = format!("/{}", game_zip);
         let game = self.files.iter().find(|f| {
-            (f.path == game_zip || f.path.ends_with(&game_zip_anchored))
+            (f.path.eq_ignore_ascii_case(&game_zip)
+                || ends_with_ignore_ascii_case(&f.path, &game_zip_anchored))
                 && !f.path.starts_with(gamedata_prefix)
         });
 
+        let gamedata_path = format!("{}{}", gamedata_prefix, game_zip);
         let gamedata = self
             .files
             .iter()
-            .find(|f| f.path == format!("{}{}", gamedata_prefix, game_zip));
+            .find(|f| f.path.eq_ignore_ascii_case(&gamedata_path));
 
         (game, gamedata)
     }
@@ -156,9 +163,40 @@ const _: () = {
     }
 };
 
+/// ASCII-case-insensitive `ends_with`, comparing bytes so a multi-byte char at
+/// the boundary can't panic a slice (non-ASCII bytes compare verbatim).
+fn ends_with_ignore_ascii_case(hay: &str, needle: &str) -> bool {
+    let h = hay.as_bytes();
+    let n = needle.as_bytes();
+    h.len() >= n.len() && h[h.len() - n.len()..].eq_ignore_ascii_case(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// eXo's launcher bats and zips disagree in case for a handful of games
+    /// ("I can be a..." bat vs "I Can be a..." zip) - matching must not care.
+    #[test]
+    fn find_game_files_ignores_case() {
+        let index = TorrentIndex {
+            name: "eXoWin3x".to_string(),
+            files: vec![TorrentFileEntry {
+                index: 0,
+                path: "eXo/eXoWin3x/I Can be a Dinosaur Finder (1997).zip".to_string(),
+                size: 1,
+                offset: 0,
+            }],
+            total_size: 1,
+            piece_length: 16384,
+        };
+        let (game, _) = index.find_game_files("I can be a Dinosaur Finder (1997)");
+        assert!(game.is_some(), "case difference must not break the match");
+        // The path-boundary anchor still holds: a suffix of a LONGER title
+        // must not match regardless of case.
+        let (partial, _) = index.find_game_files("Dinosaur Finder (1997)");
+        assert!(partial.is_none(), "anchored match must not allow suffixes");
+    }
 
     #[test]
     fn test_parse_exodos_torrent() {

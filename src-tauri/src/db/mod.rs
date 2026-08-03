@@ -23,8 +23,10 @@ pub type DbResult<T> = Result<T, DbError>;
 /// `catalog_version` config is older gets its catalog rows refreshed from
 /// the bundled DB via `refresh_catalog` - user state is preserved.
 /// History: 1 = pre-versioning (0.6.x), 2 = path-anchored torrent indices,
-/// 3 = curated playlists shipped in the bundled DB.
-pub const CATALOG_VERSION: i64 = 4;
+/// 3 = curated playlists shipped in the bundled DB, 4 = eXoWin3x,
+/// 5 = case-insensitive torrent matching (recovers games whose bat and zip
+/// disagree in case, e.g. "I Can be a Dinosaur Finder").
+pub const CATALOG_VERSION: i64 = 5;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
