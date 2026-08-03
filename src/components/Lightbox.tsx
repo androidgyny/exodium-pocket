@@ -31,12 +31,30 @@ export function Lightbox(props: LightboxProps) {
   const imageAt = (i: number) => props.images[hasVideo() ? i - 1 : i];
   const count = () => props.images.length + (hasVideo() ? 1 : 0);
 
-  createEffect(() => {
-    if (props.open) {
-      setIdx(Math.max(0, Math.min(props.startIndex, count() - 1)));
+  const clampIdx = (i: number) => Math.max(0, Math.min(i, count() - 1));
+
+  // Jump to the start entry ONLY when the lightbox opens. A plain effect
+  // also tracked count() here, and count changes while open - the preview
+  // video finishing its probe adds entry 0 - which snapped the view back to
+  // the start entry mid-browsing.
+  createEffect(on(() => props.open, (open) => {
+    if (open) {
+      setIdx(clampIdx(props.startIndex));
       resetZoom();
     }
-  });
+  }));
+
+  // When the video lands while the lightbox is open, every image shifts one
+  // entry to the right - follow the shift so the SAME image stays on screen.
+  // Effect-accumulator carries the previous value; `on(..., { defer })` can't
+  // (its skipped first run never records prevInput).
+  createEffect((had: boolean) => {
+    const has = hasVideo();
+    if (has !== had && props.open) {
+      setIdx((i) => clampIdx(has ? i + 1 : i - 1));
+    }
+    return has;
+  }, !!props.video);
 
   createEffect(on(() => idx(), resetZoom, { defer: true }));
 

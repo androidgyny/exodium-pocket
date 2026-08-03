@@ -40,7 +40,12 @@ export async function loadGameMetadata(
     }
     return fresh;
   } catch {
-    cache.set(key, EMPTY);
+    // Same guard as above: a failed invoke for a game whose catalog row
+    // promises a manual is transient (startup race, scan hiccup) - pinning
+    // EMPTY here kept the Manual button dead for the whole session.
+    if (!manualPath) {
+      cache.set(key, EMPTY);
+    }
     return null;
   }
 }

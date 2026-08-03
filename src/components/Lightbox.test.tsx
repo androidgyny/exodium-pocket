@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import { Lightbox } from "./Lightbox";
 
@@ -41,6 +42,20 @@ describe("Lightbox with a preview video", () => {
   it("behaves like before when there is no video", () => {
     const { dispose } = mount({ images, video: null, startIndex: 1, open: true, onClose: () => {} });
     expect(document.querySelector("img.lightbox-image")?.getAttribute("src") ?? "").toContain("b.jpg");
+    dispose();
+  });
+
+  it("keeps the current image when the video finishes loading mid-browse", () => {
+    // The probe can take tens of seconds; when it completed while the user was
+    // browsing, the arriving video re-ran the open-reset and snapped the view
+    // back to the start entry.
+    const [video, setVideo] = createSignal<string | null>(null);
+    const { dispose } = mount({ images, get video() { return video(); }, startIndex: 1, open: true, onClose: () => {} });
+    expect(document.querySelector("img.lightbox-image")?.getAttribute("src") ?? "").toContain("b.jpg");
+    setVideo("asset://v.mp4");
+    // Same image on screen, its index shifted by the new entry 0.
+    expect(document.querySelector("img.lightbox-image")?.getAttribute("src") ?? "").toContain("b.jpg");
+    expect(document.querySelector(".lightbox-counter")?.textContent).toBe("3 / 4");
     dispose();
   });
 });
