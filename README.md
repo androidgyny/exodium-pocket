@@ -64,7 +64,7 @@ eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the
 ### Planned
 - 🔲 Game videos and remaining media from the eXoDOS archive
 - 🔲 Improved download management - queue, pause/resume, bandwidth throttling, progress history
-- 🔲 Support for other eXo collections - eXoWin3x, eXoWin9x, eXoScummVM, eXoDream, and future releases
+- 🔲 Support for other eXo collections - eXoScummVM, eXoDREAMM, eXoIF, and future releases (eXoWin3x and eXoWin9x are in)
 
 ---
 

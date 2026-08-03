@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **New collection: eXoWin9x (Vol. 1, 1994-1996).** 662 Windows 95/98 games as
+  the sixth collection. These boot a real Windows 9x from virtual hard-disk
+  images: DOSBox-X runs most of the catalogue, 86Box (bundled for all three
+  platforms) covers the hardware-picky rest. The shared OS images and
+  emulators (~2.5 GB) download automatically with the first Win9x game. Note:
+  the median game is ~316 MB and boots a whole operating system - expect real
+  downloads and slower first starts than DOS games. On Linux, DOSBox-X is
+  found via PATH or Flatpak (no official Linux builds exist); a handful of
+  PCBox-tuned games stay unlaunchable for now.
+- **Rescan finds every collection.** "Rescan installed games" now walks each
+  collection's own tree (it was hardcoded to eXoDOS's and missed eXoWin3x
+  installs), and in-app manuals/screenshots from Win3x/Win9x game folders are
+  no longer blocked by the asset-protocol scope.
+
 ## 0.11.0 - 2026-08-03
 
 ### Added

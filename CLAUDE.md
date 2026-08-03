@@ -572,6 +572,85 @@ Note what this implies: the pack's torrent joins the session for everyone on
 upgrade. There is no per-collection opt-in UI (`Intro.tsx` is still dead code),
 so this follows the existing all-collections-enabled model.
 
+### 16. eXoWin9x boots a real Windows - VHDs, DOSBox-X and 86Box
+
+662 Windows 95/98 games (Vol. 1: 1994-1996), 282 GB torrent, infohash
+`dd8a867f62a6c9cc939d51c742143de2ac98c9f2`. Unlike every other pack these
+games boot an actual Windows 9x inside an emulator; DOSBox Staging cannot do
+that, so this collection has its own launch pipeline (`commands/win9x.rs`).
+
+**Layout differs from Win3x in two load-bearing ways:**
+
+- **Year subdirectories**: games live at `eXo/eXoWin9x/<year>/<Title (Year)>.zip`
+  and their launch files at `eXo/eXoWin9x/!win9x/<year>/<Title (Year)>/`
+  (`play.conf` for DOSBox-X games, `play.cfg`/`Host.cfg`/`Join.cfg` for 86Box,
+  plus the per-game bat and `install.bat`). `CollectionDef.year_subdirs` is the
+  flag every path derivation keys off - never the id string. Torrent-index
+  matching needs nothing: `find_game_files` is path-anchored on
+  `/<Title (Year)>.zip` and year dirs don't disturb the suffix.
+- **No shortcodes**: the title directory IS the shortcode
+  (`Connect4 (1995)`). `extract_shortcode` skips a 4-digit segment only when
+  another directory follows it, so eXoDOS's real shortcode `1939` survives
+  (tests: `extract_shortcode_win9x_year_dir_skipped`,
+  `extract_shortcode_four_digit_code_without_subdir_is_kept`). Save backups
+  land at `<year>/!save/<Title (Year)>/` - the game dir's SIBLING, which is
+  exactly where `extract_game_zip`'s existing restore probe already looks.
+
+**The emulation model** (from the pack's manual + its bats, read verbatim):
+C: is a DISPOSABLE differencing child of a shared parent Win9x OS image;
+saves live on the game's own dynamic VHD mounted as D: (inside the game zip,
+next to the original install media). So uninstall-by-rename keeps saves, and
+a fresh C: per boot is by design, not waste.
+
+- **x98 games (~most of the pack)**: DOSBox-X. All VHD work happens inside
+  `play.conf`'s autoexec - the conf runs VERBATIM (§10a applies doubly: no
+  `patch_dosbox_conf`, no translation), layered as
+  `[x98 base conf when not eXo's own exe] play.conf → options9x.conf →
+  user-override frag`, cwd `<torrent_root>/eXo`.
+- **86box / 86boxME / 86boxNetHost / 86boxNetJoin games**: Exodium recreates
+  the child VHD each launch (`vhd::create_differencing`, a Rust port of eXo's
+  Windows-only makevhd.exe), copies the per-game cfg over
+  `emulators/86Box98/play.cfg` and runs `86box -c <cfg> -P <86Box98 dir>`.
+  Child/parent/cfg per variant live in `e86box_variant_files`. The VHD
+  writer sets **parent timestamp 0 exactly like makevhd** - extraction
+  rewrites mtimes, a real timestamp would make emulators reject the chain.
+- **pcbox games**: PCBox is a Windows-only 86Box fork we don't ship;
+  launching errors with a clear message and the panel shows a note.
+
+**Engine resolution** (`resolve_dosbox_x` / `resolve_86box`): Windows prefers
+eXo's own x98 DOSBox-X build out of the extracted support tree (ECE
+precedent), then bundled, then PATH; macOS bundled-then-PATH; Linux
+PATH-then-Flatpak (`com.dosbox_x.DOSBox-X`) because DOSBox-X publishes no
+Linux binaries. 86Box is bundled on all three platforms
+(`scripts/get-emulators.sh`, pinned versions, resources
+`dosbox-x[-bin]`/`86box[-bin]` with `.placeholder` gitkeep). The panel's
+"emulator missing" note asks the backend (`win9x_engine_available`), which
+answers with the launcher's own resolver.
+
+**Support files**: parent OS VHDs + both emulators sit in the torrent's
+`eXo/util/utilWin9x.zip` (2.5 GB, inner `EXTWin9x.zip` - same matryoshka as
+eXoDOS's util.zip). `win9x.rs` queues it with the first Win9x game download
+(disk preflight +8 GB), a watcher extracts `emulators/dosbox/` +
+`emulators/86Box98/` (NOT PCBox/audio) with staging + atomic renames, and
+`init_download_manager` re-arms the watcher after restarts. Readiness =
+`eXo/emulators/dosbox/x98/parent` (x98) / `eXo/emulators/86Box98/parent`
+(86box*) exists; `get_win9x_support_status` feeds the panel.
+
+**Assets**: `scripts/gen_win9x_assets.py` builds `metadata/Win9x.xml.gz`
+(from `xml/Windows 9x.xml` in `XOWin9xMetadata.zip`), `Win9x_configs.zip`
+(`.conf/.bat/.cfg` stripped from the 8.4 GB `!Win9Xmetadata.zip`) and
+`metadata/dosbox9x.txt`, whose "variant" is really WHICH `9xlaunch*.bat` the
+per-game bat calls (slugs `x98|86box|86boxME|86boxNetHost|86boxNetJoin|pcbox`,
+encoded `<title>:<slug>\dosbox.exe` so generate_db's parser is unchanged).
+`init-dev.sh --win9x` fetches both Content zips (~13 GB).
+
+**Still open**: launch coverage is untested pending first end-to-end runs
+(Connect4 → 3D Maze for x98); DOSBox-X official-build parity with eXo's
+custom x98 build on macOS/Linux; 86Box ROM discovery via `-P` with a
+non-adjacent exe; NetHost/NetJoin games are launched via their play.cfg (solo)
+- the host/join multiplayer menu flow is out of scope; no poster pack
+published yet (manifest carries only the metadata pack until content-v5).
+
 ## Conventions
 
 - **Every Tauri command that touches the DB, filesystem, or network MUST be
