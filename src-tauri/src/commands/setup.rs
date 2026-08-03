@@ -519,6 +519,10 @@ pub async fn init_download_manager(
     if let Some((_, mgr)) = new_managers.iter().find(|(id, _)| id == "eXoDOS") {
         crate::commands::games::rearm_support_extraction(mgr).await;
     }
+    // Same for the Win9x support payload (OS parent VHDs + emulators).
+    if let Some((_, mgr)) = new_managers.iter().find(|(id, _)| id == "eXoWin9x") {
+        crate::commands::win9x::rearm_win9x_support(mgr).await;
+    }
 
     // Acquire write lock only for the insert - no blocking work inside.
     let count = new_managers.len();

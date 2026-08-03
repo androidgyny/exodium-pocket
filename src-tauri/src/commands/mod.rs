@@ -4,6 +4,7 @@ mod games;
 mod playlists;
 pub(crate) mod setup;
 pub(crate) mod updates;
+pub(crate) mod win9x;
 
 pub use content_packs::{
     cancel_content_pack_install, get_content_pack_progress, install_content_pack,

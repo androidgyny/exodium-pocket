@@ -623,6 +623,7 @@ pub fn run() {
             get_section_keys,
             validate_exodos_dir,
             scan_installed_games,
+            commands::win9x::get_win9x_support_status,
             list_content_packs,
             install_content_pack,
             uninstall_content_pack,

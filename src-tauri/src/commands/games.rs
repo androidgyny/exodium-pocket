@@ -421,6 +421,17 @@ pub async fn download_game(
         (manager, main_mgr)
     };
 
+    // Win9x games need the shared support payload (parent OS VHDs +
+    // emulators) from utilWin9x.zip before they can launch; queued further
+    // down with the first Win9x game download, but the disk preflight has to
+    // budget it here (2.5 GB zip + 2.5 GB inner temp + ~2.5 GB extracted).
+    let win9x_support_missing = crate::commands::setup::collection_def(source)
+        .is_some_and(|c| c.year_subdirs)
+        && !crate::commands::win9x::win9x_support_ready(
+            &manager.torrent_root(),
+            game.dosbox_variant.as_deref(),
+        );
+
     // Disk-space preflight: refusing upfront beats a multi-GB torrent (plus
     // ~equal-sized extraction) failing halfway with a partial install. Runs
     // BEFORE set_in_library so a refusal doesn't leave a phantom "My Games"
@@ -437,10 +448,13 @@ pub async fn download_game(
                 .and_then(|p| std::fs::metadata(p).ok())
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let needed = (size as u64)
+            let mut needed = (size as u64)
                 .saturating_mul(2)
                 .saturating_sub(on_disk)
                 + 500 * 1024 * 1024;
+            if win9x_support_missing {
+                needed += 8 * 1024 * 1024 * 1024;
+            }
             if let Ok(free) = fs4::available_space(std::path::Path::new(&dir)) {
                 if free < needed {
                     let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -459,6 +473,12 @@ pub async fn download_game(
     let mut files = vec![game_idx];
     if let Some(gd_idx) = game.gamedata_torrent_index {
         files.push(gd_idx as usize);
+    }
+
+    // Queue the Win9x support payload with the first Win9x game download and
+    // arm the extraction watcher (budgeted in the preflight above).
+    if win9x_support_missing {
+        crate::commands::win9x::ensure_win9x_support_queued(&manager).await;
     }
 
     if let Some(ref main_mgr) = main_mgr_opt {
