@@ -52,6 +52,49 @@ fn collection_lang_dir(source: &str) -> Option<&'static str> {
     crate::commands::setup::collection_def(source).and_then(|c| c.lang_dir)
 }
 
+/// The year directory a `year_subdirs` collection nests its games under,
+/// read from the application_path (`eXo\eXoWin9x\!win9x\<year>\<TitleDir>\…`).
+/// None for every other collection - and for a malformed path, in which case
+/// callers fall back to the flat `<game_prefix>/<shortcode>` layout.
+fn collection_year_dir(source: &str, app_path: Option<&str>) -> Option<String> {
+    let def = crate::commands::setup::collection_def(source)?;
+    if !def.year_subdirs {
+        return None;
+    }
+    let normalized = app_path?.replace('\\', "/");
+    let needle = format!("/{}/", def.shortcode_segment);
+    let idx = normalized.find(&needle)?;
+    let year = normalized[idx + needle.len()..].split('/').next()?;
+    (year.len() == 4 && year.bytes().all(|b| b.is_ascii_digit())).then(|| year.to_string())
+}
+
+/// Torrent-relative directory holding a game's installed files.
+/// Standard: <game_prefix>[/<lang_dir>]/<shortcode>
+/// year_subdirs (eXoWin9x): <game_prefix>/<year>/<shortcode> - the shortcode
+/// IS the title directory there ("Connect4 (1995)").
+fn collection_rel_game_dir(source: &str, shortcode: &str, app_path: Option<&str>) -> String {
+    let prefix = collection_game_prefix(source);
+    if let Some(year) = collection_year_dir(source, app_path) {
+        return format!("{}/{}/{}", prefix, year, shortcode);
+    }
+    match collection_lang_dir(source) {
+        Some(ld) => format!("{}/{}/{}", prefix, ld, shortcode),
+        None => format!("{}/{}", prefix, shortcode),
+    }
+}
+
+/// Torrent-relative path of a game's ZIP (same year/lang nesting as the dir).
+fn collection_rel_zip(source: &str, game_name: &str, app_path: Option<&str>) -> String {
+    let prefix = collection_game_prefix(source);
+    if let Some(year) = collection_year_dir(source, app_path) {
+        return format!("{}/{}/{}.zip", prefix, year, game_name);
+    }
+    match collection_lang_dir(source) {
+        Some(ld) => format!("{}/{}/{}.zip", prefix, ld, game_name),
+        None => format!("{}/{}.zip", prefix, game_name),
+    }
+}
+
 /// Language subdirectories used in the eXoDOS file structure.
 const LANG_DIRS: &[&str] = &["!german", "!polish", "!czech", "!slovak", "!spanish"];
 
@@ -923,7 +966,6 @@ pub async fn uninstall_game(
 
     let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
     let inner_folder = collection_inner_folder(source);
-    let game_prefix = collection_game_prefix(source);
     let torrent_root = collection_data_dir(&data_dir, source).join(inner_folder);
 
     // Get game name from bat filename for ZIP deletion
@@ -933,15 +975,21 @@ pub async fn uninstall_game(
 
     // Determine THIS variant's game directory:
     // EN: <game_prefix>/<shortcode>/   LP: <game_prefix>/<lang_dir>/<shortcode>/
+    // eXoWin9x: <game_prefix>/<year>/<title dir>/
     // Never probe other languages' dirs - the old first-existing probe over
     // all lang dirs made "uninstall the DE variant" back up and delete the
     // EN install when both were on disk.
-    let lang_dir = collection_lang_dir(source);
-    let game_dir_candidate = match lang_dir {
-        Some(ld) => torrent_root.join(format!("{}/{}/{}", game_prefix, ld, shortcode)),
-        None => torrent_root.join(format!("{}/{}", game_prefix, shortcode)),
+    let rel_game_dir =
+        collection_rel_game_dir(source, &shortcode, game.application_path.as_deref());
+    // Save backup lives NEXT TO the game dir (`.../!save/<shortcode>`), which
+    // keeps it lang-scoped for LP variants and year-scoped for eXoWin9x -
+    // exactly where extract_game_zip's restore probe looks.
+    let rel_save_dir = match rel_game_dir.rsplit_once('/') {
+        Some((parent, _)) => format!("{}/!save/{}", parent, shortcode),
+        None => format!("!save/{}", shortcode),
     };
-    let game_dir: Option<PathBuf> = Some(game_dir_candidate).filter(|d| d.exists());
+    let game_dir: Option<PathBuf> = Some(torrent_root.join(&rel_game_dir)).filter(|d| d.exists());
+    let rel_zip = collection_rel_zip(source, &game_name, game.application_path.as_deref());
 
     let db_path = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -956,11 +1004,9 @@ pub async fn uninstall_game(
                 // etc.). LP backups live under the language dir so uninstalling
                 // one variant can't clobber another's backup; extract_game_zip's
                 // restore probes both the lang-scoped and the legacy shared
-                // location.
-                let save_dir = match lang_dir {
-                    Some(ld) => torrent_root.join(format!("{}/{}/!save/{}", game_prefix, ld, shortcode)),
-                    None => torrent_root.join(format!("{}/!save/{}", game_prefix, shortcode)),
-                };
+                // location. For eXoWin9x the whole dir includes the game's own
+                // VHD, which is where its saves live.
+                let save_dir = torrent_root.join(&rel_save_dir);
                 if save_dir.exists() {
                     let _ = std::fs::remove_dir_all(&save_dir);
                 }
@@ -986,10 +1032,7 @@ pub async fn uninstall_game(
         // the caller can reset piece bookkeeping in exactly the torrents
         // that tracked them. Only THIS variant's ZIP - the old all-languages
         // sweep deleted neighbor variants' downloads too.
-        let zip_rels = vec![match lang_dir {
-            Some(ld) => format!("{}/{}/{}.zip", game_prefix, ld, game_name),
-            None => format!("{}/{}.zip", game_prefix, game_name),
-        }];
+        let zip_rels = vec![rel_zip];
         let mut deleted_rels: Vec<String> = Vec::new();
         for rel in &zip_rels {
             let zip = torrent_root.join(rel);
@@ -2757,22 +2800,23 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     // This mirrors LaunchBox's on-demand extraction behavior and handles games that were
     // imported from an existing installation where ZIPs haven't been extracted.
     if !shortcode.is_empty() {
-        let game_dir = if let Some(ld) = collection_lang_dir(source) {
-            torrent_root.join(format!("{}/{}/{}", src_game_prefix, ld, shortcode))
-        } else {
-            torrent_root.join(format!("{}/{}", src_game_prefix, shortcode))
-        };
+        let game_dir = torrent_root.join(collection_rel_game_dir(
+            source,
+            shortcode,
+            game.application_path.as_deref(),
+        ));
         if !game_dir.exists() {
             let game_name = game.application_path.as_deref()
                 .and_then(crate::commands::setup::game_name_from_app_path)
                 .unwrap_or_else(|| game.title.clone());
             // LP ZIPs live under the collection's language dir
-            // ("eXo/eXoDOS/<lang>/<name>.zip"); EN under the prefix root.
-            let mut zip_candidates: Vec<PathBuf> = Vec::new();
-            if let Some(ld) = collection_lang_dir(source) {
-                zip_candidates
-                    .push(torrent_root.join(format!("{}/{}/{}.zip", src_game_prefix, ld, game_name)));
-            }
+            // ("eXo/eXoDOS/<lang>/<name>.zip"), eXoWin9x's under the year dir;
+            // EN under the prefix root as a fallback.
+            let mut zip_candidates: Vec<PathBuf> = vec![torrent_root.join(collection_rel_zip(
+                source,
+                &game_name,
+                game.application_path.as_deref(),
+            ))];
             zip_candidates.push(torrent_root.join(format!("{}/{}.zip", src_game_prefix, game_name)));
 
             if let Some(zip_path) = zip_candidates.iter().find(|z| z.exists()) {
@@ -3088,6 +3132,41 @@ mod tests {
         assert!(dir.join("notes.txt").exists());
         assert_eq!(super::remove_conf_files(&dir, None), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rel_paths_nest_win9x_games_under_their_year_dir() {
+        let app = Some(r"eXo\eXoWin9x\!win9x\1995\Connect4 (1995)\Connect4 (1995).bat");
+        assert_eq!(
+            super::collection_rel_game_dir("eXoWin9x", "Connect4 (1995)", app),
+            "eXo/eXoWin9x/1995/Connect4 (1995)"
+        );
+        assert_eq!(
+            super::collection_rel_zip("eXoWin9x", "Connect4 (1995)", app),
+            "eXo/eXoWin9x/1995/Connect4 (1995).zip"
+        );
+        // A malformed path falls back to the flat layout instead of panicking.
+        assert_eq!(
+            super::collection_rel_game_dir("eXoWin9x", "Connect4 (1995)", None),
+            "eXo/eXoWin9x/Connect4 (1995)"
+        );
+    }
+
+    #[test]
+    fn rel_paths_keep_flat_and_lang_layouts_for_other_packs() {
+        let app = Some(r"eXo\eXoDOS\!dos\SQ5\Space Quest V.bat");
+        assert_eq!(
+            super::collection_rel_game_dir("eXoDOS", "SQ5", app),
+            "eXo/eXoDOS/SQ5"
+        );
+        assert_eq!(
+            super::collection_rel_game_dir("eXoDOS_GLP", "SQ5", app),
+            "eXo/eXoDOS/!german/SQ5"
+        );
+        assert_eq!(
+            super::collection_rel_zip("eXoDOS_GLP", "Space Quest V", app),
+            "eXo/eXoDOS/!german/Space Quest V.zip"
+        );
     }
 
     use super::*;
