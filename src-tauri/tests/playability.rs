@@ -106,10 +106,11 @@ fn find_dosbox() -> PathBuf {
 
 /// Resolve the dosbox.conf path for a game.
 ///
-/// This is a simplified version of the path resolution in `launch_game` - it
-/// covers the common EN and LP-fallback cases but does not handle language-dir
-/// conf variants or the macOS shader override. Changes to `launch_game`'s path
-/// logic will not automatically be reflected here.
+/// This is a simplified version of `resolve_game_conf` in commands/games.rs
+/// (the canonical resolution used by `launch_game`) - it covers the common EN
+/// and LP-fallback cases but does not handle language-dir conf variants or the
+/// macOS shader override. Changes to `resolve_game_conf` will not
+/// automatically be reflected here.
 fn resolve_conf(game: &InstalledGame, data_dir: &Path) -> Option<PathBuf> {
     let conf_rel = game.dosbox_conf.as_deref()?.replace('\\', "/");
     let data_dir_str = data_dir.to_str().unwrap_or_default();

@@ -8,7 +8,7 @@ import { GameSettingsDialog } from "./GameSettingsDialog";
 import { PlaylistMenu } from "./PlaylistMenu";
 import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame } from "../api/tauri";
+import { launchGame, gamePrintingUnavailable } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
@@ -56,6 +56,10 @@ export function GameDetailPanel(props: Props) {
   // the playback state - the video takes over the hero while it plays and hands
   // the cover back when it ends.
   const [videoPlaying, setVideoPlaying] = createSignal(false);
+  // 13 eXoDOS titles print as their core feature; Staging has no printer
+  // emulation yet, so those get a heads-up note. The backend owns the whole
+  // answer (conf + engine selection), so no platform logic lives here.
+  const [printingUnavailable, setPrintingUnavailable] = createSignal(false);
   let heroVideoRef: HTMLVideoElement | undefined;
   const openPlaylistMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -181,6 +185,13 @@ export function GameDetailPanel(props: Props) {
     setManualOpen(false);
     setSelectedId(g.id ?? null);
     setVideoPlaying(false);
+    setPrintingUnavailable(false);
+    if (g.id != null) {
+      const id = g.id;
+      gamePrintingUnavailable(id)
+        .then((p) => { if (props.game?.id === id) { setPrintingUnavailable(p); } })
+        .catch(() => {});
+    }
     // Force a metadata refetch: the cache key below would otherwise match the
     // previous visit to this same game and leave the panel with the null
     // metadata this reset just wrote (no screenshots, no manual).
@@ -432,10 +443,13 @@ export function GameDetailPanel(props: Props) {
       variant="action"
       class="btn-manual"
       onClick={handleManualClick}
+      // First open of a game can scan for seconds (gallery thumbnails, lazy
+      // manual extraction) - show that instead of a dead-looking button.
+      loading={metadataLoading()}
       // Not yet extracted: the button is simply inert rather than clickable
       // into a "not available" message. The metadata cache is invalidated when
       // a download finishes, so it enables itself once the extras land.
-      disabled={metadataLoading() || !manualAvailable()}
+      disabled={!manualAvailable()}
       title={
         !metadataLoading() && !manualAvailable()
           ? "Arrives with the game's extras download"
@@ -581,6 +595,20 @@ export function GameDetailPanel(props: Props) {
                 This game is tuned for DOSBox ECE, which only exists on
                 Windows. Exodium runs it with DOSBox Staging - the experience
                 may vary slightly.
+              </div>
+            </Show>
+
+            {/* Printer note: 13 eXoDOS titles print as their core feature.
+                DOSBox Staging has no printer emulation yet (it is in the
+                works upstream). The backend answers with launch_game's own
+                engine selection, so a Windows install with the ECE build on
+                disk gets no note - printing works there. */}
+            <Show when={printingUnavailable()}>
+              <div class="game-detail-note">
+                This game can print to a (virtual) printer, which the bundled
+                DOSBox Staging does not support yet. The game runs, but its
+                printing features are unavailable for now - printer support is
+                expected in a future DOSBox Staging update.
               </div>
             </Show>
 

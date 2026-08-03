@@ -170,6 +170,14 @@ export async function launchGame(id: number): Promise<string> {
   return invoke("launch_game", { id });
 }
 
+/** Whether the game's printing features will be missing at launch (13 eXoDOS
+ *  titles enable a virtual printer; Staging has none yet). The backend decides
+ *  with the same engine-selection logic launch_game uses, so Windows + an
+ *  installed ECE build correctly answers false. */
+export async function gamePrintingUnavailable(id: number): Promise<boolean> {
+  return invoke("game_printing_unavailable", { id });
+}
+
 export async function getConfig(key: string): Promise<string | null> {
   return invoke("get_config", { key });
 }
@@ -309,6 +317,8 @@ export interface CollectionInfo {
   id: string;
   display_name: string;
   torrent_file: string;
+  /** Catalogue rows in this collection - shown on the collection shelf. */
+  game_count: number;
 }
 
 export async function getAvailableCollections(): Promise<CollectionInfo[]> {

@@ -1176,6 +1176,146 @@ fn game_requests_midi(torrent_root: &std::path::Path, dosbox_conf: Option<&str>)
         || lower.contains("[fluidsynth]")
 }
 
+/// True when the config enables eXo's virtual printer (`printer=true` +
+/// `parallel1=printer`, ECE/DOSBox-X keys). Comment lines are skipped: one
+/// eXoWin3x config carries the entire option documentation as `#` comments
+/// while actually setting `parallel1=disabled`.
+fn conf_requests_printer(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .any(|l| {
+            let lower = l.to_ascii_lowercase();
+            match lower.split_once('=') {
+                Some((k, v)) => {
+                    let (k, v) = (k.trim(), v.trim());
+                    (k == "printer" && v == "true")
+                        || (k.starts_with("parallel") && v.starts_with("printer"))
+                }
+                None => false,
+            }
+        })
+}
+
+/// Locate a game's dosbox.conf on disk - the canonical resolution, shared by
+/// `launch_game` and `game_printing_unavailable` so they cannot drift. Probes,
+/// in order: the game's own collection root, the main eXoDOS root (LP rows
+/// inherit the EN conf), and the lang-scoped alternate locations. Returns the
+/// conf path plus the torrent root it was found under (`launch_game` derives
+/// the working dir from that root).
+fn resolve_game_conf(
+    data_dir: &str,
+    source: &str,
+    dosbox_conf: &str,
+) -> Option<(PathBuf, PathBuf)> {
+    // Normalize Windows backslashes - DB paths mix separators.
+    let rel = dosbox_conf.replace('\\', "/");
+    let main_root =
+        collection_data_dir(data_dir, "eXoDOS").join(collection_inner_folder("eXoDOS"));
+    let torrent_root = collection_data_dir(data_dir, source).join(collection_inner_folder(source));
+
+    let direct = torrent_root.join(&rel);
+    if direct.exists() {
+        return Some((direct, torrent_root));
+    }
+
+    // For LP games, the dosbox_conf was inherited from the EN game. The config
+    // lives in the main eXoDOS data dir, but game files are in the LP dir - the
+    // returned root stays the LP one so mounts resolve there.
+    if source != "eXoDOS" {
+        let main_conf = main_root.join(&rel);
+        if main_conf.exists() {
+            return Some((main_conf, torrent_root));
+        }
+    }
+
+    // The config might be under a language-specific subdirectory.
+    let main_game_prefix = collection_game_prefix("eXoDOS");
+    let main_segment = crate::commands::setup::collection_def("eXoDOS")
+        .map(|c| c.shortcode_segment)
+        .unwrap_or("!dos");
+    if let Some(shortcode) = rel
+        .strip_suffix("/dosbox.conf")
+        .and_then(|p| p.rsplit('/').next())
+        .filter(|s| !s.is_empty())
+    {
+        let roots = if source != "eXoDOS" {
+            vec![torrent_root, main_root]
+        } else {
+            vec![torrent_root]
+        };
+        for root in roots {
+            for lang_dir in LANG_DIRS {
+                let alt = root.join(format!(
+                    "{}/{}/{}/{}/dosbox.conf",
+                    main_game_prefix, main_segment, lang_dir, shortcode
+                ));
+                if alt.exists() {
+                    return Some((alt, root));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The DOSBox ECE build eXo ships for this variant, when it is actually
+/// runnable here: Windows only, and only once extracted from util.zip. None
+/// means DOSBox Staging will run the game.
+fn resolve_ece_binary(
+    dosbox_variant: Option<&str>,
+    main_torrent_root: &std::path::Path,
+) -> Option<PathBuf> {
+    let variant = dosbox_variant?;
+    if !variant.starts_with("ece") || !cfg!(windows) {
+        return None;
+    }
+    let base = main_torrent_root.join("eXo/emulators/dosbox");
+    [
+        base.join(variant).join("DOSBox.exe"),
+        base.join("ece4230").join("DOSBox.exe"),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+}
+
+/// Whether this game's printing features will be missing at launch. 13 eXoDOS
+/// titles enable eXo's virtual printer (for most of them printing IS the
+/// product), and DOSBox Staging has no printer support yet - so the answer is
+/// "the conf requests a printer AND the engine that would run is Staging",
+/// decided by the same helpers `launch_game` uses. On Windows this flips to
+/// false by itself once the ECE build lands on disk.
+#[tauri::command]
+pub async fn game_printing_unavailable(
+    db_state: State<'_, DbState>,
+    id: i64,
+) -> Result<bool, String> {
+    let (dosbox_conf, dosbox_variant, source, data_dir) = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let game = queries::fetch_game_by_id(&conn, id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Game with id {} not found", id))?;
+        let data_dir = queries::get_config(&conn, "data_dir").map_err(|e| e.to_string())?;
+        (game.dosbox_conf, game.dosbox_variant, game.torrent_source, data_dir)
+    };
+    let (Some(conf), Some(data_dir)) = (dosbox_conf, data_dir) else {
+        return Ok(false);
+    };
+    let source = source.unwrap_or_else(|| "eXoDOS".to_string());
+    let Some((conf_path, _)) = resolve_game_conf(&data_dir, &source, &conf) else {
+        return Ok(false);
+    };
+    let Ok(text) = std::fs::read_to_string(conf_path) else {
+        return Ok(false);
+    };
+    if !conf_requests_printer(&text) {
+        return Ok(false);
+    }
+    let main_root =
+        collection_data_dir(&data_dir, "eXoDOS").join(collection_inner_folder("eXoDOS"));
+    Ok(resolve_ece_binary(dosbox_variant.as_deref(), &main_root).is_none())
+}
+
 /// Serializes support-file extraction process-wide. A plain lock FILE was
 /// racy: the startup rearm and a download-click watcher could both pass the
 /// exists() check before either wrote it.
@@ -1718,7 +1858,7 @@ fn patch_dosbox_conf(
     };
 
     let patched = if translate_for_staging {
-        translate_midi_for_staging(&patched)
+        translate_ide_for_staging(&translate_midi_for_staging(&patched))
     } else {
         patched
     };
@@ -1831,6 +1971,90 @@ fn translate_midi_for_staging(conf: &str) -> String {
     let mut result = out.join("\n");
     result.push('\n');
     result
+}
+
+/// Translate DOSBox-X style IDE controller requests for DOSBox Staging.
+///
+/// 55 eXoWin3x configs enable `[ide, primary]` / `[ide, secondary]` so the
+/// guest OS booted from an HDD image reaches the CD through its own ATAPI
+/// driver (VIDE-CDD.SYS + MSCDEX live inside the image - after `boot` DOSBox's
+/// DOS-level MSCDEX shim is gone). Staging has no `[ide]` section but provides
+/// the same thing as an `-ide` flag on `imgmount ... -t cdrom|iso`, so: when
+/// the section is present, add the flag to CD imgmounts and normalize
+/// DOSBox-X's slot argument (`-ide 2m`) to Staging's bare flag. Measured
+/// (issue #15): without this the guest boots but never sees the CD; with it
+/// the ATAPI drive attaches and CD playback works.
+fn translate_ide_for_staging(conf: &str) -> String {
+    // Comment lines are skipped, same as conf_requests_printer: one eXoWin3x
+    // conf carries the whole option documentation as `#` comments.
+    let has_ide_section = conf
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .any(|l| l.to_ascii_lowercase().starts_with("[ide"));
+    if !has_ide_section {
+        return conf.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(conf.lines().count());
+    for line in conf.lines() {
+        let lower = line.to_ascii_lowercase();
+        let cmd = lower.trim_start().trim_start_matches('@');
+        // Token-wise `-t cdrom|iso` detection - a doubled space between the
+        // flag and its value must not hide a CD mount from the translation.
+        let toks: Vec<&str> = cmd.split_whitespace().collect();
+        let is_cd_imgmount = cmd.starts_with("imgmount")
+            && toks
+                .windows(2)
+                .any(|w| w[0] == "-t" && (w[1] == "cdrom" || w[1] == "iso"));
+        if !is_cd_imgmount {
+            out.push(line.to_string());
+            continue;
+        }
+        // Standalone `-ide` flag only: the line holds an absolute REWRITTEN
+        // host path at this point, and a data dir like `/mnt/games-ide/` must
+        // not read as "flag already present" (that would silently disable the
+        // whole translation). `to_ascii_lowercase` never changes byte offsets,
+        // so positions found in `lower` index into `line` directly.
+        if let Some(pos) = find_ide_flag(&lower) {
+            let end = pos + "-ide".len();
+            let rest = &line[end..];
+            let after_ws = rest.trim_start();
+            let token: String = after_ws.chars().take_while(|c| !c.is_whitespace()).collect();
+            // DOSBox-X slot argument: "2m", "1s", "2" - short, digit-first.
+            let is_slot = !token.is_empty()
+                && token.len() <= 2
+                && token.chars().next().is_some_and(|c| c.is_ascii_digit());
+            if is_slot {
+                out.push(format!("{}{}", &line[..end], &after_ws[token.len()..]));
+            } else {
+                out.push(line.to_string());
+            }
+        } else {
+            out.push(format!("{} -ide", line.trim_end()));
+        }
+    }
+    let mut result = out.join("\n");
+    result.push('\n');
+    result
+}
+
+/// Byte offset of a standalone `-ide` flag token: preceded by whitespace and
+/// followed by whitespace or end-of-line. Substring hits inside path segments
+/// or filenames (`/mnt/games-ide/`, `T-IDE.iso`) don't count.
+fn find_ide_flag(lower: &str) -> Option<usize> {
+    let bytes = lower.as_bytes();
+    let mut start = 0;
+    while let Some(p) = lower[start..].find("-ide") {
+        let pos = start + p;
+        let end = pos + "-ide".len();
+        let before_ok = pos > 0 && bytes[pos - 1].is_ascii_whitespace();
+        let after_ok = end >= lower.len() || bytes[end].is_ascii_whitespace();
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+        start = end;
+    }
+    None
 }
 
 /// Find the launch command for an LP game by inspecting its directory.
@@ -2497,9 +2721,6 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
             msg
         })?;
 
-    // Normalize Windows backslashes
-    let dosbox_conf = dosbox_conf.replace('\\', "/");
-
     // Each collection has its own subdirectory (except eXoDOS which is at the root).
     // Layout:  <data_dir>/<inner_folder>/           - for eXoDOS
     //          <data_dir>/<col_id>/<inner_folder>/  - for sub-collections
@@ -2511,61 +2732,17 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     let torrent_root = collection_data_dir(&data_dir, source).join(src_inner);
     // working_dir is the first path component of game_prefix (e.g. "eXo")
     let working_dir_name = src_game_prefix.split('/').next().unwrap_or("eXo");
-    let mut working_dir = torrent_root.join(working_dir_name);
-    let mut game_conf = torrent_root.join(&dosbox_conf);
     let options_conf = main_torrent_root.join("eXo/emulators/dosbox/options.conf");
 
-    // For LP games, the dosbox_conf was inherited from the EN game.
-    // The config lives in the main eXoDOS data dir, but game files are in the LP dir.
-    // We use the EN config but redirect mount paths to the LP location via lp_redirect.
-    if !game_conf.exists() && source != "eXoDOS" {
-        let main_conf = main_torrent_root.join(&dosbox_conf);
-        if main_conf.exists() {
-            game_conf = main_conf;
-            // Keep working_dir as LP torrent root - lp_redirect will fix mount paths
-        }
-    }
-
-    // The config might be under a language-specific subdirectory
-    if !game_conf.exists() {
-        let main_game_prefix = collection_game_prefix("eXoDOS");
-        let main_segment = crate::commands::setup::collection_def("eXoDOS")
-            .map(|c| c.shortcode_segment)
-            .unwrap_or("!dos");
-        if let Some(shortcode) = dosbox_conf
-            .strip_suffix("/dosbox.conf")
-            .and_then(|p| p.rsplit('/').next())
-            .filter(|s| !s.is_empty())
-        {
-            let roots = if source != "eXoDOS" {
-                vec![&torrent_root, &main_torrent_root]
-            } else {
-                vec![&torrent_root]
-            };
-            'outer: for root in &roots {
-                for lang_dir in LANG_DIRS {
-                    let alt = root.join(format!(
-                        "{}/{}/{}/{}/dosbox.conf",
-                        main_game_prefix, main_segment, lang_dir, shortcode
-                    ));
-                    if alt.exists() {
-                        game_conf = alt;
-                        working_dir = root.join(working_dir_name);
-                        break 'outer;
-                    }
-                }
-            }
-        }
-    }
-
-    if !game_conf.exists() {
+    let Some((game_conf, conf_root)) = resolve_game_conf(&data_dir, source, dosbox_conf) else {
         let msg = format!(
             "Game config not found: {}\nMake sure the game is fully downloaded and extracted.",
-            game_conf.display()
+            torrent_root.join(dosbox_conf.replace('\\', "/")).display()
         );
         log::error!("launch_game({}): {}", game.title, msg);
         return Err(msg);
-    }
+    };
+    let working_dir = conf_root.join(working_dir_name);
 
     if !working_dir.exists() {
         return Err(format!("Working directory not found: {}", working_dir.display()));
@@ -2649,23 +2826,14 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     // DOSBox ECE build (extracted from util.zip's EXTDOS.zip into
     // eXo/emulators/dosbox/<variant>/). Everywhere else - and until the
     // build is on disk - DOSBox Staging is the best-effort fallback.
-    let mut ece_bin: Option<PathBuf> = None;
+    let ece_bin = resolve_ece_binary(game.dosbox_variant.as_deref(), &main_torrent_root);
     if let Some(ref variant) = game.dosbox_variant {
-        if variant.starts_with("ece") {
+        if variant.starts_with("ece") && ece_bin.is_none() {
             if cfg!(windows) {
-                let base = main_torrent_root.join("eXo/emulators/dosbox");
-                ece_bin = [
-                    base.join(variant).join("DOSBox.exe"),
-                    base.join("ece4230").join("DOSBox.exe"),
-                ]
-                .into_iter()
-                .find(|p| p.exists());
-                if ece_bin.is_none() {
-                    log::info!(
-                        "ECE build not on disk yet for '{}' - using Staging (fetched with util.zip on next MIDI/ECE download)",
-                        game.title
-                    );
-                }
+                log::info!(
+                    "ECE build not on disk yet for '{}' - using Staging (fetched with util.zip on next MIDI/ECE download)",
+                    game.title
+                );
             } else {
                 log::info!(
                     "Game '{}' is tuned for DOSBox ECE '{}' (Windows-only build). \
@@ -3041,6 +3209,134 @@ mod tests {
             patched.contains(&format!("{}eXoWin3x/20k3x/cd/cd.cue -t cdrom", abs)),
             "imgmount must be absolute: {}", patched
         );
+    }
+
+    /// eXoWin3x IDE games: the DOSBox-X `[ide]` section becomes Staging's
+    /// `-ide` imgmount flag - without it a guest booted from an HDD image
+    /// never sees the CD (its ATAPI driver finds no controller).
+    #[test]
+    fn ide_translate_adds_flag_to_cd_imgmounts() {
+        let conf = "[dosbox]\nmemsize=32\n[ide, primary] \nenable=true \n\
+             [ide, secondary] \nenable=true \n[autoexec]\n@echo off\n\
+             imgmount c game/i100_203.img\nimgmount d game/cd/cd.cue -t cdrom \n\
+             boot -l c\nexit\n";
+        let out = translate_ide_for_staging(conf);
+        assert!(
+            out.contains("imgmount d game/cd/cd.cue -t cdrom -ide"),
+            "CD imgmount must gain -ide: {}", out
+        );
+        // The HDD imgmount is not a CD mount - Staging's -ide only applies to CD drives.
+        assert!(out.contains("imgmount c game/i100_203.img\n"), "hdd imgmount untouched: {}", out);
+    }
+
+    /// 6 eXoWin3x configs already carry the flag in DOSBox-X's argument form
+    /// (`-ide 2m` = secondary master); Staging's flag takes no argument.
+    #[test]
+    fn ide_translate_normalizes_dosbox_x_slot_argument() {
+        let conf = "[ide, secondary]\nenable=true\n[autoexec]\n\
+             imgmount d \"game/cd/A Title (Pub).ISO\" -t iso -fs iso -ide 2m\nboot -l c\n";
+        let out = translate_ide_for_staging(conf);
+        assert!(
+            out.contains("imgmount d \"game/cd/A Title (Pub).ISO\" -t iso -fs iso -ide\n"),
+            "slot argument must be dropped: {}", out
+        );
+        assert!(!out.contains("-ide 2m"), "DOSBox-X form must not survive: {}", out);
+    }
+
+    /// Configs without an [ide] section keep their imgmounts as authored -
+    /// 483 non-IDE Win3x games mount .cue sheets that work fine without a
+    /// controller, and forcing one on them changes tested behavior.
+    #[test]
+    fn ide_translate_leaves_non_ide_configs_alone() {
+        let conf = "[dosbox]\nmemsize=32\n[autoexec]\n\
+             imgmount d game/cd/cd.cue -t cdrom\nwin runexit GAME\n";
+        assert_eq!(translate_ide_for_staging(conf), conf);
+        // Commented-out [ide] documentation (the TheCHAOS pattern) is not a
+        // request for a controller either.
+        let commented = "[dosbox]\n# [ide, primary] docs only\n[autoexec]\n\
+             imgmount d game/cd/cd.cue -t cdrom\n";
+        assert_eq!(translate_ide_for_staging(commented), commented);
+    }
+
+    /// The line holds an absolute REWRITTEN host path when this runs - `-ide`
+    /// inside a path segment must not read as "flag already present", or a
+    /// data dir like /mnt/games-ide/ silently disables the translation.
+    #[test]
+    fn ide_translate_ignores_ide_inside_paths() {
+        let conf = "[ide, primary]\nenable=true\n[autoexec]\n\
+             imgmount d /mnt/games-ide/eXoWin3x/T-IDE.iso -t iso\nboot -l c\n";
+        let out = translate_ide_for_staging(conf);
+        assert!(
+            out.contains("imgmount d /mnt/games-ide/eXoWin3x/T-IDE.iso -t iso -ide\n"),
+            "flag must still be appended: {}", out
+        );
+        // Doubled space between -t and its value is still a CD mount.
+        let spaced = "[ide, primary]\nenable=true\n[autoexec]\n\
+             imgmount d game/cd.cue -t  cdrom\n";
+        assert!(
+            translate_ide_for_staging(spaced).contains("-t  cdrom -ide\n"),
+            "double-spaced -t value must still translate"
+        );
+    }
+
+    /// The three-step conf probe launch_game and game_printing_unavailable
+    /// share: own collection root, main eXoDOS root, lang-scoped alternates -
+    /// in that order. eXoWin3x is the collection whose root actually differs
+    /// from the main one (inner_folder "eXoWin3x"); the eXoDOS-family packs
+    /// all share the data_dir/eXoDOS tree.
+    #[test]
+    fn resolve_game_conf_probe_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let rel = "eXo/eXoWin3x/!win3x/GeoGeo/dosbox.conf";
+        let main_root = tmp.path().join("eXoDOS");
+        let win3x_root = tmp.path().join("eXoWin3x");
+
+        // Nothing on disk: no result.
+        assert!(resolve_game_conf(&data_dir, "eXoWin3x", rel).is_none());
+
+        // Conf only in the main tree: found via the fallback, but the returned
+        // root stays the game's own collection root so mounts resolve there.
+        let main_conf = main_root.join(rel);
+        fs::create_dir_all(main_conf.parent().unwrap()).unwrap();
+        fs::write(&main_conf, "[autoexec]\n").unwrap();
+        let (conf, root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
+        assert_eq!(conf, main_conf);
+        assert_eq!(root, win3x_root);
+
+        // Own-collection conf wins once it exists.
+        let own_conf = win3x_root.join(rel);
+        fs::create_dir_all(own_conf.parent().unwrap()).unwrap();
+        fs::write(&own_conf, "[autoexec]\n").unwrap();
+        let (conf, root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
+        assert_eq!(conf, own_conf);
+        assert_eq!(root, win3x_root);
+
+        // Lang-scoped alternate (LP rows): conf only under a language subdir
+        // of the shared eXoDOS tree.
+        let lang_conf = main_root.join("eXo/eXoDOS/!dos/!german/DasAmt/dosbox.conf");
+        fs::create_dir_all(lang_conf.parent().unwrap()).unwrap();
+        fs::write(&lang_conf, "[autoexec]\n").unwrap();
+        let (conf, root) =
+            resolve_game_conf(&data_dir, "eXoDOS_GLP", "eXo/eXoDOS/!dos/DasAmt/dosbox.conf")
+                .unwrap();
+        assert_eq!(conf, lang_conf);
+        assert_eq!(root, main_root);
+    }
+
+    // ── conf_requests_printer ───────────────────────────────────────────────
+
+    #[test]
+    fn printer_detection_matches_enabled_not_documentation() {
+        // The 13 eXoDOS printer titles set both keys.
+        assert!(conf_requests_printer("[parallel]\nparallel1=printer\n[printer]\nprinter=true\nprintoutput=printer\n"));
+        // TheCHAOS (eXoWin3x) has the whole option documentation as comments
+        // but disables the port - must NOT match.
+        assert!(!conf_requests_printer(
+            "[parallel]\nparallel1=disabled\nparallel2=disabled\n\
+             # parallel1: parallel1-3 -- set type of device connected to lpt port.\n\
+             #               printer (virtual dot-matrix printer, see [printer] section)\n"
+        ));
     }
 
     #[test]
