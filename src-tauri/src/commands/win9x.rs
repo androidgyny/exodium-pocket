@@ -473,6 +473,93 @@ fn unwrap_single_dir_zip_mounts(conf: &str, exo_dir: &Path) -> String {
         .join("\n")
 }
 
+/// Can this process capture raw packets? DOSBox-X's `pcap` backend bridges
+/// the guest NIC onto a real interface, which is what eXo's remote-multiplayer
+/// titles need: they dial a PPTP tunnel to eXo's IPX server, and PPTP rides on
+/// GRE, a protocol user-mode NAT cannot carry.
+///
+/// Windows gets this for free (the pack's setup installs npcap). On macOS the
+/// `/dev/bpf*` nodes are root-only unless Wireshark's ChmodBPF helper is
+/// installed; on Linux it takes CAP_NET_RAW. Both are one-time, user-side
+/// decisions we must not make for them - so we detect and adapt instead.
+#[cfg(unix)]
+fn can_capture_packets() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        (0..4).any(|i| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(format!("/dev/bpf{i}"))
+                .is_ok()
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // AF_PACKET/SOCK_RAW is exactly the privilege libpcap needs.
+        // SAFETY: plain syscall; the fd is closed immediately.
+        unsafe {
+            let fd = libc::socket(libc::AF_PACKET, libc::SOCK_RAW, 0);
+            if fd < 0 {
+                return false;
+            }
+            libc::close(fd);
+            true
+        }
+    }
+}
+
+/// The host interface to bridge onto, i.e. the one carrying the default route.
+/// eXo's confs name a Windows adapter (`realnic = Rea…`), which means nothing
+/// here, so pcap needs an explicit local answer.
+#[cfg(unix)]
+fn default_interface() -> Option<String> {
+    let (prog, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("route", &["-n", "get", "default"])
+    } else {
+        ("ip", &["-o", "route", "get", "1.1.1.1"])
+    };
+    let out = Command::new(prog).args(args).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if cfg!(target_os = "macos") {
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix("interface:"))
+            .map(|s| s.trim().to_string())
+    } else {
+        let mut parts = text.split_whitespace();
+        while let Some(word) = parts.next() {
+            if word == "dev" {
+                return parts.next().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+}
+
+/// Network-backend fragment appended to every DOSBox-X launch.
+///
+/// Windows keeps eXo's authored `pcap` setup verbatim. Elsewhere we bridge
+/// with pcap when the host allows raw capture (then remote multiplayer works
+/// as eXo intended) and otherwise fall back to slirp: user-mode NAT that
+/// carries plain TCP/UDP, loads without a permission prompt, and above all
+/// does not greet the player with an in-guest network error at boot.
+fn ne2000_override() -> String {
+    #[cfg(unix)]
+    {
+        if can_capture_packets() {
+            if let Some(nic) = default_interface() {
+                log::info!("Win9x networking: bridging the guest NIC onto {nic} (pcap)");
+                return format!("[ne2000]\nbackend = pcap\n[ethernet, pcap]\nrealnic = {nic}\n");
+            }
+        }
+        "[ne2000]\nbackend = slirp\n".to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        String::new()
+    }
+}
+
 pub(crate) async fn launch_win9x_game(
     app: &AppHandle,
     game: Game,
@@ -663,13 +750,11 @@ fn launch_dosbox_x(
     //   image partly cut off; 1024x768 fits every common display.
     // - output opengl: the base conf's ttf/outputswitch combo is not
     //   user-resizable; opengl windows scale by dragging.
-    // - ne2000 backend: eXo configures pcap for its Windows/npcap setup;
-    //   pcap needs elevated BPF access on macOS/Linux and fails with an
-    //   in-guest error dialog. slirp (user-mode NAT) loads silently and
-    //   covers the solo path - LAN multiplayer is out of scope.
+    // - ne2000 backend: see `ne2000_override`.
     let mut frag = format!(
-        "[sdl]\nfullscreen = {}\nwindowresolution = 1024x768\noutput = opengl\n[ne2000]\nbackend = slirp\n",
-        fullscreen
+        "[sdl]\nfullscreen = {}\nwindowresolution = 1024x768\noutput = opengl\n{}",
+        fullscreen,
+        ne2000_override()
     );
     if let Some(custom) = per_game_config.get("custom_conf") {
         let trimmed = custom.trim();

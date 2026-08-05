@@ -678,6 +678,17 @@ therefore extracts such a zip once and mounts its inner directory, so the
 layout matches the shortcut again. Zips with files at the root are left
 verbatim (test: `wrapped_zip_mounts_its_inner_directory`).
 
+**Remote multiplayer needs raw packet capture, and that is the one real OS
+difference.** 395 titles carry eXo's "Remote Multiplayer" tag; they dial a
+PPTP tunnel to eXo's IPX server from inside the guest. PPTP rides on GRE, so
+user-mode NAT (`slirp`) cannot carry it - only DOSBox-X's `pcap` backend,
+which bridges the guest NIC onto a real interface, can. Windows gets that for
+free (the pack's setup installs npcap); macOS needs Wireshark's ChmodBPF
+helper for `/dev/bpf*`, Linux needs CAP_NET_RAW. `ne2000_override` therefore
+probes for the privilege at launch and picks `pcap` (with the default route's
+interface as `realnic`, since eXo's conf names a Windows adapter) when it is
+there, `slirp` otherwise. Windows keeps eXo's authored conf untouched.
+
 **Window scaling is fixed-size.** DOSBox-X 2025.02.01 renders the guest at a
 fixed size and CROPS when the window is dragged smaller - reproduced on macOS
 with `opengl`, `openglpp` and `surface` (upstream issue #3661). `surface` at
@@ -689,9 +700,7 @@ fits every common display.
 **Still open**: 86Box end-to-end run (28+1 games - ROM discovery via `-P`
 with a non-adjacent exe is the open question); full in-app flow (download →
 install → launch through Exodium itself); NetHost/NetJoin multiplayer menus
-out of scope (solo play.cfg only; the pack's `[ne2000] backend = pcap` needs
-elevated BPF access off Windows, so we force `slirp` - user-mode NAT carries
-IPX/TCP but not the PPTP tunnels eXo's remote-multiplayer titles dial);
+out of scope (solo play.cfg only);
 `posters-eXoWin9x-v1.tar.gz` (38.9 MB, sha256 in manifest) is built in
 `thumbnails/` but content-v5 is NOT published yet - per §10 it must go up
 BEFORE any app release referencing it.
