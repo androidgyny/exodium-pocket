@@ -659,12 +659,38 @@ makevhd.exe. Catalogue gate: 664 rows (2 multi-entry titles beyond the 662
 count), 0 NULL shortcodes, 664/664 torrent indices, 664/664 variants,
 662/662 covers + Tier-0 previews.
 
+**`MOUNT` cannot reach a booted guest - 132 games are decoration.** eXo's
+confs mount a host ZIP holding the game exe (`MOUNT e "…CC32.zip"`) and then
+`BOOT -l c`. A DOSBox virtual drive is a DOS-level construct; once the guest
+OS boots it talks to hardware directly and the drive is gone, so the desktop
+shortcut ("E:\CCHECK11.EXE") dies with "drive or network connection is
+unavailable". Verified: the game VHD holds only the shortcut, no executable.
+This affects **132 of 664** confs (all of them `MOUNT <zip>` + `BOOT`, none
+with a CD fallback) and is inherent to the pack, not to our launcher.
+The fix that works (measured): build an ISO from the zip's contents -
+stripping a single top-level directory so the exe lands at the ISO root - and
+`IMGMOUNT <letter> <iso> -t iso -ide 2m`, which IS real hardware and survives
+the boot as E:. Not implemented yet: it needs a small ISO9660 writer (no
+external tool is available on all three platforms, and DOSBox-X's own
+`IMGMAKE` prompts interactively).
+
+**Window scaling is fixed-size.** DOSBox-X 2025.02.01 renders the guest at a
+fixed size and CROPS when the window is dragged smaller - reproduced on macOS
+with `opengl`, `openglpp` and `surface` (upstream issue #3661). `surface` at
+least centres the whole screen instead of cropping. We therefore ship the
+menu (no `-nomenu`, unlike eXo's bats) so users can reach Video → output /
+fullscreen at runtime, and default to `windowresolution = 1024x768`, which
+fits every common display.
+
 **Still open**: 86Box end-to-end run (28+1 games - ROM discovery via `-P`
 with a non-adjacent exe is the open question); full in-app flow (download →
 install → launch through Exodium itself); NetHost/NetJoin multiplayer menus
-out of scope (solo play.cfg only); `posters-eXoWin9x-v1.tar.gz` (38.9 MB,
-sha256 in manifest) is built in `thumbnails/` but content-v5 is NOT published
-yet - per §10 it must go up BEFORE any app release referencing it.
+out of scope (solo play.cfg only; the pack's `[ne2000] backend = pcap` needs
+elevated BPF access off Windows, so we force `slirp` - user-mode NAT carries
+IPX/TCP but not the PPTP tunnels eXo's remote-multiplayer titles dial);
+`posters-eXoWin9x-v1.tar.gz` (38.9 MB, sha256 in manifest) is built in
+`thumbnails/` but content-v5 is NOT published yet - per §10 it must go up
+BEFORE any app release referencing it.
 
 ## Conventions
 

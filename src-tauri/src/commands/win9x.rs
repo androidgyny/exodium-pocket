@@ -595,7 +595,14 @@ fn launch_dosbox_x(
     std::fs::write(&frag_path, &frag).map_err(|e| format!("Failed to write override conf: {e}"))?;
     cmd.arg("-conf").arg(&frag_path);
 
-    cmd.arg("-nomenu");
+    // eXo's bats pass -nomenu; we deliberately keep the menu. DOSBox-X
+    // 2025.02.01 renders the guest at a FIXED size and crops when the window
+    // is dragged smaller (measured on macOS with opengl, surface and
+    // openglpp alike - upstream issue #3661), so the Video menu is the only
+    // runtime escape hatch: fullscreen scales correctly, and the output mode
+    // can be switched to `surface`, which centres the whole guest screen
+    // instead of cropping it. On macOS the menu lives in the global menu bar
+    // and costs no window space.
     if cfg!(windows) {
         cmd.arg("-noconsole");
     }
