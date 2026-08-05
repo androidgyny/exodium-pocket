@@ -628,6 +628,8 @@ pub fn run() {
             commands::win9x::win9x_engine_available,
             commands::win9x::win9x_network_status,
             commands::win9x::enable_win9x_network,
+            commands::win9x::win9x_needs_network_prompt,
+            commands::win9x::dismiss_win9x_network_prompt,
             list_content_packs,
             install_content_pack,
             uninstall_content_pack,

@@ -533,30 +533,26 @@ function App() {
                             so the row says what it costs before asking. */}
                         <Show when={netStatus()}>
                           {(st) => (
-                            <div class="setting-row setting-row--stacked">
-                              <span class="setting-label">
-                                Windows 9x multiplayer
-                                <Show when={st().enabled}>
-                                  <span class="setting-badge">on</span>
+                            <div class="setting-row">
+                              <span class="setting-label">Windows 9x multiplayer</span>
+                              <span class="setting-hint">
+                                <Show when={!st().enabled} fallback="Enabled.">
+                                  Needs packet access, like Wireshark.
                                 </Show>
                               </span>
-                              <div class="setting-hint">{st().detail}</div>
-                              <Show when={st().can_enable}>
-                                <div class="setting-hint">
-                                  Enabling asks your system for permission and lets any program
-                                  you run read network traffic - the same access Wireshark uses.
-                                </div>
+                              <Show when={st().can_enable} fallback={
+                                <Show when={st().manual_hint} fallback={<span class="setting-badge">on</span>}>
+                                  <code class="setting-code">{st().manual_hint}</code>
+                                </Show>
+                              }>
                                 <Button
                                   variant="small"
                                   loading={enablingNet()}
-                                  loadingLabel="Waiting for your system…"
+                                  loadingLabel="Waiting…"
                                   onClick={handleEnableWin9xNetwork}
                                 >
-                                  Enable multiplayer…
+                                  Enable…
                                 </Button>
-                              </Show>
-                              <Show when={st().manual_hint}>
-                                <code class="setting-code">{st().manual_hint}</code>
                               </Show>
                             </div>
                           )}

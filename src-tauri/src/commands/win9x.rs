@@ -599,6 +599,79 @@ pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
     }
 }
 
+/// Should launching this game offer to turn multiplayer on first?
+///
+/// True only when all four hold: it is a Win9x game, its conf boots one of
+/// eXo's network parent images (`W98-C-Net`/`-Net2`, 67 titles - the others
+/// have no online mode to enable), the host cannot capture packets yet, and
+/// the user has not already answered for good. The prompt belongs on Play
+/// rather than in Settings because that is where the missing feature is about
+/// to be noticed.
+#[tauri::command]
+pub async fn win9x_needs_network_prompt(
+    db_state: State<'_, super::DbState>,
+    id: i64,
+) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let _ = (&db_state, id);
+        return Ok(false);
+    }
+    #[cfg(not(windows))]
+    {
+        if can_capture_packets() {
+            return Ok(false);
+        }
+        let (game, data_dir, asked) = {
+            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+            let game = crate::db::queries::fetch_game_by_id(&conn, id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("Game {id} not found"))?;
+            let data_dir = crate::db::queries::get_config(&conn, "data_dir")
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            let asked = crate::db::queries::get_config(&conn, "win9x_network_prompt")
+                .map_err(|e| e.to_string())?;
+            (game, data_dir, asked)
+        };
+        if asked.as_deref() == Some("off") {
+            return Ok(false);
+        }
+        let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
+        if !crate::commands::setup::collection_def(source).is_some_and(|c| c.year_subdirs) {
+            return Ok(false);
+        }
+        let Some(app_path) = game.application_path.as_deref() else {
+            return Ok(false);
+        };
+        let inner = crate::commands::setup::collection_def(source)
+            .map(|c| c.inner_folder)
+            .unwrap_or("eXoWin9x");
+        let torrent_root = super::games::collection_data_dir(&data_dir, source).join(inner);
+        let Some(conf_dir) = app_path
+            .replace('\\', "/")
+            .rsplit_once('/')
+            .map(|(dir, _)| torrent_root.join(dir))
+        else {
+            return Ok(false);
+        };
+        let Some(play_conf) = find_file_ci(&conf_dir, "play.conf") else {
+            return Ok(false);
+        };
+        let conf = std::fs::read_to_string(&play_conf).unwrap_or_default();
+        Ok(conf.to_ascii_lowercase().contains("w98-c-net"))
+    }
+}
+
+/// Remember that the user does not want to be asked about multiplayer again.
+#[tauri::command]
+pub async fn dismiss_win9x_network_prompt(
+    db_state: State<'_, super::DbState>,
+) -> Result<(), String> {
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::queries::set_config(&conn, "win9x_network_prompt", "off").map_err(|e| e.to_string())
+}
+
 /// Ask the operating system - not the user's shell - for the permission that
 /// bridging needs. macOS shows its own authentication sheet; Linux shows
 /// PolicyKit's. Nothing here runs without that dialog being accepted.

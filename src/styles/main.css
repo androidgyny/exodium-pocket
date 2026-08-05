@@ -4112,3 +4112,14 @@ body {
   border-radius: 16px;
   filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.5));
 }
+
+/* Opt-out checkbox inside a confirm dialog ("Don't ask again"). */
+.dialog-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}

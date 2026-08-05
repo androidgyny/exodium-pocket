@@ -197,6 +197,16 @@ export async function win9xNetworkStatus(): Promise<Win9xNetworkStatus> {
   return invoke("win9x_network_status");
 }
 
+/** Whether launching this game should offer to enable multiplayer first. */
+export async function win9xNeedsNetworkPrompt(id: number): Promise<boolean> {
+  return invoke("win9x_needs_network_prompt", { id });
+}
+
+/** Remembers that the multiplayer question should not be asked again. */
+export async function dismissWin9xNetworkPrompt(): Promise<void> {
+  return invoke("dismiss_win9x_network_prompt");
+}
+
 /** Asks the OS for packet-capture permission via its own auth dialog. */
 export async function enableWin9xNetwork(): Promise<Win9xNetworkStatus> {
   return invoke("enable_win9x_network");

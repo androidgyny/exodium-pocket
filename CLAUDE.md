@@ -690,8 +690,12 @@ probes for the privilege at launch and picks `pcap` (with the default route's
 interface as `realnic`, since eXo's conf names a Windows adapter) when it is
 there, `slirp` otherwise. Windows keeps eXo's authored conf untouched.
 
-Settings → Network offers to obtain it (`enable_win9x_network`), always
-through the OS's own consent dialog - macOS installs a ChmodBPF-style
+The offer is made where the feature is missed: pressing Play on one of those
+67 titles asks once (`win9x_needs_network_prompt` gates on network parent +
+missing permission + no stored answer), with a "Don't ask again" that sticks
+for BOTH answers. Declining still launches - single player is the normal case.
+Settings → Network carries the same switch for later
+(`enable_win9x_network`), always through the OS's own consent dialog - macOS installs a ChmodBPF-style
 LaunchDaemon via `osascript … with administrator privileges`, Linux runs
 `pkexec setcap cap_net_raw+ep` on the resolved DOSBox-X binary. Two
 deliberate choices: the daemon **chowns** `/dev/bpf*` to the current user

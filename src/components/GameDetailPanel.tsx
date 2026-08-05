@@ -6,9 +6,10 @@ import { Lightbox } from "./Lightbox";
 import { ManualViewer } from "./ManualViewer";
 import { GameSettingsDialog } from "./GameSettingsDialog";
 import { PlaylistMenu } from "./PlaylistMenu";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame, gamePrintingUnavailable, win9xEngineAvailable } from "../api/tauri";
+import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xNeedsNetworkPrompt, dismissWin9xNetworkPrompt, enableWin9xNetwork } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
@@ -67,6 +68,11 @@ export function GameDetailPanel(props: Props) {
     return v === "x98" || v === "pcbox" || (v?.startsWith("86box") ?? false);
   };
   const [win9xEngineMissing, setWin9xEngineMissing] = createSignal(false);
+  /** Game id awaiting the multiplayer question, or null. */
+  const [netPromptFor, setNetPromptFor] = createSignal<number | null>(null);
+  /** Set by the dialog's confirm path, which starts its own launch - so the
+   *  close handler (which fires for both answers) does not start a second. */
+  let netPromptAccepted = false;
   /** Which emulator will actually run the selected game, from its variant -
    *  the same mapping the backend's engine dispatch uses. */
   const emulatorName = () => {
@@ -401,8 +407,21 @@ export function GameDetailPanel(props: Props) {
     if (metadata()?.manual_path) { setManualOpen(true); }
   };
 
+  /** Online-capable Win9x games ask once, on the first Play, whether to turn
+   *  multiplayer on - the backend answers false for every game and every
+   *  state where the question would be noise. */
   const handleLaunch = async (gameId: number) => {
     if (launchingId() != null) { return; }
+    try {
+      if (await win9xNeedsNetworkPrompt(gameId)) {
+        setNetPromptFor(gameId);
+        return;
+      }
+    } catch { /* older backend - just launch */ }
+    void startLaunch(gameId);
+  };
+
+  const startLaunch = async (gameId: number) => {
     setLaunchingId(gameId);
     setStatus("");
     const startedAt = Date.now();
@@ -953,6 +972,42 @@ export function GameDetailPanel(props: Props) {
           gameTitle={selected()?.title ?? props.game?.title ?? ""}
           open={settingsOpen()}
           onClose={() => setSettingsOpen(false)}
+        />
+        {/* Asked on Play, not in Settings: this is the moment the online mode
+            would otherwise silently be missing. Either answer can be
+            remembered - a question that only goes quiet when accepted is not
+            a question. */}
+        <ConfirmDialog
+          open={netPromptFor() != null}
+          title="Play online?"
+          message="This game can connect to eXo's multiplayer server. That needs one-time permission from your system to bridge the emulated network card; you can also play on your own without it."
+          confirmLabel="Set up now…"
+          cancelLabel="Play offline"
+          rememberLabel="Don't ask again"
+          onConfirm={async (remember) => {
+            netPromptAccepted = true;
+            const gameId = netPromptFor();
+            if (remember) { void dismissWin9xNetworkPrompt(); }
+            try {
+              await enableWin9xNetwork();
+            } catch (e) {
+              const msg = String(e);
+              if (!msg.includes("cancelled")) {
+                showToast("Could not enable multiplayer", "error", { detail: msg });
+              }
+            }
+            // Launch either way: a dismissed system dialog means "not now",
+            // not "don't play".
+            if (gameId != null) { void startLaunch(gameId); }
+          }}
+          onClose={(remember) => {
+            const gameId = netPromptFor();
+            setNetPromptFor(null);
+            if (remember) { void dismissWin9xNetworkPrompt(); }
+            // onClose also fires after onConfirm, which launches on its own.
+            if (gameId != null && !netPromptAccepted) { void startLaunch(gameId); }
+            netPromptAccepted = false;
+          }}
         />
         <Show when={playlistMenu() && props.game?.id != null}>
           <PlaylistMenu
