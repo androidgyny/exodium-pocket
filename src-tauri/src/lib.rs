@@ -160,19 +160,16 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
 /// (often $HOME) would expose far more than the app serves.
 pub fn allow_asset_dir(app: &tauri::AppHandle, data_dir: &Path) {
     use tauri::Manager;
-    // Served subtrees: per-collection game media (<data>/<inner_folder>, one
-    // per distinct inner folder - eXoWin3x/eXoWin9x have their own trees) and
-    // installed content packs (posters, metadata screenshots) in <data>/content.
-    // Regression note: v0.7.x granted only eXoDOS/, silently blocking every
-    // content-pack image ("asset protocol not configured to allow" spam).
-    let mut subs: Vec<&str> = commands::setup::COLLECTION_MAP
-        .iter()
-        .map(|c| c.inner_folder)
-        .collect();
-    subs.push("content");
-    subs.dedup();
-    for sub in subs {
-        let dir = data_dir.join(sub);
+    // Two served subtrees: every collection's media in the single game root
+    // and installed content packs (posters, metadata screenshots) in
+    // <data>/content. Regression note: v0.7.x granted only eXoDOS/, silently
+    // blocking every content-pack image ("asset protocol not configured to
+    // allow" spam).
+    let dirs = [
+        commands::setup::game_root(&data_dir.to_string_lossy()),
+        data_dir.join("content"),
+    ];
+    for dir in dirs {
         if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
             log::warn!("Failed to extend asset scope to {}: {}", dir.display(), e);
         }
@@ -624,6 +621,9 @@ pub fn run() {
             get_section_keys,
             validate_exodos_dir,
             scan_installed_games,
+            commands::setup::pending_layout_migration,
+            commands::setup::migrate_layout,
+            commands::setup::skip_layout_migration,
             commands::win9x::get_win9x_support_status,
             commands::win9x::win9x_engine_available,
             commands::win9x::win9x_network_status,

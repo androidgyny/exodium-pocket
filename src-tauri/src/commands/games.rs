@@ -33,13 +33,6 @@ pub fn collection_data_dir(data_dir: &str, _source: &str) -> PathBuf {
     std::path::Path::new(data_dir).to_path_buf()
 }
 
-/// Get the inner folder name for a collection (the folder the torrent creates).
-fn collection_inner_folder(source: &str) -> &'static str {
-    crate::commands::setup::collection_def(source)
-        .map(|c| c.inner_folder)
-        .unwrap_or("eXoDOS")
-}
-
 /// Get the game directory prefix for a collection (path from inner_folder to game dirs).
 fn collection_game_prefix(source: &str) -> &'static str {
     crate::commands::setup::collection_def(source)
@@ -985,8 +978,7 @@ pub async fn uninstall_game(
         .to_string();
 
     let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
-    let inner_folder = collection_inner_folder(source);
-    let torrent_root = collection_data_dir(&data_dir, source).join(inner_folder);
+    let torrent_root = crate::commands::setup::game_root(&data_dir);
 
     // Get game name from bat filename for ZIP deletion
     let game_name = game.application_path.as_deref()
@@ -1274,8 +1266,8 @@ fn resolve_game_conf(
     // Normalize Windows backslashes - DB paths mix separators.
     let rel = dosbox_conf.replace('\\', "/");
     let main_root =
-        collection_data_dir(data_dir, "eXoDOS").join(collection_inner_folder("eXoDOS"));
-    let torrent_root = collection_data_dir(data_dir, source).join(collection_inner_folder(source));
+        crate::commands::setup::game_root(data_dir);
+    let torrent_root = main_root.clone();
 
     let direct = torrent_root.join(&rel);
     if direct.exists() {
@@ -1375,7 +1367,7 @@ pub async fn game_printing_unavailable(
         return Ok(false);
     }
     let main_root =
-        collection_data_dir(&data_dir, "eXoDOS").join(collection_inner_folder("eXoDOS"));
+        crate::commands::setup::game_root(&data_dir);
     Ok(resolve_ece_binary(dosbox_variant.as_deref(), &main_root).is_none())
 }
 
@@ -2835,15 +2827,12 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
             msg
         })?;
 
-    // Each collection has its own subdirectory (except eXoDOS which is at the root).
-    // Layout:  <data_dir>/<inner_folder>/           - for eXoDOS
-    //          <data_dir>/<col_id>/<inner_folder>/  - for sub-collections
+    // Every collection lives in ONE root (eXo's own merged layout), so the
+    // main tree and this game's tree are the same directory.
     let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
-    let main_inner = collection_inner_folder("eXoDOS");
-    let src_inner = collection_inner_folder(source);
     let src_game_prefix = collection_game_prefix(source);
-    let main_torrent_root = collection_data_dir(&data_dir, "eXoDOS").join(main_inner);
-    let torrent_root = collection_data_dir(&data_dir, source).join(src_inner);
+    let main_torrent_root = crate::commands::setup::game_root(&data_dir);
+    let torrent_root = main_torrent_root.clone();
     // working_dir is the first path component of game_prefix (e.g. "eXo")
     let working_dir_name = src_game_prefix.split('/').next().unwrap_or("eXo");
     let options_conf = main_torrent_root.join("eXo/emulators/dosbox/options.conf");
@@ -3488,45 +3477,37 @@ mod tests {
     /// share: own collection root, main eXoDOS root, lang-scoped alternates -
     /// in that order. eXoWin3x is the collection whose root actually differs
     /// from the main one (inner_folder "eXoWin3x"); the eXoDOS-family packs
-    /// all share the data_dir/eXoDOS tree.
+    /// Every collection resolves inside the SINGLE root - eXo's merged
+    /// layout, where `eXo/eXoDOS`, `eXo/eXoWin3x` and `eXo/eXoWin9x` are
+    /// siblings. The old per-torrent roots (and the cross-root fallback that
+    /// went with them) are gone.
     #[test]
     fn resolve_game_conf_probe_order() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_string_lossy().into_owned();
         let rel = "eXo/eXoWin3x/!win3x/GeoGeo/dosbox.conf";
-        let main_root = tmp.path().join("eXoDOS");
-        let win3x_root = tmp.path().join("eXoWin3x");
+        let root = tmp.path().join(crate::commands::setup::DEFAULT_ROOT_FOLDER);
 
         // Nothing on disk: no result.
         assert!(resolve_game_conf(&data_dir, "eXoWin3x", rel).is_none());
 
-        // Conf only in the main tree: found via the fallback, but the returned
-        // root stays the game's own collection root so mounts resolve there.
-        let main_conf = main_root.join(rel);
-        fs::create_dir_all(main_conf.parent().unwrap()).unwrap();
-        fs::write(&main_conf, "[autoexec]\n").unwrap();
-        let (conf, root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
-        assert_eq!(conf, main_conf);
-        assert_eq!(root, win3x_root);
+        // A Win3x conf is found in the one root, not in a tree of its own.
+        let conf_path = root.join(rel);
+        fs::create_dir_all(conf_path.parent().unwrap()).unwrap();
+        fs::write(&conf_path, "[autoexec]\n").unwrap();
+        let (conf, found_root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
+        assert_eq!(conf, conf_path);
+        assert_eq!(found_root, root);
 
-        // Own-collection conf wins once it exists.
-        let own_conf = win3x_root.join(rel);
-        fs::create_dir_all(own_conf.parent().unwrap()).unwrap();
-        fs::write(&own_conf, "[autoexec]\n").unwrap();
-        let (conf, root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
-        assert_eq!(conf, own_conf);
-        assert_eq!(root, win3x_root);
-
-        // Lang-scoped alternate (LP rows): conf only under a language subdir
-        // of the shared eXoDOS tree.
-        let lang_conf = main_root.join("eXo/eXoDOS/!dos/!german/DasAmt/dosbox.conf");
+        // Lang-scoped alternate (LP rows): conf only under a language subdir.
+        let lang_conf = root.join("eXo/eXoDOS/!dos/!german/DasAmt/dosbox.conf");
         fs::create_dir_all(lang_conf.parent().unwrap()).unwrap();
         fs::write(&lang_conf, "[autoexec]\n").unwrap();
-        let (conf, root) =
+        let (conf, found_root) =
             resolve_game_conf(&data_dir, "eXoDOS_GLP", "eXo/eXoDOS/!dos/DasAmt/dosbox.conf")
                 .unwrap();
         assert_eq!(conf, lang_conf);
-        assert_eq!(root, main_root);
+        assert_eq!(found_root, root);
     }
 
     // ── conf_requests_printer ───────────────────────────────────────────────

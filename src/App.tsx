@@ -12,6 +12,7 @@ import { WelcomeModal } from "./components/WelcomeModal";
 import { SeedingConsentDialog } from "./components/SeedingConsentDialog";
 import { ActivityBadge } from "./components/ActivityBadge";
 import { needsSeedingConsent, seedingOn, applySeeding, loadSeeding } from "./stores/seeding";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ContentPackSettings } from "./components/ContentPackSettings";
 import { WindowFrame } from "./components/WindowFrame";
 import { ToastContainer } from "./components/ToastContainer";
@@ -24,6 +25,10 @@ import {
   setRateLimits,
   scanInstalledGames,
   openLogFolder,
+  pendingLayoutMigration,
+  migrateLayout,
+  skipLayoutMigration,
+  type LayoutMigration,
   win9xNetworkStatus,
   enableWin9xNetwork,
   disableWin9xNetwork,
@@ -48,6 +53,9 @@ function App() {
   const [showWelcomeModal, setShowWelcomeModal] = createSignal(false);
   const [showSeedingConsent, setShowSeedingConsent] = createSignal(false);
   const [dataDir, setDataDir] = createSignal("");
+  /** Old per-collection folders waiting to be merged into the single root. */
+  const [layoutMigration, setLayoutMigration] = createSignal<LayoutMigration | null>(null);
+  const [migrating, setMigrating] = createSignal(false);
   const [resetError, setResetError] = createSignal("");
   const [logOpenError, setLogOpenError] = createSignal("");
   const [resetting, setResetting] = createSignal(false);
@@ -108,6 +116,9 @@ function App() {
         // The backend refuses to run when the data dir holds no collection at
         // all, so an unmounted drive cannot wipe the library.
         scanInstalledGames().then(() => fetchGames()).catch(() => {});
+        // Installs made before the single-root layout keep their games in
+        // per-collection folders. Ask before touching them - it moves files.
+        pendingLayoutMigration().then(setLayoutMigration).catch(() => {});
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
           checkForAppUpdate();
@@ -719,6 +730,35 @@ function App() {
           onClose={() => setShowWelcomeModal(false)}
         />
 
+        {/* Layout merge: eXo ships one folder per pack but expects them
+            merged, and Exodium now writes that same single tree. Older
+            installs are asked once, because this moves their game files. */}
+        <ConfirmDialog
+          open={layoutMigration() != null}
+          title="Tidy up the game folder?"
+          message={`Windows games currently sit in separate folders (${layoutMigration()?.folders.join(", ")}). Exodium can move them next to your DOS games, which is the layout eXo's own setup produces. Files are moved, not copied, and nothing is re-downloaded.`}
+          confirmLabel={migrating() ? "Moving…" : "Move them"}
+          cancelLabel="Leave as is"
+          rememberLabel="Don't ask again"
+          onConfirm={async () => {
+            setMigrating(true);
+            try {
+              await migrateLayout();
+              await initDownloadManager();
+              await scanInstalledGames().catch(() => 0);
+              fetchGames();
+              showToast("Game folders merged", "success");
+            } catch (e) {
+              showToast("Could not merge the folders", "error", { detail: String(e) });
+            } finally {
+              setMigrating(false);
+            }
+          }}
+          onClose={(remember) => {
+            setLayoutMigration(null);
+            if (remember) { void skipLayoutMigration(); }
+          }}
+        />
         <SeedingConsentDialog
           open={showSeedingConsent()}
           onDecide={handleSeedingConsent}

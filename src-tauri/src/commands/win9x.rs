@@ -710,10 +710,7 @@ pub async fn win9x_multiplayer_info(
     let Some(app_path) = game.application_path.as_deref() else {
         return Ok(not_multiplayer);
     };
-    let inner = crate::commands::setup::collection_def(source)
-        .map(|c| c.inner_folder)
-        .unwrap_or("eXoWin9x");
-    let torrent_root = super::games::collection_data_dir(&data_dir, source).join(inner);
+    let torrent_root = crate::commands::setup::game_root(&data_dir);
     let Some(conf_dir) = app_path
         .replace('\\', "/")
         .rsplit_once('/')
@@ -1060,10 +1057,7 @@ pub(crate) async fn launch_win9x_game(
     per_game_config: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
     let source = game.torrent_source.as_deref().unwrap_or("eXoWin9x");
-    let inner = crate::commands::setup::collection_def(source)
-        .map(|c| c.inner_folder)
-        .unwrap_or("eXoWin9x");
-    let torrent_root = super::games::collection_data_dir(data_dir, source).join(inner);
+    let torrent_root = crate::commands::setup::game_root(data_dir);
     let variant = game.dosbox_variant.clone().unwrap_or_else(|| "x98".to_string());
     let variant = variant.as_str();
 
@@ -1424,10 +1418,7 @@ pub async fn win9x_engine_available(
             .map_err(|e| e.to_string())?
             .unwrap_or_default()
     };
-    let inner = crate::commands::setup::collection_def("eXoWin9x")
-        .map(|c| c.inner_folder)
-        .unwrap_or("eXoWin9x");
-    let torrent_root = super::games::collection_data_dir(&data_dir, "eXoWin9x").join(inner);
+    let torrent_root = crate::commands::setup::game_root(&data_dir);
     Ok(resolve_dosbox_x(&app, &torrent_root).is_some())
 }
 

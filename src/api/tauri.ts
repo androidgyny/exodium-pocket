@@ -185,6 +185,27 @@ export async function win9xEngineAvailable(variant: string | null): Promise<bool
   return invoke("win9x_engine_available", { variant });
 }
 
+export interface LayoutMigration {
+  /** Folder names still holding games, relative to the data dir. */
+  folders: string[];
+  bytes: number;
+}
+
+/** Old per-collection folders that should be merged into the single root. */
+export async function pendingLayoutMigration(): Promise<LayoutMigration | null> {
+  return invoke("pending_layout_migration");
+}
+
+/** Moves them; returns how many entries were relocated. */
+export async function migrateLayout(): Promise<number> {
+  return invoke("migrate_layout");
+}
+
+/** Remembers that the user declined the merge. */
+export async function skipLayoutMigration(): Promise<void> {
+  return invoke("skip_layout_migration");
+}
+
 export interface Win9xNetworkStatus {
   enabled: boolean;
   can_enable: boolean;

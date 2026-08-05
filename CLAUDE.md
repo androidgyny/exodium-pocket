@@ -103,7 +103,35 @@ eXoWin3x is its own). Pairing on the shortcode alone merges the two into a
 single card and drops one game from the catalogue - there is a regression test
 (`same_shortcode_in_another_pack_is_not_a_variant`).
 
-### 2. Each torrent collection gets its own data subdirectory
+### 2. ONE root for every collection (eXo's merged layout)
+
+All packs share a single directory inside the data dir - the same shape eXo's
+own `Setup`/`eXoMerge` bats produce:
+
+```
+<data_dir>/<root_folder>/     ← "eXoDOS" by default; the imported folder's own
+                                 name after an import
+  eXo/eXoDOS/…                ← eXoDOS + the three language packs (overlay)
+  eXo/eXoWin3x/…
+  eXo/eXoWin9x/…  eXo/emulators/…  eXo/util/…
+  Content/
+```
+
+`setup::game_root(data_dir)` is the single source of truth (`root_folder`
+config key, cached in a `RwLock` and loaded by `get_setup_status` /
+`init_download_manager`); `DownloadManager::torrent_root()` returns it too, so
+librqbit writes every torrent into the same tree. Do NOT reintroduce
+`<data>/<torrent name>/` roots: that was librqbit's naming leaking into the
+layout, it made an imported eXo installation look half-empty (only the DOS
+pack was found, inviting a second 282 GB download), and it is not a layout any
+eXo tool creates.
+
+Installs made before this keep their old folders until the user agrees to move
+them: `pending_layout_migration` finds strays, `migrate_layout` renames them
+into the root (never overwriting - test `merging_keeps_existing_files`), and
+`layout_migration = skip` remembers a "no".
+
+### 2b. History: per-collection subdirectories
 All four eXoDOS torrents have the same internal name `eXoDOS`, which causes librqbit file-path collisions when run against a shared directory. The layout is:
 
 ```

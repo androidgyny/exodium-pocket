@@ -21,6 +21,13 @@
   cannot carry the emulated card's own hardware address (DOSBox-X documents the
   same limit for its pcap backend). Affected games now say so up front instead
   of failing with a Windows dial-up error. Single player is unaffected.
+- **One folder for all collections.** Windows 3.x and 9x games used to land in
+  their own folders next to eXoDOS; they now share the single tree eXo's own
+  setup produces (`eXo/eXoDOS`, `eXo/eXoWin3x`, `eXo/eXoWin9x` side by side).
+  Existing installs are asked once whether to move their files there - it is a
+  move, not a copy, and nothing is downloaded again. Importing an existing eXo
+  installation also stops missing the Windows packs, which previously looked
+  uninstalled and invited a second download of the same games.
 - **Moving the game folder now just works.** Exodium re-checks what is on
   disk at every start (and right after you point it at a different folder,
   reporting how many games it found), so install states follow the files
