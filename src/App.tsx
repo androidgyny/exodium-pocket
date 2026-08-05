@@ -56,6 +56,25 @@ function App() {
   /** Old per-collection folders waiting to be merged into the single root. */
   const [layoutMigration, setLayoutMigration] = createSignal<LayoutMigration | null>(null);
   const [migrating, setMigrating] = createSignal(false);
+  /** Set once the user declined, so Settings can still offer the merge. */
+  const [layoutSkipped, setLayoutSkipped] = createSignal(false);
+
+  const runLayoutMigration = async () => {
+    setMigrating(true);
+    try {
+      await migrateLayout();
+      await initDownloadManager();
+      await scanInstalledGames().catch(() => 0);
+      fetchGames();
+      setLayoutMigration(null);
+      setLayoutSkipped(false);
+      showToast("Game folders merged", "success");
+    } catch (e) {
+      showToast("Could not merge the folders", "error", { detail: String(e) });
+    } finally {
+      setMigrating(false);
+    }
+  };
   const [resetError, setResetError] = createSignal("");
   const [logOpenError, setLogOpenError] = createSignal("");
   const [resetting, setResetting] = createSignal(false);
@@ -118,7 +137,9 @@ function App() {
         scanInstalledGames().then(() => fetchGames()).catch(() => {});
         // Installs made before the single-root layout keep their games in
         // per-collection folders. Ask before touching them - it moves files.
-        pendingLayoutMigration().then(setLayoutMigration).catch(() => {});
+        pendingLayoutMigration()
+          .then((m) => { setLayoutMigration(m); if (m) { setLayoutSkipped(!m.prompt); } })
+          .catch(() => {});
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
           checkForAppUpdate();
@@ -271,6 +292,11 @@ function App() {
     loadGameDefaults();
     loadNetworkMode();
     loadWin9xNetwork();
+    // Reports the folders even after a "not now", so the row below can offer
+    // the merge later.
+    pendingLayoutMigration()
+      .then((m) => setLayoutSkipped(m != null))
+      .catch(() => {});
     setLogOpenError("");
     setModeError("");
     setSettingsTab("general");
@@ -517,6 +543,24 @@ function App() {
                         <Show when={scanResult()}>
                           <div class="setting-hint" style="margin-top:4px">{scanResult()}</div>
                         </Show>
+                        {/* The way back after declining the merge at startup -
+                            without it, "not now" would mean "never". */}
+                        <Show when={layoutSkipped()}>
+                          <div class="setting-row">
+                            <span class="setting-label">Folder layout</span>
+                            <span class="setting-hint">
+                              Windows games sit in separate folders; eXo keeps them in one
+                            </span>
+                            <Button
+                              variant="small"
+                              loading={migrating()}
+                              loadingLabel="Moving…"
+                              onClick={() => void runLayoutMigration()}
+                            >
+                              Merge
+                            </Button>
+                          </div>
+                        </Show>
                       </section>
 
                       <section class="settings-section">
@@ -734,29 +778,18 @@ function App() {
             merged, and Exodium now writes that same single tree. Older
             installs are asked once, because this moves their game files. */}
         <ConfirmDialog
-          open={layoutMigration() != null}
+          open={layoutMigration()?.prompt === true}
           title="Tidy up the game folder?"
-          message={`Windows games currently sit in separate folders (${layoutMigration()?.folders.join(", ")}). Exodium can move them next to your DOS games, which is the layout eXo's own setup produces. Files are moved, not copied, and nothing is re-downloaded.`}
+          message={`Windows games currently sit in separate folders (${layoutMigration()?.folders.join(", ")}). Exodium can move them next to your DOS games, which is the layout eXo's own setup produces. Files are moved, not copied, and nothing is re-downloaded - you can also do this later under Settings → Library.`}
           confirmLabel={migrating() ? "Moving…" : "Move them"}
-          cancelLabel="Leave as is"
-          rememberLabel="Don't ask again"
-          onConfirm={async () => {
-            setMigrating(true);
-            try {
-              await migrateLayout();
-              await initDownloadManager();
-              await scanInstalledGames().catch(() => 0);
-              fetchGames();
-              showToast("Game folders merged", "success");
-            } catch (e) {
-              showToast("Could not merge the folders", "error", { detail: String(e) });
-            } finally {
-              setMigrating(false);
-            }
-          }}
-          onClose={(remember) => {
+          cancelLabel="Not now"
+          onConfirm={() => void runLayoutMigration()}
+          onClose={(declined) => {
             setLayoutMigration(null);
-            if (remember) { void skipLayoutMigration(); }
+            // Declining is remembered rather than asked again at every start:
+            // the merge stays available under Settings → Library, so nothing
+            // is lost by taking the offer away here.
+            if (declined) { void skipLayoutMigration().then(() => setLayoutSkipped(true)); }
           }}
         />
         <SeedingConsentDialog

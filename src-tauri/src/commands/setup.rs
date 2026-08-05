@@ -139,6 +139,10 @@ pub struct LayoutMigration {
     pub folders: Vec<String>,
     /// Rough size, so the dialog can say what is about to be moved.
     pub bytes: u64,
+    /// Whether to raise the question on startup. False once declined - the
+    /// merge itself stays reachable from Settings, which is why the folders
+    /// are still reported rather than hidden.
+    pub prompt: bool,
 }
 
 /// Folders that look like a torrent root of their own (they contain `eXo/`)
@@ -169,9 +173,6 @@ pub async fn pending_layout_migration(
         )
     };
     let Some(data_dir) = data_dir else { return Ok(None) };
-    if asked.as_deref() == Some("skip") {
-        return Ok(None);
-    }
     let strays = stray_roots(&data_dir);
     if strays.is_empty() {
         return Ok(None);
@@ -185,6 +186,7 @@ pub async fn pending_layout_migration(
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
             .collect(),
         bytes,
+        prompt: asked.as_deref() != Some("skip"),
     }))
 }
 

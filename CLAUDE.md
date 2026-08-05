@@ -128,7 +128,11 @@ eXo tool creates.
 
 Installs made before this keep their old folders until the user agrees to move
 them: `pending_layout_migration` finds strays, `migrate_layout` renames them
-into the root and `layout_migration = skip` remembers a "no".
+into the root. Declining writes `layout_migration = skip`, which only silences
+the STARTUP prompt - the command still reports the folders (`prompt: false`)
+so Settings → Library can offer the merge later. Hence no "don't ask again"
+checkbox: with the merge reachable from Settings, "Not now" can simply mean
+"not now, ask me nowhere else".
 
 The migration must LEAVE NOTHING BEHIND, because the prompt keys on "does a
 stray root still exist" - a merge that stops at the first name clash asks

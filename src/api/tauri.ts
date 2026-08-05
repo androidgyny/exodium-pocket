@@ -189,6 +189,8 @@ export interface LayoutMigration {
   /** Folder names still holding games, relative to the data dir. */
   folders: string[];
   bytes: number;
+  /** False once declined - Settings still offers the merge. */
+  prompt: boolean;
 }
 
 /** Old per-collection folders that should be merged into the single root. */
