@@ -659,20 +659,24 @@ makevhd.exe. Catalogue gate: 664 rows (2 multi-entry titles beyond the 662
 count), 0 NULL shortcodes, 664/664 torrent indices, 664/664 variants,
 662/662 covers + Tier-0 previews.
 
-**`MOUNT` cannot reach a booted guest - 132 games are decoration.** eXo's
-confs mount a host ZIP holding the game exe (`MOUNT e "…CC32.zip"`) and then
-`BOOT -l c`. A DOSBox virtual drive is a DOS-level construct; once the guest
-OS boots it talks to hardware directly and the drive is gone, so the desktop
-shortcut ("E:\CCHECK11.EXE") dies with "drive or network connection is
-unavailable". Verified: the game VHD holds only the shortcut, no executable.
-This affects **132 of 664** confs (all of them `MOUNT <zip>` + `BOOT`, none
-with a CD fallback) and is inherent to the pack, not to our launcher.
-The fix that works (measured): build an ISO from the zip's contents -
-stripping a single top-level directory so the exe lands at the ISO root - and
-`IMGMOUNT <letter> <iso> -t iso -ide 2m`, which IS real hardware and survives
-the boot as E:. Not implemented yet: it needs a small ISO9660 writer (no
-external tool is available on all three platforms, and DOSBox-X's own
-`IMGMAKE` prompts interactively).
+**`MOUNT` DOES reach a booted guest - via `convertdrivefat`.** 132 of 664
+confs put the game's executable in a host ZIP (`MOUNT e "…CC32.zip"`) and
+then `BOOT -l c`. That looks impossible - a DOSBox drive is a DOS-level
+construct - but DOSBox-X's `convertdrivefat` defaults to TRUE and converts
+every mounted host drive into an emulated FAT disk at boot. Measured in the
+launch log: `Converting drive E: to FAT... → HDD image mounted to drive no. 4
+(IDE Secondary Master)`, which Windows then lettered E: behind C: and D:.
+Do not "fix" this by rewriting the mounts.
+
+What DOES break is a zip that wraps its files in a directory: the guest then
+has `E:\CC32\CCHECK11.EXE` while the desktop shortcut (baked into the game
+VHD) points at `E:\CCHECK11.EXE`, and Windows answers "drive or network
+connection is unavailable". eXo's convention is files at the zip ROOT
+(verified against MpgDec20.zip); Chinese Checkers is a repackaging slip - the
+stale ISO beside it still holds the v1.0 exe at the root. `unwrap_single_dir_zip_mounts`
+therefore extracts such a zip once and mounts its inner directory, so the
+layout matches the shortcut again. Zips with files at the root are left
+verbatim (test: `wrapped_zip_mounts_its_inner_directory`).
 
 **Window scaling is fixed-size.** DOSBox-X 2025.02.01 renders the guest at a
 fixed size and CROPS when the window is dragged smaller - reproduced on macOS
