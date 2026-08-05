@@ -197,9 +197,15 @@ export async function win9xNetworkStatus(): Promise<Win9xNetworkStatus> {
   return invoke("win9x_network_status");
 }
 
-/** Whether launching this game should offer to enable multiplayer first. */
-export async function win9xNeedsNetworkPrompt(id: number): Promise<boolean> {
-  return invoke("win9x_needs_network_prompt", { id });
+export interface Win9xMultiplayerInfo {
+  multiplayer: boolean;
+  state: "ready" | "needs_permission" | "needs_wired" | "unsupported";
+  prompt: boolean;
+}
+
+/** What online play looks like for this game on this machine. */
+export async function win9xMultiplayerInfo(id: number): Promise<Win9xMultiplayerInfo> {
+  return invoke("win9x_multiplayer_info", { id });
 }
 
 /** Remembers that the multiplayer question should not be asked again. */

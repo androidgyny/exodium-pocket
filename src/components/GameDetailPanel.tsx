@@ -9,7 +9,8 @@ import { PlaylistMenu } from "./PlaylistMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xNeedsNetworkPrompt, dismissWin9xNetworkPrompt, enableWin9xNetwork } from "../api/tauri";
+import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xMultiplayerInfo, dismissWin9xNetworkPrompt, enableWin9xNetwork } from "../api/tauri";
+import type { Win9xMultiplayerInfo } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
@@ -68,6 +69,9 @@ export function GameDetailPanel(props: Props) {
     return v === "x98" || v === "pcbox" || (v?.startsWith("86box") ?? false);
   };
   const [win9xEngineMissing, setWin9xEngineMissing] = createSignal(false);
+  /** Online-play state of the open game: drives both the panel note and the
+   *  question on Play. Null until probed, so nothing flashes. */
+  const [mpInfo, setMpInfo] = createSignal<Win9xMultiplayerInfo | null>(null);
   /** Game id awaiting the multiplayer question, or null. */
   const [netPromptFor, setNetPromptFor] = createSignal<number | null>(null);
   /** Set by the dialog's confirm path, which starts its own launch - so the
@@ -216,11 +220,17 @@ export function GameDetailPanel(props: Props) {
         .catch(() => {});
     }
     setWin9xEngineMissing(false);
+    setMpInfo(null);
     if (isWin9x(g)) {
       const id = g.id;
       win9xEngineAvailable(g.dosbox_variant ?? null)
         .then((ok) => { if (props.game?.id === id) { setWin9xEngineMissing(!ok); } })
         .catch(() => {});
+      if (id != null) {
+        win9xMultiplayerInfo(id)
+          .then((info) => { if (props.game?.id === id) { setMpInfo(info); } })
+          .catch(() => {});
+      }
     }
     // Force a metadata refetch: the cache key below would otherwise match the
     // previous visit to this same game and leave the panel with the null
@@ -413,7 +423,9 @@ export function GameDetailPanel(props: Props) {
   const handleLaunch = async (gameId: number) => {
     if (launchingId() != null) { return; }
     try {
-      if (await win9xNeedsNetworkPrompt(gameId)) {
+      const info = await win9xMultiplayerInfo(gameId);
+      setMpInfo(info);
+      if (info.prompt) {
         setNetPromptFor(gameId);
         return;
       }
@@ -680,6 +692,22 @@ export function GameDetailPanel(props: Props) {
               <div class="game-detail-note">
                 This game needs PCBox, a Windows-only emulator Exodium does
                 not ship yet - launching it will fail for now.
+              </div>
+            </Show>
+            {/* Online-capable titles say up front why the in-game dial will
+                fail - the alternative is a Windows error dialog with no
+                explanation once the game is already running. */}
+            <Show when={mpInfo()?.multiplayer && mpInfo()?.state === "needs_wired"}>
+              <div class="game-detail-note">
+                This game can play online, but that needs a wired network connection:
+                over Wi-Fi the emulated network card cannot be bridged. Single player
+                works either way.
+              </div>
+            </Show>
+            <Show when={mpInfo()?.multiplayer && mpInfo()?.state === "needs_permission"}>
+              <div class="game-detail-note">
+                This game can play online once you allow it in Settings → Network.
+                Single player works either way.
               </div>
             </Show>
             <Show when={win9xEngineMissing() && props.game?.dosbox_variant !== "pcbox"}>

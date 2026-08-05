@@ -608,8 +608,8 @@ pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
             can_enable: !captures && wired && tool,
             detail: match (captures, wired) {
                 (true, true) => "Enabled.".into(),
-                (_, false) => "Needs a wired connection - over Wi-Fi the game would have to \
-                               share this machine's network address."
+                (_, false) => "Online play needs a wired connection - Wi-Fi cannot bridge \
+                               the emulated network card."
                     .into(),
                 (false, true) => "Needs packet access, like Wireshark.".into(),
             },
@@ -629,37 +629,39 @@ pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
     }
 }
 
-/// Should launching this game offer to turn multiplayer on first?
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Win9xMultiplayerInfo {
+    /// The game boots one of eXo's network parent images (67 titles).
+    pub multiplayer: bool,
+    /// "ready" | "needs_permission" | "needs_wired" | "unsupported"
+    pub state: String,
+    /// Whether Play should offer the one-time setup before launching.
+    pub prompt: bool,
+}
+
+/// What online play looks like for this game on this machine.
 ///
-/// True only when all four hold: it is a Win9x game, its conf boots one of
-/// eXo's network parent images (`W98-C-Net`/`-Net2`, 67 titles - the others
-/// have no online mode to enable), the host cannot capture packets yet, and
-/// the user has not already answered for good. The prompt belongs on Play
-/// rather than in Settings because that is where the missing feature is about
-/// to be noticed.
+/// The panel needs more than a yes/no: a title that cannot go online because
+/// the host is on Wi-Fi gets a note but no dialog (there is nothing to grant),
+/// while one that only lacks the permission gets the offer on Play. Silence in
+/// both cases is what leaves players wondering why the in-game dial fails.
 #[tauri::command]
-pub async fn win9x_needs_network_prompt(
+pub async fn win9x_multiplayer_info(
     db_state: State<'_, super::DbState>,
     id: i64,
-) -> Result<bool, String> {
+) -> Result<Win9xMultiplayerInfo, String> {
+    let not_multiplayer = Win9xMultiplayerInfo {
+        multiplayer: false,
+        state: "unsupported".into(),
+        prompt: false,
+    };
     #[cfg(windows)]
     {
         let _ = (&db_state, id);
-        return Ok(false);
+        return Ok(not_multiplayer);
     }
     #[cfg(not(windows))]
     {
-        // Nothing to offer when the bridge already works, or when it can
-        // never work on this link (Wi-Fi) - a password prompt that changes
-        // nothing is worse than no prompt at all.
-        // Nothing to offer when the bridge already works, or when this link
-        // cannot carry it at all - a password prompt that changes nothing is
-        // worse than no prompt.
-        if bridgeable_interface().is_some()
-            || !default_interface().is_some_and(|n| is_wired_interface(&n))
-        {
-            return Ok(false);
-        }
         let (game, data_dir, asked) = {
             let conn = db_state.0.lock().map_err(|e| e.to_string())?;
             let game = crate::db::queries::fetch_game_by_id(&conn, id)
@@ -672,15 +674,12 @@ pub async fn win9x_needs_network_prompt(
                 .map_err(|e| e.to_string())?;
             (game, data_dir, asked)
         };
-        if asked.as_deref() == Some("off") {
-            return Ok(false);
-        }
         let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
         if !crate::commands::setup::collection_def(source).is_some_and(|c| c.year_subdirs) {
-            return Ok(false);
+            return Ok(not_multiplayer);
         }
         let Some(app_path) = game.application_path.as_deref() else {
-            return Ok(false);
+            return Ok(not_multiplayer);
         };
         let inner = crate::commands::setup::collection_def(source)
             .map(|c| c.inner_folder)
@@ -691,13 +690,29 @@ pub async fn win9x_needs_network_prompt(
             .rsplit_once('/')
             .map(|(dir, _)| torrent_root.join(dir))
         else {
-            return Ok(false);
+            return Ok(not_multiplayer);
         };
         let Some(play_conf) = find_file_ci(&conf_dir, "play.conf") else {
-            return Ok(false);
+            return Ok(not_multiplayer);
         };
         let conf = std::fs::read_to_string(&play_conf).unwrap_or_default();
-        Ok(conf.to_ascii_lowercase().contains("w98-c-net"))
+        if !conf.to_ascii_lowercase().contains("w98-c-net") {
+            return Ok(not_multiplayer);
+        }
+
+        let wired = default_interface().is_some_and(|n| is_wired_interface(&n));
+        let state = if bridgeable_interface().is_some() {
+            "ready"
+        } else if wired {
+            "needs_permission"
+        } else {
+            "needs_wired"
+        };
+        Ok(Win9xMultiplayerInfo {
+            multiplayer: true,
+            prompt: state == "needs_permission" && asked.as_deref() != Some("off"),
+            state: state.into(),
+        })
     }
 }
 

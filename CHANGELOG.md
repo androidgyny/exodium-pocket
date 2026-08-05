@@ -13,6 +13,13 @@
   downloads and slower first starts than DOS games. On Linux, DOSBox-X is
   found via PATH or Flatpak (no official Linux builds exist); a handful of
   PCBox-tuned games stay unlaunchable for now.
+- **Windows 9x online play.** The 67 titles that dial eXo's community IPX
+  gateway can now do so on macOS and Linux: Exodium bridges the emulated
+  network card once you grant packet access, offered on the first Play of such
+  a game or in Settings → Network (and removable in the same place). This
+  needs a **wired** connection - over Wi-Fi the emulated card cannot be
+  bridged, and games say so instead of failing with a Windows dial-up error.
+  Single player is unaffected either way.
 - **Rescan finds every collection.** "Rescan installed games" now walks each
   collection's own tree (it was hardcoded to eXoDOS's and missed eXoWin3x
   installs), and in-app manuals/screenshots from Win3x/Win9x game folders are
