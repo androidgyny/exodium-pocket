@@ -604,20 +604,16 @@ pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
         #[cfg(not(target_os = "linux"))]
         let tool = true;
         Ok(Win9xNetworkStatus {
-            enabled: captures,
-            can_enable: !captures && tool,
+            enabled: captures && wired,
+            can_enable: !captures && wired && tool,
             detail: match (captures, wired) {
                 (true, true) => "Enabled.".into(),
-                // Over Wi-Fi the guest borrows this machine's network address
-                // (see bridgeable_interface); most routers are fine with it,
-                // some refuse a second lease for one address.
-                (true, false) => {
-                    "Enabled - over Wi-Fi the game shares this machine's network address."
-                        .into()
-                }
-                (false, _) => "Needs packet access, like Wireshark.".into(),
+                (_, false) => "Needs a wired connection - over Wi-Fi the game would have to \
+                               share this machine's network address."
+                    .into(),
+                (false, true) => "Needs packet access, like Wireshark.".into(),
             },
-            manual_hint: (!captures && !tool)
+            manual_hint: (!captures && wired && !tool)
                 .then(|| "sudo setcap cap_net_raw+ep $(which dosbox-x)".to_string()),
         })
     }
@@ -656,7 +652,12 @@ pub async fn win9x_needs_network_prompt(
         // Nothing to offer when the bridge already works, or when it can
         // never work on this link (Wi-Fi) - a password prompt that changes
         // nothing is worse than no prompt at all.
-        if bridgeable_interface().is_some() {
+        // Nothing to offer when the bridge already works, or when this link
+        // cannot carry it at all - a password prompt that changes nothing is
+        // worse than no prompt.
+        if bridgeable_interface().is_some()
+            || !default_interface().is_some_and(|n| is_wired_interface(&n))
+        {
             return Ok(false);
         }
         let (game, data_dir, asked) = {
@@ -943,49 +944,34 @@ async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The MAC currently in use on an interface - the live one, not the burned-in
-/// address (macOS randomises Wi-Fi MACs per network).
-#[cfg(unix)]
-fn interface_mac(name: &str) -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("ifconfig").arg(name).output().ok()?;
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("ether "))
-            .map(|m| m.trim().to_ascii_uppercase())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        std::fs::read_to_string(format!("/sys/class/net/{name}/address"))
-            .ok()
-            .map(|m| m.trim().to_ascii_uppercase())
-            .filter(|m| !m.is_empty())
-    }
-}
-
-/// The interface pcap can bridge onto, and the MAC the guest must use there.
+/// The interface pcap can bridge onto. Wired only - see below.
 ///
-/// Wired links carry any source address, so the guest keeps its own. Wi-Fi
-/// does not: a station is associated under exactly one address, and normal
-/// 3-address infrastructure frames have no field for a second one - the access
-/// point drops what the guest sends and never delivers the replies. Cloning
-/// the host's address into the emulated card removes the mismatch: frames
-/// leave and arrive under the address the AP already knows, while DHCP still
-/// gives the guest its own IP. Desktop hypervisors bridge over Wi-Fi the same
-/// way. Caveat worth keeping in the UI: a router that ties one lease to one
-/// address will hand out only one.
+/// Wired links carry any source address, so the guest keeps its own MAC and
+/// gets its own DHCP lease. Wi-Fi cannot be made to work, and the reason is
+/// worth recording because the obvious fix looks convincing until you capture
+/// the traffic:
+///
+/// A station is associated under exactly one address and normal 3-address
+/// frames have no field for a second one, so a guest with its own MAC gets
+/// nothing through. Cloning the host's MAC into the emulated card does fix
+/// that layer - but then the DHCP server, which keys leases on the MAC, hands
+/// the guest THE HOST'S OWN IP. Both stacks now answer for one address, and
+/// the host's kernel resets every connection the guest opens. Measured on
+/// macOS Wi-Fi, the guest's PPTP dial:
+///
+///   guest > server:1723  [S]     ; SYN from 10.200.1.217 (the host's IP)
+///   server > guest       [S.]    ; server answers
+///   10.200.1.217 > server [R]    ; the HOST's stack resets it
+///
+/// The remaining fix - a static guest IP outside the DHCP pool - lives inside
+/// eXo's Win9x image, not here. So on Wi-Fi we stay on slirp, which at least
+/// gives the guest working TCP/UDP.
 #[cfg(unix)]
-fn bridgeable_interface() -> Option<(String, Option<String>)> {
+fn bridgeable_interface() -> Option<String> {
     if !can_capture_packets() {
         return None;
     }
-    let nic = default_interface()?;
-    if is_wired_interface(&nic) {
-        Some((nic, None))
-    } else {
-        Some((nic.clone(), Some(interface_mac(&nic)?)))
-    }
+    default_interface().filter(|nic| is_wired_interface(nic))
 }
 
 /// Network-backend fragment appended to every DOSBox-X launch.
@@ -998,17 +984,9 @@ fn bridgeable_interface() -> Option<(String, Option<String>)> {
 fn ne2000_override() -> String {
     #[cfg(unix)]
     {
-        if let Some((nic, clone_mac)) = bridgeable_interface() {
-            log::info!(
-                "Win9x networking: bridging the guest NIC onto {nic} (pcap{})",
-                if clone_mac.is_some() { ", MAC cloned for Wi-Fi" } else { "" }
-            );
-            let mac_line = clone_mac
-                .map(|m| format!("macaddr = {m}\n"))
-                .unwrap_or_default();
-            return format!(
-                "[ne2000]\nbackend = pcap\n{mac_line}[ethernet, pcap]\nrealnic = {nic}\n"
-            );
+        if let Some(nic) = bridgeable_interface() {
+            log::info!("Win9x networking: bridging the guest NIC onto {nic} (pcap)");
+            return format!("[ne2000]\nbackend = pcap\n[ethernet, pcap]\nrealnic = {nic}\n");
         }
         "[ne2000]\nbackend = slirp\n".to_string()
     }

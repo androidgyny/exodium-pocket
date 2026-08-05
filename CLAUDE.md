@@ -690,17 +690,17 @@ helper for `/dev/bpf*`, Linux needs CAP_NET_RAW. `ne2000_override` therefore
 probes at launch and picks `pcap` with the default route's interface as
 `realnic` (eXo's conf names a Windows adapter, which means nothing here).
 
-**Wi-Fi needs the guest to borrow the host's MAC.** An 802.11 station is
-associated under exactly one address and normal 3-address frames have no field
-for a second one, so a bridged guest with its own MAC gets nothing through:
-measured, Windows 98 then reports "Error 752, the host name you dialed could
-not be found" - strictly worse than the NAT it replaced. `bridgeable_interface`
-therefore returns a MAC to clone on wireless links, which `ne2000_override`
-writes as `[ne2000] macaddr`; frames then leave and arrive under the address
-the AP already knows while DHCP still gives the guest its own IP. Desktop
-hypervisors bridge over Wi-Fi the same way. It is not free: a router that ties
-one lease to one address hands out only one, which is why the Settings row
-says the game shares this machine's network address. Windows keeps eXo's authored conf untouched.
+**Wi-Fi cannot be bridged, and the obvious fix is a trap.** A station is
+associated under one address and 3-address frames have no field for a second,
+so a guest with its own MAC gets nothing through. Cloning the host's MAC fixes
+that layer - and then the DHCP server, which keys leases on the MAC, hands the
+guest THE HOST'S OWN IP; both stacks answer for one address and the host's
+kernel resets every connection the guest opens. Captured on macOS Wi-Fi during
+a PPTP dial: guest SYN from 10.200.1.217 → server SYN-ACK → `Flags [R]` from
+the host. The remaining fix (a static guest IP outside the DHCP pool) lives in
+eXo's Win9x image, not here, so Wi-Fi stays on `slirp` and the UI says a wired
+connection is needed. Do not re-attempt MAC cloning without solving the lease
+collision first.
 
 The offer is made where the feature is missed: pressing Play on one of those
 67 titles asks once (`win9x_needs_network_prompt` gates on network parent +
