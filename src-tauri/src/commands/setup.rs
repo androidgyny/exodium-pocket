@@ -2397,9 +2397,14 @@ fn scan_installed_games_with_db(
             .map(|c| c.id.to_string())
             .collect();
         let lp_placeholders = lp_sources.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        // Candidates are every not-yet-matched non-LP game. Filtering on
+        // in_library too made the scan NON-IDEMPOTENT: the first run sets it,
+        // so the second run no longer considered those rows and reported a
+        // smaller number - and any game that exists only as a ZIP quietly lost
+        // its installed flag (observed: 112, then 67, then 63).
         let zip_query = format!(
             "SELECT id, title, application_path FROM games \
-             WHERE installed = 0 AND in_library = 0 \
+             WHERE installed = 0 \
              AND torrent_source NOT IN ({})",
             lp_placeholders
         );
@@ -2746,6 +2751,57 @@ mod metadata_scan_tests {
         assert!(meta.images.is_empty());
         assert!(meta.thumbnails.is_empty());
         let _ = std::fs::remove_dir_all(&data);
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    /// Rescanning must answer the same thing every time. It did not: the ZIP
+    /// pass skipped rows whose in_library flag the previous run had set, so
+    /// repeated scans reported ever fewer games (112, 67, 63) and ZIP-only
+    /// installs silently lost their installed flag.
+    #[test]
+    fn rescanning_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("exodium_scan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // One extracted game and one that only exists as a ZIP.
+        let base = dir.join("eXoDOS/eXo/eXoDOS");
+        std::fs::create_dir_all(base.join("SQ5")).unwrap();
+        std::fs::write(base.join("Capitalism (1995).zip"), vec![0u8; 2048]).unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        conn.execute_batch(
+            r"INSERT INTO games (title, platform, language, shortcode, torrent_source,
+                                 application_path, installed, in_library)
+              VALUES ('Space Quest V', 'MS-DOS', 'EN', 'SQ5', 'eXoDOS',
+                      'eXo\eXoDOS\!dos\SQ5\Space Quest V.bat', 0, 0),
+                     ('Capitalism', 'MS-DOS', 'EN', 'captlsm', 'eXoDOS',
+                      'eXo\eXoDOS\!dos\captlsm\Capitalism (1995).bat', 0, 0)",
+        )
+        .unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let data_dir = dir.to_string_lossy().to_string();
+
+        let first = scan_installed_games_with_db(&db, &data_dir).unwrap();
+        let second = scan_installed_games_with_db(&db, &data_dir).unwrap();
+        assert_eq!(first, 2, "one extracted dir + one ZIP");
+        assert_eq!(second, first, "a second scan must not shrink");
+
+        // And the ZIP-only game keeps its flag rather than losing it.
+        let installed: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT installed FROM games WHERE shortcode = 'captlsm'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(installed, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

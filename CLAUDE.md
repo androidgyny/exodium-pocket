@@ -673,10 +673,19 @@ has `E:\CC32\CCHECK11.EXE` while the desktop shortcut (baked into the game
 VHD) points at `E:\CCHECK11.EXE`, and Windows answers "drive or network
 connection is unavailable". eXo's convention is files at the zip ROOT
 (verified against MpgDec20.zip); Chinese Checkers is a repackaging slip - the
-stale ISO beside it still holds the v1.0 exe at the root. `unwrap_single_dir_zip_mounts`
-therefore extracts such a zip once and mounts its inner directory, so the
-layout matches the shortcut again. Zips with files at the root are left
-verbatim (test: `wrapped_zip_mounts_its_inner_directory`).
+stale ISO beside it still holds the v1.0 exe at the root. `extract_zip_mounts` therefore
+extracts EVERY mounted zip once, next to itself, and mounts the directory
+(its inner one when the zip wraps everything in a single folder, so the
+layout matches the shortcut again).
+
+Extracting all of them, not just the wrapped ones, is the fix for a second
+bug: **a zip mount crashes DOSBox-X on exit.** The FAT conversion's teardown
+reaches into PhysFS after it is gone - `PHYSFS_close <- physfsFile::Close <-
+fatFromDOSDrive::~fatFromDOSDrive <- FreeBIOSDiskList`, SIGSEGV, in three of
+three macOS crash reports. That aborts the teardown loop, so disks later in
+the list - the game's own save VHD among them - never close cleanly. A
+directory mount has no PhysFS layer (test:
+`zip_mounts_become_directory_mounts`).
 
 **Remote multiplayer needs raw packet capture, and that is the one real OS
 difference.** 67 Win9x confs boot a network-enabled parent image
