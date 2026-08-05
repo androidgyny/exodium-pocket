@@ -633,10 +633,43 @@ pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
 pub struct Win9xMultiplayerInfo {
     /// The game boots one of eXo's network parent images (67 titles).
     pub multiplayer: bool,
-    /// "ready" | "needs_permission" | "needs_wired" | "unsupported"
+    /// "ready" | "needs_permission" | "needs_wired" | "unknown"
     pub state: String,
     /// Whether Play should offer the one-time setup before launching.
     pub prompt: bool,
+}
+
+/// Is the default route on a wireless link? None when it cannot be told.
+///
+/// Bridging over Wi-Fi is a DOSBox-X limitation, not a platform one: its own
+/// documentation notes that the pcap backend "needs very low level access to
+/// your real network adapter, which can be problematic with wireless
+/// adapters", and recommends slirp there. Windows with npcap is no exception,
+/// so the check runs on all three platforms.
+fn on_wireless_link() -> Option<bool> {
+    #[cfg(unix)]
+    {
+        default_interface().map(|n| !is_wired_interface(&n))
+    }
+    #[cfg(windows)]
+    {
+        let out = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$i=(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | \
+                 Select-Object -First 1).InterfaceIndex; \
+                 (Get-NetAdapter -InterfaceIndex $i).PhysicalMediaType",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let media = String::from_utf8_lossy(&out.stdout).trim().to_ascii_lowercase();
+        if media.is_empty() {
+            return None;
+        }
+        Some(media.contains("802.11") || media.contains("wireless"))
+    }
 }
 
 /// What online play looks like for this game on this machine.
@@ -652,68 +685,72 @@ pub async fn win9x_multiplayer_info(
 ) -> Result<Win9xMultiplayerInfo, String> {
     let not_multiplayer = Win9xMultiplayerInfo {
         multiplayer: false,
-        state: "unsupported".into(),
+        state: "unknown".into(),
         prompt: false,
     };
-    #[cfg(windows)]
-    {
-        let _ = (&db_state, id);
+    let (game, data_dir, asked) = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let game = crate::db::queries::fetch_game_by_id(&conn, id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Game {id} not found"))?;
+        let data_dir = crate::db::queries::get_config(&conn, "data_dir")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let asked = crate::db::queries::get_config(&conn, "win9x_network_prompt")
+            .map_err(|e| e.to_string())?;
+        (game, data_dir, asked)
+    };
+    let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
+    if !crate::commands::setup::collection_def(source).is_some_and(|c| c.year_subdirs) {
         return Ok(not_multiplayer);
     }
-    #[cfg(not(windows))]
-    {
-        let (game, data_dir, asked) = {
-            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-            let game = crate::db::queries::fetch_game_by_id(&conn, id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("Game {id} not found"))?;
-            let data_dir = crate::db::queries::get_config(&conn, "data_dir")
-                .map_err(|e| e.to_string())?
-                .unwrap_or_default();
-            let asked = crate::db::queries::get_config(&conn, "win9x_network_prompt")
-                .map_err(|e| e.to_string())?;
-            (game, data_dir, asked)
-        };
-        let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
-        if !crate::commands::setup::collection_def(source).is_some_and(|c| c.year_subdirs) {
-            return Ok(not_multiplayer);
-        }
-        let Some(app_path) = game.application_path.as_deref() else {
-            return Ok(not_multiplayer);
-        };
-        let inner = crate::commands::setup::collection_def(source)
-            .map(|c| c.inner_folder)
-            .unwrap_or("eXoWin9x");
-        let torrent_root = super::games::collection_data_dir(&data_dir, source).join(inner);
-        let Some(conf_dir) = app_path
-            .replace('\\', "/")
-            .rsplit_once('/')
-            .map(|(dir, _)| torrent_root.join(dir))
-        else {
-            return Ok(not_multiplayer);
-        };
-        let Some(play_conf) = find_file_ci(&conf_dir, "play.conf") else {
-            return Ok(not_multiplayer);
-        };
-        let conf = std::fs::read_to_string(&play_conf).unwrap_or_default();
-        if !conf.to_ascii_lowercase().contains("w98-c-net") {
-            return Ok(not_multiplayer);
-        }
-
-        let wired = default_interface().is_some_and(|n| is_wired_interface(&n));
-        let state = if bridgeable_interface().is_some() {
-            "ready"
-        } else if wired {
-            "needs_permission"
-        } else {
-            "needs_wired"
-        };
-        Ok(Win9xMultiplayerInfo {
-            multiplayer: true,
-            prompt: state == "needs_permission" && asked.as_deref() != Some("off"),
-            state: state.into(),
-        })
+    let Some(app_path) = game.application_path.as_deref() else {
+        return Ok(not_multiplayer);
+    };
+    let inner = crate::commands::setup::collection_def(source)
+        .map(|c| c.inner_folder)
+        .unwrap_or("eXoWin9x");
+    let torrent_root = super::games::collection_data_dir(&data_dir, source).join(inner);
+    let Some(conf_dir) = app_path
+        .replace('\\', "/")
+        .rsplit_once('/')
+        .map(|(dir, _)| torrent_root.join(dir))
+    else {
+        return Ok(not_multiplayer);
+    };
+    let Some(play_conf) = find_file_ci(&conf_dir, "play.conf") else {
+        return Ok(not_multiplayer);
+    };
+    let conf = std::fs::read_to_string(&play_conf).unwrap_or_default();
+    if !conf.to_ascii_lowercase().contains("w98-c-net") {
+        return Ok(not_multiplayer);
     }
+
+    // Wireless is the one answer that holds on every platform. Everything
+    // else differs: Unix has to be granted raw capture, Windows gets it from
+    // the npcap that ships with eXo's support files.
+    let state = match on_wireless_link() {
+        Some(true) => "needs_wired",
+        _ => {
+            #[cfg(unix)]
+            {
+                if bridgeable_interface().is_some() {
+                    "ready"
+                } else {
+                    "needs_permission"
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                "ready"
+            }
+        }
+    };
+    Ok(Win9xMultiplayerInfo {
+        multiplayer: true,
+        prompt: state == "needs_permission" && asked.as_deref() != Some("off"),
+        state: state.into(),
+    })
 }
 
 /// Remember that the user does not want to be asked about multiplayer again.

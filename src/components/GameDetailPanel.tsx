@@ -699,9 +699,10 @@ export function GameDetailPanel(props: Props) {
                 explanation once the game is already running. */}
             <Show when={mpInfo()?.multiplayer && mpInfo()?.state === "needs_wired"}>
               <div class="game-detail-note">
-                This game can play online, but that needs a wired network connection:
-                over Wi-Fi the emulated network card cannot be bridged. Single player
-                works either way.
+                This game can play online, but that needs a wired network connection.
+                A Wi-Fi link cannot carry the emulated network card's own hardware
+                address - that is a limit of Wi-Fi itself, on every system. Single
+                player works either way.
               </div>
             </Show>
             <Show when={mpInfo()?.multiplayer && mpInfo()?.state === "needs_permission"}>

@@ -690,7 +690,14 @@ helper for `/dev/bpf*`, Linux needs CAP_NET_RAW. `ne2000_override` therefore
 probes at launch and picks `pcap` with the default route's interface as
 `realnic` (eXo's conf names a Windows adapter, which means nothing here).
 
-**Wi-Fi cannot be bridged, and the obvious fix is a trap.** A station is
+**Wi-Fi cannot be bridged on ANY platform** - DOSBox-X's own wiki says the
+pcap backend "needs very low level access to your real network adapter, which
+can be problematic with wireless adapters" and points at slirp instead, so
+Windows/npcap is no exception. `on_wireless_link` therefore runs everywhere
+(Unix via the interface check, Windows via `Get-NetAdapter`), and the detail
+panel's note is about the medium, not the OS.
+
+**The obvious Wi-Fi fix is a trap.** A station is
 associated under one address and 3-address frames have no field for a second,
 so a guest with its own MAC gets nothing through. Cloning the host's MAC fixes
 that layer - and then the DHCP server, which keys leases on the MAC, hands the
