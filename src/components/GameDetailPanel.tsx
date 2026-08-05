@@ -87,6 +87,51 @@ export function GameDetailPanel(props: Props) {
     if (v?.startsWith("ece")) { return isWindows ? "DOSBox ECE" : "DOSBox Staging"; }
     return "DOSBox Staging";
   };
+  /** The single note shown above the action bar, most actionable first:
+   *  a launch that cannot work, then a feature that is missing, then what
+   *  merely differs from a DOS game. Null when there is nothing to say. */
+  const noteText = (): string | null => {
+    const v = selected()?.dosbox_variant ?? props.game?.dosbox_variant;
+    if (v === "pcbox") {
+      return "This game needs PCBox, a Windows-only emulator Exodium does not ship yet - "
+        + "launching it will fail for now.";
+    }
+    if (win9xEngineMissing()) {
+      return v === "x98"
+        ? "The emulator this game needs was not found on this system. Install DOSBox-X via "
+          + "your package manager or Flatpak (com.dosbox_x.DOSBox-X)."
+        : "The emulator this game needs was not found on this system. Re-run the installer "
+          + "or place 86Box on your PATH.";
+    }
+    if (printingUnavailable()) {
+      return "This game can print to a (virtual) printer, which the bundled DOSBox Staging "
+        + "does not support yet. The game runs, but its printing features are unavailable "
+        + "for now.";
+    }
+    const mp = mpInfo();
+    if (mp?.multiplayer && mp.state === "needs_wired") {
+      return "This game can play online, but that needs a wired network connection - a Wi-Fi "
+        + "link cannot carry the emulated network card's own hardware address, on any system. "
+        + "Single player works either way.";
+    }
+    if (mp?.multiplayer && mp.state === "needs_permission") {
+      return "This game can play online once you allow it in Settings → Network. Single "
+        + "player works either way.";
+    }
+    if (!isWindows && v?.startsWith("ece")) {
+      return "This game is tuned for DOSBox ECE, which only exists on Windows. Exodium runs "
+        + "it with DOSBox Staging - the experience may vary slightly.";
+    }
+    if (v === "x98") {
+      return "This game boots Windows 98 inside DOSBox-X - the first start takes noticeably "
+        + "longer than a DOS game.";
+    }
+    if (v?.startsWith("86box")) {
+      return "This game runs under 86Box, a full PC hardware emulator - startup is slower and "
+        + "the system requirements are higher than for other games.";
+    }
+    return null;
+  };
   let heroVideoRef: HTMLVideoElement | undefined;
   const openPlaylistMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -647,77 +692,11 @@ export function GameDetailPanel(props: Props) {
               <div class="game-detail-status">{currentStatus()}</div>
             </Show>
 
-            {/* Emulator note: ECE-tuned games run under DOSBox Staging on
-                non-Windows platforms (ECE ships Windows binaries only). */}
-            <Show when={!isWindows && props.game?.dosbox_variant?.startsWith("ece")}>
-              <div class="game-detail-note">
-                This game is tuned for DOSBox ECE, which only exists on
-                Windows. Exodium runs it with DOSBox Staging - the experience
-                may vary slightly.
-              </div>
-            </Show>
-
-            {/* Printer note: 13 eXoDOS titles print as their core feature.
-                DOSBox Staging has no printer emulation yet (it is in the
-                works upstream). The backend answers with launch_game's own
-                engine selection, so a Windows install with the ECE build on
-                disk gets no note - printing works there. */}
-            <Show when={printingUnavailable()}>
-              <div class="game-detail-note">
-                This game can print to a (virtual) printer, which the bundled
-                DOSBox Staging does not support yet. The game runs, but its
-                printing features are unavailable for now - printer support is
-                expected in a future DOSBox Staging update.
-              </div>
-            </Show>
-
-            {/* Win9x engine notes: these games boot a real Windows 95/98
-                inside DOSBox-X (x98) or 86Box (86box*) - a different world
-                from the instant DOS launches. pcbox needs a Windows-only
-                fork Exodium does not ship. */}
-            <Show when={isWin9x(props.game) && props.game?.dosbox_variant === "x98"}>
-              <div class="game-detail-note">
-                This game boots Windows 98 inside DOSBox-X - the first start
-                takes noticeably longer than a DOS game.
-              </div>
-            </Show>
-            <Show when={props.game?.dosbox_variant?.startsWith("86box")}>
-              <div class="game-detail-note">
-                This game runs under 86Box, a full PC hardware emulator -
-                startup is slower and the system requirements are higher than
-                for other games.
-              </div>
-            </Show>
-            <Show when={props.game?.dosbox_variant === "pcbox"}>
-              <div class="game-detail-note">
-                This game needs PCBox, a Windows-only emulator Exodium does
-                not ship yet - launching it will fail for now.
-              </div>
-            </Show>
-            {/* Online-capable titles say up front why the in-game dial will
-                fail - the alternative is a Windows error dialog with no
-                explanation once the game is already running. */}
-            <Show when={mpInfo()?.multiplayer && mpInfo()?.state === "needs_wired"}>
-              <div class="game-detail-note">
-                This game can play online, but that needs a wired network connection.
-                A Wi-Fi link cannot carry the emulated network card's own hardware
-                address - that is a limit of Wi-Fi itself, on every system. Single
-                player works either way.
-              </div>
-            </Show>
-            <Show when={mpInfo()?.multiplayer && mpInfo()?.state === "needs_permission"}>
-              <div class="game-detail-note">
-                This game can play online once you allow it in Settings → Network.
-                Single player works either way.
-              </div>
-            </Show>
-            <Show when={win9xEngineMissing() && props.game?.dosbox_variant !== "pcbox"}>
-              <div class="game-detail-note">
-                The emulator this game needs was not found on this system.
-                {props.game?.dosbox_variant === "x98"
-                  ? " Install DOSBox-X via your package manager or Flatpak (com.dosbox_x.DOSBox-X)."
-                  : " Re-run the installer or place 86Box on your PATH."}
-              </div>
+            {/* Exactly one note. Three stacked boxes read as a wall of
+                warnings and buried the one that mattered, so they are ordered
+                by how much the reader can do about it. */}
+            <Show when={noteText()}>
+              <div class="game-detail-note">{noteText()}</div>
             </Show>
 
             {/* Language switcher: picking a chip re-points the whole panel -
