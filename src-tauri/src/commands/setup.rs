@@ -2723,6 +2723,29 @@ fn scan_installed_games_with_db(
         }
     }
 
+    // Library entries whose files are not here. Sticky in_library is right
+    // for a game you uninstalled, but after a folder move it also describes
+    // games whose data was left behind - and a screen of unexplained
+    // "Incomplete" badges reads as a bug in the app rather than a
+    // half-finished move.
+    let orphaned: i64 = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM games WHERE in_library = 1 AND installed = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    };
+    if orphaned > 0 {
+        log::info!(
+            "scan_installed_games: {} library entries have no files under {} - left behind \
+             by a move, or never finished downloading",
+            orphaned,
+            data_dir
+        );
+    }
+
     Ok(total)
 }
 
