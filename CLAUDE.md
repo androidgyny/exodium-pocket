@@ -680,8 +680,9 @@ verbatim (test: `wrapped_zip_mounts_its_inner_directory`).
 
 **Remote multiplayer needs raw packet capture, and that is the one real OS
 difference.** 67 Win9x confs boot a network-enabled parent image
-(`W98-C-Net` 59, `W98-C-Net2` 8); those guests dial a PPTP tunnel to eXo's
-IPX server on startup. PPTP rides on GRE, so
+(`W98-C-Net` 59, `W98-C-Net2` 8); those guests dial a PPTP tunnel to a
+community-run IPX gateway (an `ipxbox` instance: IPX server plus a PPTP
+endpoint for Win9x clients) on startup - not eXo-operated infrastructure. PPTP rides on GRE, so
 user-mode NAT (`slirp`) cannot carry it - only DOSBox-X's `pcap` backend,
 which bridges the guest NIC onto a real interface, can. Windows gets that for
 free (the pack's setup installs npcap); macOS needs Wireshark's ChmodBPF

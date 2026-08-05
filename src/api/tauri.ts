@@ -192,7 +192,7 @@ export interface Win9xNetworkStatus {
   manual_hint: string | null;
 }
 
-/** Whether eXo's remote-multiplayer titles can reach their IPX server. */
+/** Whether eXo's remote-multiplayer titles can reach their IPX gateway. */
 export async function win9xNetworkStatus(): Promise<Win9xNetworkStatus> {
   return invoke("win9x_network_status");
 }

@@ -475,8 +475,10 @@ fn unwrap_single_dir_zip_mounts(conf: &str, exo_dir: &Path) -> String {
 
 /// Can this process capture raw packets? DOSBox-X's `pcap` backend bridges
 /// the guest NIC onto a real interface, which is what eXo's remote-multiplayer
-/// titles need: they dial a PPTP tunnel to eXo's IPX server, and PPTP rides on
-/// GRE, a protocol user-mode NAT cannot carry.
+/// titles need: the guest dials a PPTP tunnel to a community-run IPX gateway
+/// (the ipxbox project, which pairs an IPX server with a PPTP endpoint for
+/// Win9x clients), and PPTP rides on GRE - a protocol user-mode NAT cannot
+/// carry.
 ///
 /// Windows gets this for free (the pack's setup installs npcap). On macOS the
 /// `/dev/bpf*` nodes are root-only unless Wireshark's ChmodBPF helper is
@@ -549,7 +551,7 @@ pub struct Win9xNetworkStatus {
     pub manual_hint: Option<String>,
 }
 
-/// Whether eXo's remote-multiplayer titles can reach their IPX server, and
+/// Whether eXo's remote-multiplayer titles can reach their IPX gateway, and
 /// whether Exodium can obtain that permission for the user.
 #[tauri::command]
 pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
@@ -560,7 +562,7 @@ pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
             enabled,
             can_enable: !enabled,
             detail: if enabled {
-                "Multiplayer games can reach eXo's IPX server.".into()
+                "Multiplayer games can reach the IPX gateway.".into()
             } else {
                 "Multiplayer games cannot connect: bridging the emulated network card \
                  needs packet-capture access, which macOS keeps closed by default."
@@ -745,22 +747,51 @@ async fn install_bpf_daemon_macos() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
-    let out = Command::new("osascript")
-        .arg("-e")
-        .arg(format!(
-            "do shell script \"/bin/sh {}\" with administrator privileges",
+    let applescript = tmp_dir.join("prompt.applescript");
+    std::fs::write(
+        &applescript,
+        format!(
+            "do shell script \"/bin/sh {}\" with administrator privileges\n",
             script.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Piped stdio is what makes this fail INSIDE the app: a Tauri 2 GUI
+    // process on macOS returns EBADF from posix_spawn when the child gets
+    // parent-derived descriptors (the same bug the emulator spawn works
+    // around). So: null stdio, let a shell do the redirection into files,
+    // and force fork+exec, which tolerates the parent's fd state.
+    let err_file = tmp_dir.join("stderr.txt");
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(format!(
+            "osascript '{}' 2>'{}'",
+            applescript.display(),
+            err_file.display()
         ))
-        .output()
-        .map_err(|e| e.to_string())?;
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| Ok(()));
+        }
+    }
+    let status = cmd.status().map_err(|e| e.to_string())?;
+    let stderr = std::fs::read_to_string(&err_file).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
+    if !status.success() {
         // -128 is the user dismissing the authentication sheet.
-        if err.contains("-128") {
+        if stderr.contains("-128") || stderr.contains("User canceled") {
             return Err("cancelled".into());
         }
-        return Err(format!("could not install the helper: {}", err.trim()));
+        return Err(format!(
+            "could not install the helper: {}",
+            stderr.trim().lines().last().unwrap_or("unknown error")
+        ));
     }
     Ok(())
 }
@@ -786,20 +817,26 @@ async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
         let out = Command::new("which").arg(&bin).output().map_err(|e| e.to_string())?;
         PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
     };
-    let out = Command::new("pkexec")
+    // Null stdio for the same reason as the macOS path: a GUI process must
+    // not hand parent descriptors to a privileged child.
+    let status = Command::new("pkexec")
         .arg("setcap")
         .arg("cap_net_raw+ep")
         .arg(&bin)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
         .map_err(|e| e.to_string())?;
-    if !out.status.success() {
+    if !status.success() {
         // 126 is PolicyKit's "the dialog was dismissed".
-        if out.status.code() == Some(126) {
+        if status.code() == Some(126) {
             return Err("cancelled".into());
         }
         return Err(format!(
-            "setcap failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            "could not grant packet access to {} (exit {})",
+            bin.display(),
+            status.code().unwrap_or(-1)
         ));
     }
     Ok(())

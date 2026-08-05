@@ -980,7 +980,7 @@ export function GameDetailPanel(props: Props) {
         <ConfirmDialog
           open={netPromptFor() != null}
           title="Play online?"
-          message="This game can connect to eXo's multiplayer server. That needs one-time permission from your system to bridge the emulated network card; you can also play on your own without it."
+          message="This game can play online against others who own the collection, over a community-run IPX gateway. That needs one-time permission from your system to bridge the emulated network card; you can also play on your own without it."
           confirmLabel="Set up now…"
           cancelLabel="Play offline"
           rememberLabel="Don't ask again"
