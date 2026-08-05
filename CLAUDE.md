@@ -687,9 +687,14 @@ user-mode NAT (`slirp`) cannot carry it - only DOSBox-X's `pcap` backend,
 which bridges the guest NIC onto a real interface, can. Windows gets that for
 free (the pack's setup installs npcap); macOS needs Wireshark's ChmodBPF
 helper for `/dev/bpf*`, Linux needs CAP_NET_RAW. `ne2000_override` therefore
-probes for the privilege at launch and picks `pcap` (with the default route's
-interface as `realnic`, since eXo's conf names a Windows adapter) when it is
-there, `slirp` otherwise. Windows keeps eXo's authored conf untouched.
+probes at launch and picks `pcap` (with the default route's interface as
+`realnic`, since eXo's conf names a Windows adapter) only when BOTH hold:
+the privilege is there AND that interface is **wired**. Wi-Fi cannot bridge a
+second MAC - the access point drops frames from a foreign source address, so
+the guest gets no DHCP lease at all and Windows reports "Error 752, the host
+name you dialed could not be found". That is strictly worse than the NAT it
+replaces, so on Wi-Fi we stay on `slirp` and say so instead of asking for a
+password that cannot help (`is_wired_interface`, measured on macOS Wi-Fi). Windows keeps eXo's authored conf untouched.
 
 The offer is made where the feature is missed: pressing Play on one of those
 67 titles asks once (`win9x_needs_network_prompt` gates on network parent +

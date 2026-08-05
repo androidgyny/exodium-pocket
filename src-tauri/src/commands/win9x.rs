@@ -511,6 +511,46 @@ fn can_capture_packets() -> bool {
     }
 }
 
+/// Whether an interface can carry a second machine's MAC address.
+///
+/// Wi-Fi cannot: a station is associated with exactly one MAC, and the access
+/// point neither forwards frames from a foreign source MAC nor delivers frames
+/// addressed to one (802.11 has no client-side bridging outside WDS). The
+/// emulated NE2000 card has its own MAC, so on Wi-Fi its DHCP request is
+/// simply dropped - the guest ends up with no address at all, which is worse
+/// than the NAT it had before. Measured: Windows 98 answers "Error 752, the
+/// host name you dialed could not be found".
+#[cfg(unix)]
+fn is_wired_interface(name: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(out) = Command::new("networksetup")
+            .arg("-listallhardwareports")
+            .output()
+        else {
+            return false;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut port = "";
+        for line in text.lines() {
+            if let Some(p) = line.strip_prefix("Hardware Port:") {
+                port = p.trim();
+            } else if line.strip_prefix("Device:").map(str::trim) == Some(name) {
+                let p = port.to_ascii_lowercase();
+                return !["wi-fi", "airport", "bluetooth", "iphone", "thunderbolt bridge"]
+                    .iter()
+                    .any(|w| p.contains(w));
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let base = std::path::Path::new("/sys/class/net").join(name);
+        base.exists() && !base.join("wireless").exists() && !base.join("phy80211").exists()
+    }
+}
+
 /// The host interface to bridge onto, i.e. the one carrying the default route.
 /// eXo's confs name a Windows adapter (`realnic = Rea…`), which means nothing
 /// here, so pcap needs an explicit local answer.
@@ -573,19 +613,20 @@ pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let enabled = can_capture_packets();
+        let wired = default_interface().is_some_and(|n| is_wired_interface(&n));
+        let captures = can_capture_packets();
         let pkexec = binary_exists_on_path("pkexec");
         Ok(Win9xNetworkStatus {
-            enabled,
-            can_enable: !enabled && pkexec,
-            detail: if enabled {
-                "Multiplayer games can reach eXo's IPX server.".into()
-            } else {
-                "Multiplayer games cannot connect: bridging the emulated network card \
-                 needs the CAP_NET_RAW capability on DOSBox-X."
-                    .into()
+            enabled: captures && wired,
+            can_enable: !captures && wired && pkexec,
+            detail: match (captures, wired) {
+                (_, false) => "Needs a wired connection - Wi-Fi cannot bridge the emulated \
+                               network card."
+                    .into(),
+                (true, true) => "Enabled.".into(),
+                (false, true) => "Needs the CAP_NET_RAW capability on DOSBox-X.".into(),
             },
-            manual_hint: (!enabled && !pkexec)
+            manual_hint: (!captures && wired && !pkexec)
                 .then(|| "sudo setcap cap_net_raw+ep $(which dosbox-x)".to_string()),
         })
     }
@@ -621,7 +662,12 @@ pub async fn win9x_needs_network_prompt(
     }
     #[cfg(not(windows))]
     {
-        if can_capture_packets() {
+        // Nothing to offer when the bridge already works, or when it can
+        // never work on this link (Wi-Fi) - a password prompt that changes
+        // nothing is worse than no prompt at all.
+        if bridgeable_interface().is_some()
+            || !default_interface().is_some_and(|n| is_wired_interface(&n))
+        {
             return Ok(false);
         }
         let (game, data_dir, asked) = {
@@ -842,6 +888,16 @@ async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The interface pcap can actually bridge onto: raw capture allowed AND a
+/// wired link. Returns None when either is missing, which means slirp.
+#[cfg(unix)]
+fn bridgeable_interface() -> Option<String> {
+    if !can_capture_packets() {
+        return None;
+    }
+    default_interface().filter(|nic| is_wired_interface(nic))
+}
+
 /// Network-backend fragment appended to every DOSBox-X launch.
 ///
 /// Windows keeps eXo's authored `pcap` setup verbatim. Elsewhere we bridge
@@ -852,11 +908,9 @@ async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
 fn ne2000_override() -> String {
     #[cfg(unix)]
     {
-        if can_capture_packets() {
-            if let Some(nic) = default_interface() {
-                log::info!("Win9x networking: bridging the guest NIC onto {nic} (pcap)");
-                return format!("[ne2000]\nbackend = pcap\n[ethernet, pcap]\nrealnic = {nic}\n");
-            }
+        if let Some(nic) = bridgeable_interface() {
+            log::info!("Win9x networking: bridging the guest NIC onto {nic} (pcap)");
+            return format!("[ne2000]\nbackend = pcap\n[ethernet, pcap]\nrealnic = {nic}\n");
         }
         "[ne2000]\nbackend = slirp\n".to_string()
     }
