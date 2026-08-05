@@ -386,6 +386,93 @@ fn find_file_ci(dir: &Path, name: &str) -> Option<PathBuf> {
     })
 }
 
+/// The zip a `MOUNT <letter> "<...>.zip"` line points at, when that zip wraps
+/// everything in exactly ONE top-level directory.
+///
+/// Background: DOSBox-X converts mounted host drives into emulated FAT disks
+/// when a guest OS boots (`convertdrivefat`, on by default), so the mount IS
+/// visible in Windows - but at whatever depth the zip has. eXo's convention
+/// is files at the zip root (the game's desktop shortcut points straight at
+/// `E:\<GAME>.EXE`); a zip that wraps them in a folder puts the executable one
+/// level too deep and the shortcut dies with "drive or network connection is
+/// unavailable". Seen with Chinese Checkers (CC32.zip -> `CC32/CCHECK11.EXE`,
+/// shortcut `E:\CCHECK11.EXE`) after eXo repackaged a newer game build.
+fn zip_wrapper_dir(zip_path: &Path) -> Option<String> {
+    let file = std::fs::File::open(zip_path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut wrapper: Option<String> = None;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).ok()?;
+        let name = entry.name().replace('\\', "/");
+        let top = name.split('/').next()?.to_string();
+        // A file at the root means the zip is already laid out as eXo's
+        // convention expects - leave it alone.
+        if !name[top.len()..].starts_with('/') {
+            return None;
+        }
+        match &wrapper {
+            Some(w) if *w != top => return None,
+            Some(_) => {}
+            None => wrapper = Some(top),
+        }
+    }
+    wrapper
+}
+
+/// Rewrite `MOUNT <letter> "<...>.zip"` to mount the zip's inner directory
+/// instead, extracting it next to the zip once. Only for zips whose entries
+/// all sit under a single top-level directory (see `zip_wrapper_dir`); every
+/// other mount line is left untouched.
+fn unwrap_single_dir_zip_mounts(conf: &str, exo_dir: &Path) -> String {
+    let mount_re = |line: &str| -> Option<(String, String)> {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix("MOUNT ").or_else(|| trimmed.strip_prefix("mount "))?;
+        let (letter, target) = rest.trim_start().split_once(char::is_whitespace)?;
+        let target = target.trim().trim_matches('"');
+        target
+            .to_ascii_lowercase()
+            .ends_with(".zip")
+            .then(|| (letter.trim().to_string(), target.to_string()))
+    };
+
+    conf.lines()
+        .map(|line| {
+            let Some((letter, target)) = mount_re(line) else {
+                return line.to_string();
+            };
+            let zip_path = if Path::new(&target).is_absolute() {
+                PathBuf::from(&target)
+            } else {
+                exo_dir.join(target.trim_start_matches("./"))
+            };
+            let Some(wrapper) = zip_wrapper_dir(&zip_path) else {
+                return line.to_string();
+            };
+            let dest = zip_path.with_extension("exodium_mount");
+            let inner = dest.join(&wrapper);
+            if !inner.is_dir() {
+                let Ok(file) = std::fs::File::open(&zip_path) else {
+                    return line.to_string();
+                };
+                let extracted = zip::ZipArchive::new(file)
+                    .and_then(|mut a| a.extract(&dest))
+                    .is_ok();
+                if !extracted || !inner.is_dir() {
+                    let _ = std::fs::remove_dir_all(&dest);
+                    return line.to_string();
+                }
+                log::info!(
+                    "Unwrapped {} - mounting its '{}' directory so the game's files sit at the drive root",
+                    zip_path.display(),
+                    wrapper
+                );
+            }
+            format!("MOUNT {} \"{}\"", letter, inner.display())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(crate) async fn launch_win9x_game(
     app: &AppHandle,
     game: Game,
@@ -544,6 +631,7 @@ fn launch_dosbox_x(
                 format!(".\\{}", body)
             }
         });
+        let patched = unwrap_single_dir_zip_mounts(&patched, exo_dir);
         let patched_path =
             super::games::launch_conf_dir(app)?.join(format!("win9x_play_{}.conf", id));
         std::fs::write(&patched_path, &patched)
@@ -676,6 +764,54 @@ fn launch_86box(
         variant
     );
     super::games::spawn_emulator_and_track(cmd, &bin, &game, id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_zip(path: &Path, entries: &[&str]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        for name in entries {
+            if name.ends_with('/') {
+                zip.add_directory(name.trim_end_matches('/'), opts).unwrap();
+            } else {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(b"x").unwrap();
+            }
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn wrapped_zip_mounts_its_inner_directory() {
+        let dir = std::env::temp_dir().join(format!("exodium_zipmount_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // One top-level dir: the game's files sit one level too deep for the
+        // desktop shortcut, so the mount is redirected at the inner dir.
+        let wrapped = dir.join("CC32.zip");
+        write_zip(&wrapped, &["CC32/", "CC32/CCHECK11.EXE"]);
+        let out = unwrap_single_dir_zip_mounts(&format!("MOUNT e \"{}\"", wrapped.display()), &dir);
+        assert!(out.ends_with("CC32.exodium_mount/CC32\""), "{out}");
+        assert!(dir.join("CC32.exodium_mount/CC32/CCHECK11.EXE").is_file());
+
+        // Files at the zip root are eXo's convention - left verbatim.
+        let flat = dir.join("MpgDec20.zip");
+        write_zip(&flat, &["license.txt", "MPGDEC.DLL"]);
+        let line = format!("MOUNT e \"{}\"", flat.display());
+        assert_eq!(unwrap_single_dir_zip_mounts(&line, &dir), line);
+
+        // Non-zip mounts and other lines are never touched.
+        let conf = "IMGMOUNT c ./x.vhd\nMOUNT e \"./games\"\nBOOT -l c";
+        assert_eq!(unwrap_single_dir_zip_mounts(conf, &dir), conf);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
