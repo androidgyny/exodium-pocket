@@ -595,42 +595,33 @@ pub struct Win9xNetworkStatus {
 /// whether Exodium can obtain that permission for the user.
 #[tauri::command]
 pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
-        let enabled = can_capture_packets();
-        Ok(Win9xNetworkStatus {
-            enabled,
-            can_enable: !enabled,
-            detail: if enabled {
-                "Multiplayer games can reach the IPX gateway.".into()
-            } else {
-                "Multiplayer games cannot connect: bridging the emulated network card \
-                 needs packet-capture access, which macOS keeps closed by default."
-                    .into()
-            },
-            manual_hint: None,
-        })
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let wired = default_interface().is_some_and(|n| is_wired_interface(&n));
         let captures = can_capture_packets();
-        let pkexec = binary_exists_on_path("pkexec");
+        let wired = default_interface().is_some_and(|n| is_wired_interface(&n));
+        #[cfg(target_os = "linux")]
+        let tool = binary_exists_on_path("pkexec");
+        #[cfg(not(target_os = "linux"))]
+        let tool = true;
         Ok(Win9xNetworkStatus {
-            enabled: captures && wired,
-            can_enable: !captures && wired && pkexec,
+            enabled: captures,
+            can_enable: !captures && tool,
             detail: match (captures, wired) {
-                (_, false) => "Needs a wired connection - Wi-Fi cannot bridge the emulated \
-                               network card."
-                    .into(),
                 (true, true) => "Enabled.".into(),
-                (false, true) => "Needs the CAP_NET_RAW capability on DOSBox-X.".into(),
+                // Over Wi-Fi the guest borrows this machine's network address
+                // (see bridgeable_interface); most routers are fine with it,
+                // some refuse a second lease for one address.
+                (true, false) => {
+                    "Enabled - over Wi-Fi the game shares this machine's network address."
+                        .into()
+                }
+                (false, _) => "Needs packet access, like Wireshark.".into(),
             },
-            manual_hint: (!captures && wired && !pkexec)
+            manual_hint: (!captures && !tool)
                 .then(|| "sudo setcap cap_net_raw+ep $(which dosbox-x)".to_string()),
         })
     }
-    #[cfg(windows)]
+    #[cfg(not(unix))]
     {
         Ok(Win9xNetworkStatus {
             enabled: true,
@@ -665,9 +656,7 @@ pub async fn win9x_needs_network_prompt(
         // Nothing to offer when the bridge already works, or when it can
         // never work on this link (Wi-Fi) - a password prompt that changes
         // nothing is worse than no prompt at all.
-        if bridgeable_interface().is_some()
-            || !default_interface().is_some_and(|n| is_wired_interface(&n))
-        {
+        if bridgeable_interface().is_some() {
             return Ok(false);
         }
         let (game, data_dir, asked) = {
@@ -741,6 +730,46 @@ pub async fn enable_win9x_network(app: AppHandle) -> Result<Win9xNetworkStatus, 
     win9x_network_status().await
 }
 
+/// Give the permission back. Same consent dialog, opposite direction - a
+/// grant the user cannot revoke from the same place they made it is a trap.
+#[tauri::command]
+pub async fn disable_win9x_network(app: AppHandle) -> Result<Win9xNetworkStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = &app;
+        let label = "com.redfox.exodium.bpf";
+        let dest = format!("/Library/LaunchDaemons/{label}.plist");
+        run_privileged_macos(&format!(
+            "#!/bin/sh\n\
+             launchctl unload '{dest}' 2>/dev/null || true\n\
+             rm -f '{dest}'\n\
+             chown root:wheel /dev/bpf* && chmod 600 /dev/bpf*\n"
+        ))
+        .await?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let bin = resolved_dosbox_x_path(&app)?;
+        let status = Command::new("pkexec")
+            .arg("setcap")
+            .arg("-r")
+            .arg(&bin)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() && status.code() != Some(126) {
+            return Err(format!("could not revoke packet access on {}", bin.display()));
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = &app;
+    }
+    win9x_network_status().await
+}
+
 /// Install a boot-time helper that hands this user the BPF devices.
 ///
 /// Same shape as Wireshark's ChmodBPF, with one deliberate difference: the
@@ -793,6 +822,19 @@ async fn install_bpf_daemon_macos() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
+    run_privileged_macos_script(&script).await
+}
+
+/// Run a shell script as root through macOS's own authentication sheet.
+///
+/// Piped stdio is what makes this fail INSIDE the app: a Tauri 2 GUI process
+/// on macOS returns EBADF from posix_spawn when the child inherits
+/// parent-derived descriptors (the same bug the emulator spawn works around).
+/// So: null stdio, a shell does the redirection into files, and pre_exec
+/// forces fork+exec, which tolerates the parent's fd state.
+#[cfg(target_os = "macos")]
+async fn run_privileged_macos_script(script: &Path) -> Result<(), String> {
+    let tmp_dir = script.parent().ok_or("bad script path")?.to_path_buf();
     let applescript = tmp_dir.join("prompt.applescript");
     std::fs::write(
         &applescript,
@@ -803,11 +845,6 @@ async fn install_bpf_daemon_macos() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
-    // Piped stdio is what makes this fail INSIDE the app: a Tauri 2 GUI
-    // process on macOS returns EBADF from posix_spawn when the child gets
-    // parent-derived descriptors (the same bug the emulator spawn works
-    // around). So: null stdio, let a shell do the redirection into files,
-    // and force fork+exec, which tolerates the parent's fd state.
     let err_file = tmp_dir.join("stderr.txt");
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
@@ -819,7 +856,6 @@ async fn install_bpf_daemon_macos() -> Result<(), String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(target_os = "macos")]
     {
         use std::os::unix::process::CommandExt;
         unsafe {
@@ -835,18 +871,28 @@ async fn install_bpf_daemon_macos() -> Result<(), String> {
             return Err("cancelled".into());
         }
         return Err(format!(
-            "could not install the helper: {}",
+            "the helper could not be changed: {}",
             stderr.trim().lines().last().unwrap_or("unknown error")
         ));
     }
     Ok(())
 }
 
-/// Put CAP_NET_RAW on the DOSBox-X binary the launcher actually resolves.
+/// Write `body` to a temp script and run it as root.
+#[cfg(target_os = "macos")]
+async fn run_privileged_macos(body: &str) -> Result<(), String> {
+    let tmp_dir = std::env::temp_dir().join(format!("exodium_priv_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let script = tmp_dir.join("run.sh");
+    std::fs::write(&script, body).map_err(|e| e.to_string())?;
+    run_privileged_macos_script(&script).await
+}
+
+/// Absolute path of the DOSBox-X the launcher would use - the binary a
+/// capability has to sit on. Flatpak cannot carry one at all.
 #[cfg(target_os = "linux")]
-async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
-    let torrent_root = PathBuf::new();
-    let bin = match resolve_dosbox_x(app, &torrent_root) {
+fn resolved_dosbox_x_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let bin = match resolve_dosbox_x(app, &PathBuf::new()) {
         Some(EngineCmd::Direct(path)) => path,
         Some(EngineCmd::Flatpak(_)) => {
             return Err(
@@ -857,12 +903,21 @@ async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
         }
         None => return Err("DOSBox-X was not found on this system.".into()),
     };
-    let bin = if bin.is_absolute() {
-        bin
-    } else {
-        let out = Command::new("which").arg(&bin).output().map_err(|e| e.to_string())?;
-        PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
-    };
+    if bin.is_absolute() {
+        return Ok(bin);
+    }
+    let out = Command::new("which").arg(&bin).output().map_err(|e| e.to_string())?;
+    let resolved = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if resolved.is_empty() {
+        return Err("DOSBox-X was not found on this system.".into());
+    }
+    Ok(PathBuf::from(resolved))
+}
+
+/// Put CAP_NET_RAW on the DOSBox-X binary the launcher actually resolves.
+#[cfg(target_os = "linux")]
+async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
+    let bin = resolved_dosbox_x_path(app)?;
     // Null stdio for the same reason as the macOS path: a GUI process must
     // not hand parent descriptors to a privileged child.
     let status = Command::new("pkexec")
@@ -888,14 +943,49 @@ async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The interface pcap can actually bridge onto: raw capture allowed AND a
-/// wired link. Returns None when either is missing, which means slirp.
+/// The MAC currently in use on an interface - the live one, not the burned-in
+/// address (macOS randomises Wi-Fi MACs per network).
 #[cfg(unix)]
-fn bridgeable_interface() -> Option<String> {
+fn interface_mac(name: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("ifconfig").arg(name).output().ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("ether "))
+            .map(|m| m.trim().to_ascii_uppercase())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::fs::read_to_string(format!("/sys/class/net/{name}/address"))
+            .ok()
+            .map(|m| m.trim().to_ascii_uppercase())
+            .filter(|m| !m.is_empty())
+    }
+}
+
+/// The interface pcap can bridge onto, and the MAC the guest must use there.
+///
+/// Wired links carry any source address, so the guest keeps its own. Wi-Fi
+/// does not: a station is associated under exactly one address, and normal
+/// 3-address infrastructure frames have no field for a second one - the access
+/// point drops what the guest sends and never delivers the replies. Cloning
+/// the host's address into the emulated card removes the mismatch: frames
+/// leave and arrive under the address the AP already knows, while DHCP still
+/// gives the guest its own IP. Desktop hypervisors bridge over Wi-Fi the same
+/// way. Caveat worth keeping in the UI: a router that ties one lease to one
+/// address will hand out only one.
+#[cfg(unix)]
+fn bridgeable_interface() -> Option<(String, Option<String>)> {
     if !can_capture_packets() {
         return None;
     }
-    default_interface().filter(|nic| is_wired_interface(nic))
+    let nic = default_interface()?;
+    if is_wired_interface(&nic) {
+        Some((nic, None))
+    } else {
+        Some((nic.clone(), Some(interface_mac(&nic)?)))
+    }
 }
 
 /// Network-backend fragment appended to every DOSBox-X launch.
@@ -908,9 +998,17 @@ fn bridgeable_interface() -> Option<String> {
 fn ne2000_override() -> String {
     #[cfg(unix)]
     {
-        if let Some(nic) = bridgeable_interface() {
-            log::info!("Win9x networking: bridging the guest NIC onto {nic} (pcap)");
-            return format!("[ne2000]\nbackend = pcap\n[ethernet, pcap]\nrealnic = {nic}\n");
+        if let Some((nic, clone_mac)) = bridgeable_interface() {
+            log::info!(
+                "Win9x networking: bridging the guest NIC onto {nic} (pcap{})",
+                if clone_mac.is_some() { ", MAC cloned for Wi-Fi" } else { "" }
+            );
+            let mac_line = clone_mac
+                .map(|m| format!("macaddr = {m}\n"))
+                .unwrap_or_default();
+            return format!(
+                "[ne2000]\nbackend = pcap\n{mac_line}[ethernet, pcap]\nrealnic = {nic}\n"
+            );
         }
         "[ne2000]\nbackend = slirp\n".to_string()
     }

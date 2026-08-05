@@ -26,6 +26,7 @@ import {
   openLogFolder,
   win9xNetworkStatus,
   enableWin9xNetwork,
+  disableWin9xNetwork,
   type Win9xNetworkStatus,
 } from "./api/tauri";
 import { updateState, checkForAppUpdate, startUpdate, restartToUpdate } from "./stores/updater";
@@ -184,16 +185,20 @@ function App() {
   const loadWin9xNetwork = async () => {
     try { setNetStatus(await win9xNetworkStatus()); } catch { /* older backend */ }
   };
-  const handleEnableWin9xNetwork = async () => {
+  const toggleWin9xNetwork = async (enable: boolean) => {
     setEnablingNet(true);
     try {
-      setNetStatus(await enableWin9xNetwork());
-      showToast("Windows 9x multiplayer enabled", "success");
+      setNetStatus(enable ? await enableWin9xNetwork() : await disableWin9xNetwork());
+      showToast(
+        enable ? "Windows 9x multiplayer enabled" : "Windows 9x multiplayer disabled",
+        "success",
+      );
     } catch (e) {
       const msg = String(e);
       // "cancelled" is the user dismissing the OS dialog - not a failure.
       if (!msg.includes("cancelled")) {
-        showToast("Could not enable multiplayer", "error", { detail: msg });
+        showToast(enable ? "Could not enable multiplayer" : "Could not disable multiplayer",
+          "error", { detail: msg });
       }
     } finally {
       setEnablingNet(false);
@@ -533,26 +538,23 @@ function App() {
                             so the row says what it costs before asking. */}
                         <Show when={netStatus()}>
                           {(st) => (
-                            <div class="setting-row">
-                              <span class="setting-label">Windows 9x multiplayer</span>
-                              <span class="setting-hint">
-                                <Show when={!st().enabled} fallback="Enabled.">
-                                  Needs packet access, like Wireshark.
-                                </Show>
-                              </span>
-                              <Show when={st().can_enable} fallback={
-                                <Show when={st().manual_hint} fallback={<span class="setting-badge">on</span>}>
-                                  <code class="setting-code">{st().manual_hint}</code>
-                                </Show>
-                              }>
+                            <div class="setting-card">
+                              <div class="setting-card-info">
+                                <span class="setting-toggle-label">Windows 9x multiplayer</span>
+                                <span class="setting-toggle-hint">{st().detail}</span>
+                              </div>
+                              <Show when={st().can_enable || st().enabled}>
                                 <Button
                                   variant="small"
                                   loading={enablingNet()}
                                   loadingLabel="Waiting…"
-                                  onClick={handleEnableWin9xNetwork}
+                                  onClick={() => toggleWin9xNetwork(!st().enabled)}
                                 >
-                                  Enable…
+                                  {st().enabled ? "Remove…" : "Enable…"}
                                 </Button>
+                              </Show>
+                              <Show when={st().manual_hint}>
+                                <code class="setting-code">{st().manual_hint}</code>
                               </Show>
                             </div>
                           )}

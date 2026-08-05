@@ -212,6 +212,11 @@ export async function enableWin9xNetwork(): Promise<Win9xNetworkStatus> {
   return invoke("enable_win9x_network");
 }
 
+/** Hands the permission back - same dialog, opposite direction. */
+export async function disableWin9xNetwork(): Promise<Win9xNetworkStatus> {
+  return invoke("disable_win9x_network");
+}
+
 export interface Win9xSupportStatus {
   phase: "ready" | "downloading" | "missing";
   progress: number;

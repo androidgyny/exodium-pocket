@@ -4123,3 +4123,25 @@ body {
   color: var(--text-muted);
   cursor: pointer;
 }
+
+/* Settings row that is a statement plus one action (Windows 9x multiplayer).
+   Framed like the switches above it so the Network section reads as one
+   group rather than a list with a loose line at the end. */
+.setting-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: var(--border-radius);
+}
+
+.setting-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 180px;
+}

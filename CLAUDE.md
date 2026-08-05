@@ -687,14 +687,20 @@ user-mode NAT (`slirp`) cannot carry it - only DOSBox-X's `pcap` backend,
 which bridges the guest NIC onto a real interface, can. Windows gets that for
 free (the pack's setup installs npcap); macOS needs Wireshark's ChmodBPF
 helper for `/dev/bpf*`, Linux needs CAP_NET_RAW. `ne2000_override` therefore
-probes at launch and picks `pcap` (with the default route's interface as
-`realnic`, since eXo's conf names a Windows adapter) only when BOTH hold:
-the privilege is there AND that interface is **wired**. Wi-Fi cannot bridge a
-second MAC - the access point drops frames from a foreign source address, so
-the guest gets no DHCP lease at all and Windows reports "Error 752, the host
-name you dialed could not be found". That is strictly worse than the NAT it
-replaces, so on Wi-Fi we stay on `slirp` and say so instead of asking for a
-password that cannot help (`is_wired_interface`, measured on macOS Wi-Fi). Windows keeps eXo's authored conf untouched.
+probes at launch and picks `pcap` with the default route's interface as
+`realnic` (eXo's conf names a Windows adapter, which means nothing here).
+
+**Wi-Fi needs the guest to borrow the host's MAC.** An 802.11 station is
+associated under exactly one address and normal 3-address frames have no field
+for a second one, so a bridged guest with its own MAC gets nothing through:
+measured, Windows 98 then reports "Error 752, the host name you dialed could
+not be found" - strictly worse than the NAT it replaced. `bridgeable_interface`
+therefore returns a MAC to clone on wireless links, which `ne2000_override`
+writes as `[ne2000] macaddr`; frames then leave and arrive under the address
+the AP already knows while DHCP still gives the guest its own IP. Desktop
+hypervisors bridge over Wi-Fi the same way. It is not free: a router that ties
+one lease to one address hands out only one, which is why the Settings row
+says the game shares this machine's network address. Windows keeps eXo's authored conf untouched.
 
 The offer is made where the feature is missed: pressing Play on one of those
 67 titles asks once (`win9x_needs_network_prompt` gates on network parent +
