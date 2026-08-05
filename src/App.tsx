@@ -101,6 +101,13 @@ function App() {
         // long as the app does.
         startTransferPolling();
         loadSeeding();
+        // Re-check what is actually on disk. Install flags are stored per
+        // game, so anything that moved, was deleted or was added behind the
+        // app's back (a folder moved to another drive, a manual copy) would
+        // otherwise stay wrong until the user found the button in Settings.
+        // The backend refuses to run when the data dir holds no collection at
+        // all, so an unmounted drive cannot wipe the library.
+        scanInstalledGames().then(() => fetchGames()).catch(() => {});
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
           checkForAppUpdate();
@@ -141,12 +148,29 @@ function App() {
     }
   };
 
+  /** Point the app at a different game folder.
+   *
+   *  Everything derived from the old location has to be rebuilt, and the
+   *  install flags most of all: they are per-game rows in the database, so
+   *  after a move every game still claims to live at the old path and Play
+   *  fails with "not installed" until something re-checks the disk. Doing
+   *  that here (and reporting the count) also answers the question the user
+   *  actually has at this moment - did it find my games? */
   const handleChangeDataDir = async () => {
     const selected = await open({ title: "Select new data directory", directory: true });
     if (!selected) return;
     await setConfig("data_dir", selected);
     setDataDir(selected);
     await initDownloadManager();
+    loadThumbnailDir();
+    refreshInstalledPacks();
+    try {
+      const count = await scanInstalledGames();
+      showToast(`${count} game${count !== 1 ? "s" : ""} found in the new folder`, "success");
+    } catch (e) {
+      showToast("No games found in that folder", "error", { detail: String(e) });
+    }
+    fetchGames();
   };
 
   const [scanning, setScanning] = createSignal(false);

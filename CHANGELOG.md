@@ -21,6 +21,13 @@
   cannot carry the emulated card's own hardware address (DOSBox-X documents the
   same limit for its pcap backend). Affected games now say so up front instead
   of failing with a Windows dial-up error. Single player is unaffected.
+- **Moving the game folder now just works.** Exodium re-checks what is on
+  disk at every start (and right after you point it at a different folder,
+  reporting how many games it found), so install states follow the files
+  instead of pointing at the old path until you find the button in Settings.
+  It refuses to run that check against a folder holding no collection at all -
+  an unmounted external drive can no longer make the whole library look gone.
+  Repeated scans also stopped returning different numbers each time.
 - **Rescan finds every collection.** "Rescan installed games" now walks each
   collection's own tree (it was hardcoded to eXoDOS's and missed eXoWin3x
   installs), and in-app manuals/screenshots from Win3x/Win9x game folders are

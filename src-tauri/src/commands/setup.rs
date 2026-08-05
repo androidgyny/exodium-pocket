@@ -2270,6 +2270,22 @@ fn scan_installed_games_with_db(
         .join("eXo")
         .join("eXoDOS");
 
+    // Refuse to scan a data dir that holds no collection tree at all. The
+    // scan starts by clearing every installed flag, so running it against a
+    // missing folder - an unmounted external drive, a path typo, a move that
+    // has not finished - would report the whole library as gone and invite a
+    // re-download of hundreds of gigabytes.
+    if !COLLECTION_MAP.iter().any(|c| {
+        PathBuf::from(data_dir)
+            .join(c.inner_folder)
+            .join(c.game_prefix)
+            .is_dir()
+    }) {
+        return Err(format!(
+            "No game folders found under {data_dir}. Check the data directory in Settings."
+        ));
+    }
+
     // Reset installed flags before the scan so that games whose extracted
     // directory was removed are correctly flipped back to "not installed".
     // in_library is left alone: it is sticky by design (set on download
@@ -2784,6 +2800,9 @@ mod scan_tests {
         .unwrap();
         let db = std::sync::Mutex::new(conn);
         let data_dir = dir.to_string_lossy().to_string();
+
+        // A data dir without any collection tree must not clear the library.
+        assert!(scan_installed_games_with_db(&db, "/nonexistent/exodium").is_err());
 
         let first = scan_installed_games_with_db(&db, &data_dir).unwrap();
         let second = scan_installed_games_with_db(&db, &data_dir).unwrap();
