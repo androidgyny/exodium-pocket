@@ -522,6 +522,35 @@ fn launch_dosbox_x(
     let options_conf = exo_dir.join("emulators/dosbox/options9x.conf");
     let base_conf = exo_dir.join("emulators/dosbox/x98/dosbox-x.conf");
 
+    // One narrow exception to "the conf runs verbatim": `.\`-relative HOST
+    // path tokens are rewritten to `./` form. DOSBox-X on POSIX opens
+    // existing files through backslash paths fine, but CANNOT CREATE them -
+    // `vhdmake` silently wrote nothing, every boot reused the shipped, dirty
+    // child VHD, and games whose child isn't shipped at all (W95-C.vhd)
+    // booted "Invalid system disk". Guest text is untouched - that is
+    // rewrite_host_paths' contract (see the Win3x PATH lesson). A token is
+    // only rewritten when its target (or, for files vhdmake will create, its
+    // parent directory) exists under eXo/.
+    let play_conf = {
+        let content = std::fs::read_to_string(&play_conf)
+            .map_err(|e| format!("Failed to read {}: {}", play_conf.display(), e))?;
+        let patched = super::games::rewrite_host_paths(&content, &|body| {
+            let fwd = body.replace('\\', "/");
+            let target = exo_dir.join(&fwd);
+            let creatable = target.parent().is_some_and(|p| p.is_dir());
+            if target.exists() || creatable {
+                format!("./{}", fwd)
+            } else {
+                format!(".\\{}", body)
+            }
+        });
+        let patched_path =
+            super::games::launch_conf_dir(app)?.join(format!("win9x_play_{}.conf", id));
+        std::fs::write(&patched_path, &patched)
+            .map_err(|e| format!("Failed to write patched play.conf: {e}"))?;
+        patched_path
+    };
+
     let (mut cmd, bin) = engine.command(torrent_root);
     cmd.current_dir(exo_dir);
     // eXo's own x98 exe runs in portable mode and auto-loads the base conf
@@ -541,7 +570,19 @@ fn launch_dosbox_x(
 
     // User preference overrides, applied last so they win. DOSBox-X shares
     // the [sdl] fullscreen key with vanilla DOSBox; glshader does not apply.
-    let mut frag = format!("[sdl]\nfullscreen = {}\n", fullscreen);
+    // - windowresolution: eXo's options9x.conf default (1280x960) is in
+    //   logical points and overflows a 1117-point MacBook screen with the
+    //   image partly cut off; 1024x768 fits every common display.
+    // - output opengl: the base conf's ttf/outputswitch combo is not
+    //   user-resizable; opengl windows scale by dragging.
+    // - ne2000 backend: eXo configures pcap for its Windows/npcap setup;
+    //   pcap needs elevated BPF access on macOS/Linux and fails with an
+    //   in-guest error dialog. slirp (user-mode NAT) loads silently and
+    //   covers the solo path - LAN multiplayer is out of scope.
+    let mut frag = format!(
+        "[sdl]\nfullscreen = {}\nwindowresolution = 1024x768\noutput = opengl\n[ne2000]\nbackend = slirp\n",
+        fullscreen
+    );
     if let Some(custom) = per_game_config.get("custom_conf") {
         let trimmed = custom.trim();
         if !trimmed.is_empty() {

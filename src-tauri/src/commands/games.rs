@@ -1788,7 +1788,7 @@ fn lp_autoexec_compatible(
 /// 1,122 of 1,138 eXoWin3x games died at Program Manager. Every host path in
 /// both packs is `.\`-relative (2,149 + 9,691, no exceptions), so this is also
 /// complete.
-fn rewrite_host_paths(text: &str, resolve: &dyn Fn(&str) -> String) -> String {
+pub(crate) fn rewrite_host_paths(text: &str, resolve: &dyn Fn(&str) -> String) -> String {
     let mut out = String::with_capacity(text.len() + 64);
     let mut rest = text;
     while let Some(idx) = rest.find(".\\") {
