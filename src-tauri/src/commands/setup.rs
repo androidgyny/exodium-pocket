@@ -236,8 +236,17 @@ pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<usize, Strin
     let mut moved = 0usize;
     for stray in stray_roots(&data_dir) {
         moved += merge_tree(&stray, &root)?;
-        // Leaves the folder behind when the user had unrelated files in it.
-        let _ = std::fs::remove_dir(&stray);
+        // Everything is either moved or a deleted duplicate by now, so what
+        // remains is empty directories - clear them out so the folder is gone
+        // and the prompt has nothing left to find. A folder that still holds
+        // a file (something we did not put there) is kept, deliberately.
+        remove_empty_tree(&stray);
+        if stray.exists() {
+            log::warn!(
+                "Layout migration: {} kept - it still holds files Exodium did not place there",
+                stray.display()
+            );
+        }
     }
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -250,6 +259,14 @@ pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<usize, Strin
 /// Move `src`'s children into `dst`, descending where both sides have the
 /// same directory so an existing `eXo/` or `Content/` is merged rather than
 /// replaced.
+///
+/// When the same file exists on both sides, **the larger one wins** and the
+/// other is deleted. That is not arbitrary: the loser is almost always a
+/// zero-byte torrent placeholder (librqbit allocates one per file of the
+/// collection) or a half-finished download, and the winner the real archive.
+/// Leaving both behind was the first attempt - it meant the old folders never
+/// disappeared, so the migration prompt came back at every start with nothing
+/// left to do.
 fn merge_tree(src: &Path, dst: &Path) -> Result<usize, String> {
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     let mut moved = 0;
@@ -257,19 +274,42 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<usize, String> {
     for entry in entries.filter_map(|e| e.ok()) {
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if to.exists() {
-            if from.is_dir() && to.is_dir() {
-                moved += merge_tree(&from, &to)?;
-                let _ = std::fs::remove_dir(&from);
-            }
+        if !to.exists() {
+            std::fs::rename(&from, &to)
+                .map_err(|e| format!("moving {} to {}: {e}", from.display(), to.display()))?;
+            moved += 1;
             continue;
         }
-        std::fs::rename(&from, &to).map_err(|e| {
-            format!("moving {} to {}: {e}", from.display(), to.display())
-        })?;
-        moved += 1;
+        if from.is_dir() && to.is_dir() {
+            moved += merge_tree(&from, &to)?;
+            let _ = std::fs::remove_dir(&from);
+            continue;
+        }
+        let src_len = from.metadata().map(|m| m.len()).unwrap_or(0);
+        let dst_len = to.metadata().map(|m| m.len()).unwrap_or(0);
+        if from.is_file() && to.is_file() && src_len > dst_len {
+            std::fs::remove_file(&to).map_err(|e| e.to_string())?;
+            std::fs::rename(&from, &to)
+                .map_err(|e| format!("replacing {}: {e}", to.display()))?;
+            log::info!("Layout migration: {} replaced a smaller copy", to.display());
+            moved += 1;
+        } else if from.is_file() {
+            std::fs::remove_file(&from).map_err(|e| e.to_string())?;
+        }
     }
     Ok(moved)
+}
+
+/// Delete a directory tree that contains only (empty) directories.
+fn remove_empty_tree(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_dir() {
+            remove_empty_tree(&p);
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 /// Look up a collection definition by ID.  Returns None for unknown IDs.
@@ -3003,29 +3043,42 @@ mod metadata_scan_tests {
 mod scan_tests {
     use super::*;
 
-    /// Merging must never overwrite what is already in the target tree - a
-    /// user who copied half their games by hand must not lose the other half.
+    /// The merge has to END with the old folder gone, and it must resolve
+    /// duplicates in favour of the real data: the loser is a zero-byte
+    /// torrent placeholder or a half-finished download, never the archive.
     #[test]
-    fn merging_keeps_existing_files() {
+    fn merging_keeps_the_larger_copy_and_clears_the_old_folder() {
         let dir = std::env::temp_dir().join(format!("exodium_merge_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let old = dir.join("eXoWin9x/eXo/eXoWin9x/1995");
         let new_root = dir.join("eXoDOS/eXo/eXoWin9x/1995");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&new_root).unwrap();
-        std::fs::write(old.join("Moved.zip"), b"from the old tree").unwrap();
-        std::fs::write(old.join("Kept.zip"), b"old copy").unwrap();
-        std::fs::write(new_root.join("Kept.zip"), b"newer copy").unwrap();
+        std::fs::write(old.join("Moved.zip"), b"only in the old tree").unwrap();
+        // The old tree holds the real archive, the new one a placeholder.
+        std::fs::write(old.join("Real.zip"), b"the actual game archive").unwrap();
+        std::fs::write(new_root.join("Real.zip"), b"").unwrap();
+        // And the other way round.
+        std::fs::write(old.join("Placeholder.zip"), b"").unwrap();
+        std::fs::write(new_root.join("Placeholder.zip"), b"already downloaded").unwrap();
 
-        let moved = merge_tree(&dir.join("eXoWin9x"), &dir.join("eXoDOS")).unwrap();
+        let stray = dir.join("eXoWin9x");
+        let moved = merge_tree(&stray, &dir.join("eXoDOS")).unwrap();
+        remove_empty_tree(&stray);
 
         assert!(new_root.join("Moved.zip").is_file(), "new files move across");
         assert_eq!(
-            std::fs::read_to_string(new_root.join("Kept.zip")).unwrap(),
-            "newer copy",
-            "an existing file is never replaced"
+            std::fs::read_to_string(new_root.join("Real.zip")).unwrap(),
+            "the actual game archive",
+            "a placeholder must not win over real data"
         );
-        assert!(moved >= 1);
+        assert_eq!(
+            std::fs::read_to_string(new_root.join("Placeholder.zip")).unwrap(),
+            "already downloaded",
+            "and the existing archive is kept when the old side is empty"
+        );
+        assert!(moved >= 2);
+        assert!(!stray.exists(), "the old folder must be gone, or we ask again forever");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

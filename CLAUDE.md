@@ -128,8 +128,16 @@ eXo tool creates.
 
 Installs made before this keep their old folders until the user agrees to move
 them: `pending_layout_migration` finds strays, `migrate_layout` renames them
-into the root (never overwriting - test `merging_keeps_existing_files`), and
-`layout_migration = skip` remembers a "no".
+into the root and `layout_migration = skip` remembers a "no".
+
+The migration must LEAVE NOTHING BEHIND, because the prompt keys on "does a
+stray root still exist" - a merge that stops at the first name clash asks
+again at every start with nothing left to do (seen in testing). So on a
+conflict the **larger file wins** and the other is deleted: the loser is a
+zero-byte placeholder (librqbit allocates one per file in the collection) or a
+half-finished download, the winner the real archive. Emptied directories are
+removed; a folder still holding a file Exodium did not place there is kept and
+logged. Test: `merging_keeps_the_larger_copy_and_clears_the_old_folder`.
 
 ### 2b. History: per-collection subdirectories
 All four eXoDOS torrents have the same internal name `eXoDOS`, which causes librqbit file-path collisions when run against a shared directory. The layout is:
