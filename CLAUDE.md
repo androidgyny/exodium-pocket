@@ -690,6 +690,18 @@ probes for the privilege at launch and picks `pcap` (with the default route's
 interface as `realnic`, since eXo's conf names a Windows adapter) when it is
 there, `slirp` otherwise. Windows keeps eXo's authored conf untouched.
 
+Settings → Network offers to obtain it (`enable_win9x_network`), always
+through the OS's own consent dialog - macOS installs a ChmodBPF-style
+LaunchDaemon via `osascript … with administrator privileges`, Linux runs
+`pkexec setcap cap_net_raw+ep` on the resolved DOSBox-X binary. Two
+deliberate choices: the daemon **chowns** `/dev/bpf*` to the current user
+rather than opening them to a shared `access_bpf` group (narrower, and it
+applies without a re-login - a fresh group membership would leave the button
+looking broken), and the row states plainly that the grant lets any of the
+user's programs read network traffic. Never widen this silently; the
+permission is system-wide, not app-scoped. Flatpak DOSBox-X cannot be granted
+capabilities at all and says so instead of failing at launch.
+
 **Window scaling is fixed-size.** DOSBox-X 2025.02.01 renders the guest at a
 fixed size and CROPS when the window is dragged smaller - reproduced on macOS
 with `opengl`, `openglpp` and `surface` (upstream issue #3661). `surface` at

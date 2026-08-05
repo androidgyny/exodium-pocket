@@ -185,6 +185,23 @@ export async function win9xEngineAvailable(variant: string | null): Promise<bool
   return invoke("win9x_engine_available", { variant });
 }
 
+export interface Win9xNetworkStatus {
+  enabled: boolean;
+  can_enable: boolean;
+  detail: string;
+  manual_hint: string | null;
+}
+
+/** Whether eXo's remote-multiplayer titles can reach their IPX server. */
+export async function win9xNetworkStatus(): Promise<Win9xNetworkStatus> {
+  return invoke("win9x_network_status");
+}
+
+/** Asks the OS for packet-capture permission via its own auth dialog. */
+export async function enableWin9xNetwork(): Promise<Win9xNetworkStatus> {
+  return invoke("enable_win9x_network");
+}
+
 export interface Win9xSupportStatus {
   phase: "ready" | "downloading" | "missing";
   progress: number;

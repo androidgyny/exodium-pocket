@@ -536,6 +536,202 @@ fn default_interface() -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Win9xNetworkStatus {
+    /// True once the host lets us bridge the guest onto a real interface.
+    pub enabled: bool,
+    /// False where nothing can be done from inside the app (Flatpak DOSBox-X,
+    /// missing PolicyKit) - the UI then shows `manual_hint` instead of a button.
+    pub can_enable: bool,
+    /// Platform-specific one-liner for what enabling actually grants.
+    pub detail: String,
+    /// Command to run by hand when `can_enable` is false.
+    pub manual_hint: Option<String>,
+}
+
+/// Whether eXo's remote-multiplayer titles can reach their IPX server, and
+/// whether Exodium can obtain that permission for the user.
+#[tauri::command]
+pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let enabled = can_capture_packets();
+        Ok(Win9xNetworkStatus {
+            enabled,
+            can_enable: !enabled,
+            detail: if enabled {
+                "Multiplayer games can reach eXo's IPX server.".into()
+            } else {
+                "Multiplayer games cannot connect: bridging the emulated network card \
+                 needs packet-capture access, which macOS keeps closed by default."
+                    .into()
+            },
+            manual_hint: None,
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let enabled = can_capture_packets();
+        let pkexec = binary_exists_on_path("pkexec");
+        Ok(Win9xNetworkStatus {
+            enabled,
+            can_enable: !enabled && pkexec,
+            detail: if enabled {
+                "Multiplayer games can reach eXo's IPX server.".into()
+            } else {
+                "Multiplayer games cannot connect: bridging the emulated network card \
+                 needs the CAP_NET_RAW capability on DOSBox-X."
+                    .into()
+            },
+            manual_hint: (!enabled && !pkexec)
+                .then(|| "sudo setcap cap_net_raw+ep $(which dosbox-x)".to_string()),
+        })
+    }
+    #[cfg(windows)]
+    {
+        Ok(Win9xNetworkStatus {
+            enabled: true,
+            can_enable: false,
+            detail: "Multiplayer uses npcap, which ships with the eXoWin9x support files."
+                .into(),
+            manual_hint: None,
+        })
+    }
+}
+
+/// Ask the operating system - not the user's shell - for the permission that
+/// bridging needs. macOS shows its own authentication sheet; Linux shows
+/// PolicyKit's. Nothing here runs without that dialog being accepted.
+#[tauri::command]
+pub async fn enable_win9x_network(app: AppHandle) -> Result<Win9xNetworkStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = &app;
+        install_bpf_daemon_macos().await?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        grant_cap_net_raw_linux(&app).await?;
+    }
+    #[cfg(windows)]
+    {
+        let _ = &app;
+    }
+    win9x_network_status().await
+}
+
+/// Install a boot-time helper that hands this user the BPF devices.
+///
+/// Same shape as Wireshark's ChmodBPF, with one deliberate difference: the
+/// nodes are chowned to the current user rather than opened up to a shared
+/// `access_bpf` group. It is the narrower grant, and it takes effect
+/// immediately - a new group membership would only apply after a re-login,
+/// which reads as "the button did nothing".
+#[cfg(target_os = "macos")]
+async fn install_bpf_daemon_macos() -> Result<(), String> {
+    let user = std::env::var("USER").map_err(|_| "cannot determine the current user")?;
+    if !user.chars().all(|c| c.is_alphanumeric() || "._-".contains(c)) {
+        return Err(format!("unexpected user name: {user}"));
+    }
+    let label = "com.redfox.exodium.bpf";
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{label}</string>
+  <key>RunAtLoad</key><true/>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>chown {user} /dev/bpf* &amp;&amp; chmod 600 /dev/bpf*</string>
+  </array>
+</dict>
+</plist>
+"#
+    );
+    let tmp_dir = std::env::temp_dir().join(format!("exodium_bpf_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let tmp_plist = tmp_dir.join("daemon.plist");
+    std::fs::write(&tmp_plist, plist).map_err(|e| e.to_string())?;
+
+    let dest = format!("/Library/LaunchDaemons/{label}.plist");
+    let script = tmp_dir.join("install.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nset -e\n\
+             cp '{}' '{dest}'\n\
+             chown root:wheel '{dest}'\n\
+             chmod 644 '{dest}'\n\
+             launchctl unload '{dest}' 2>/dev/null || true\n\
+             launchctl load -w '{dest}'\n\
+             chown {user} /dev/bpf* && chmod 600 /dev/bpf*\n",
+            tmp_plist.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            "do shell script \"/bin/sh {}\" with administrator privileges",
+            script.display()
+        ))
+        .output()
+        .map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        // -128 is the user dismissing the authentication sheet.
+        if err.contains("-128") {
+            return Err("cancelled".into());
+        }
+        return Err(format!("could not install the helper: {}", err.trim()));
+    }
+    Ok(())
+}
+
+/// Put CAP_NET_RAW on the DOSBox-X binary the launcher actually resolves.
+#[cfg(target_os = "linux")]
+async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
+    let torrent_root = PathBuf::new();
+    let bin = match resolve_dosbox_x(app, &torrent_root) {
+        Some(EngineCmd::Direct(path)) => path,
+        Some(EngineCmd::Flatpak(_)) => {
+            return Err(
+                "The Flatpak build of DOSBox-X cannot be granted packet access. Install \
+                 DOSBox-X from your distribution's packages to use multiplayer."
+                    .into(),
+            )
+        }
+        None => return Err("DOSBox-X was not found on this system.".into()),
+    };
+    let bin = if bin.is_absolute() {
+        bin
+    } else {
+        let out = Command::new("which").arg(&bin).output().map_err(|e| e.to_string())?;
+        PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+    };
+    let out = Command::new("pkexec")
+        .arg("setcap")
+        .arg("cap_net_raw+ep")
+        .arg(&bin)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        // 126 is PolicyKit's "the dialog was dismissed".
+        if out.status.code() == Some(126) {
+            return Err("cancelled".into());
+        }
+        return Err(format!(
+            "setcap failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
 /// Network-backend fragment appended to every DOSBox-X launch.
 ///
 /// Windows keeps eXo's authored `pcap` setup verbatim. Elsewhere we bridge

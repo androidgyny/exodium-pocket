@@ -4008,6 +4008,42 @@ body {
   flex-wrap: wrap;
 }
 
+/* A setting whose explanation is longer than its control (the Windows 9x
+   multiplayer grant): label, reasons and action stack instead of competing
+   for one line. */
+.setting-row--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.setting-row--stacked .app-btn {
+  margin-top: 2px;
+}
+
+.setting-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+
+/* A command the user runs themselves - selectable, never truncated. */
+.setting-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--border-radius);
+  padding: 6px 8px;
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+
 .limit-inputs {
   display: flex;
   gap: 12px;

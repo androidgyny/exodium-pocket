@@ -24,6 +24,9 @@ import {
   setRateLimits,
   scanInstalledGames,
   openLogFolder,
+  win9xNetworkStatus,
+  enableWin9xNetwork,
+  type Win9xNetworkStatus,
 } from "./api/tauri";
 import { updateState, checkForAppUpdate, startUpdate, restartToUpdate } from "./stores/updater";
 import { fetchGames } from "./stores/games";
@@ -173,6 +176,30 @@ function App() {
   const [crtAuto, setCrtAuto] = createSignal(true);
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
 
+  // Windows 9x multiplayer needs packet-capture rights the OS withholds by
+  // default. Null until the first probe answers, so the row can stay quiet
+  // rather than flash a wrong state.
+  const [netStatus, setNetStatus] = createSignal<Win9xNetworkStatus | null>(null);
+  const [enablingNet, setEnablingNet] = createSignal(false);
+  const loadWin9xNetwork = async () => {
+    try { setNetStatus(await win9xNetworkStatus()); } catch { /* older backend */ }
+  };
+  const handleEnableWin9xNetwork = async () => {
+    setEnablingNet(true);
+    try {
+      setNetStatus(await enableWin9xNetwork());
+      showToast("Windows 9x multiplayer enabled", "success");
+    } catch (e) {
+      const msg = String(e);
+      // "cancelled" is the user dismissing the OS dialog - not a failure.
+      if (!msg.includes("cancelled")) {
+        showToast("Could not enable multiplayer", "error", { detail: msg });
+      }
+    } finally {
+      setEnablingNet(false);
+    }
+  };
+
   // Kept as strings: an empty field means unlimited, which no number can say.
   const [limitDown, setLimitDown] = createSignal("");
   const [limitUp, setLimitUp] = createSignal("");
@@ -203,6 +230,7 @@ function App() {
   const openSettings = () => {
     loadGameDefaults();
     loadNetworkMode();
+    loadWin9xNetwork();
     setLogOpenError("");
     setModeError("");
     setSettingsTab("general");
@@ -498,6 +526,41 @@ function App() {
                             ? "Nothing is shared while offline. Your choice is kept for when you switch back."
                             : "Uploads parts of the games you have to other users while Exodium runs. Keeps the collection alive - but distributing game files carries legal risk in some countries. Off caps upload at 1 KB/s."}
                         />
+
+                        {/* Windows 9x multiplayer. Separate from the torrent
+                            settings above: this is about the emulated PC's
+                            network card, and the grant is a system-wide one,
+                            so the row says what it costs before asking. */}
+                        <Show when={netStatus()}>
+                          {(st) => (
+                            <div class="setting-row setting-row--stacked">
+                              <span class="setting-label">
+                                Windows 9x multiplayer
+                                <Show when={st().enabled}>
+                                  <span class="setting-badge">on</span>
+                                </Show>
+                              </span>
+                              <div class="setting-hint">{st().detail}</div>
+                              <Show when={st().can_enable}>
+                                <div class="setting-hint">
+                                  Enabling asks your system for permission and lets any program
+                                  you run read network traffic - the same access Wireshark uses.
+                                </div>
+                                <Button
+                                  variant="small"
+                                  loading={enablingNet()}
+                                  loadingLabel="Waiting for your system…"
+                                  onClick={handleEnableWin9xNetwork}
+                                >
+                                  Enable multiplayer…
+                                </Button>
+                              </Show>
+                              <Show when={st().manual_hint}>
+                                <code class="setting-code">{st().manual_hint}</code>
+                              </Show>
+                            </div>
+                          )}
+                        </Show>
 
                         {/* Caps apply to the whole session, both directions.
                             Empty means unlimited, which is what a torrent
