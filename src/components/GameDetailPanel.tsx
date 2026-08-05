@@ -67,6 +67,16 @@ export function GameDetailPanel(props: Props) {
     return v === "x98" || v === "pcbox" || (v?.startsWith("86box") ?? false);
   };
   const [win9xEngineMissing, setWin9xEngineMissing] = createSignal(false);
+  /** Which emulator will actually run the selected game, from its variant -
+   *  the same mapping the backend's engine dispatch uses. */
+  const emulatorName = () => {
+    const v = selected()?.dosbox_variant ?? props.game?.dosbox_variant;
+    if (v === "x98") { return "DOSBox-X"; }
+    if (v === "pcbox") { return "PCBox (not shipped)"; }
+    if (v?.startsWith("86box")) { return "86Box"; }
+    if (v?.startsWith("ece")) { return isWindows ? "DOSBox ECE" : "DOSBox Staging"; }
+    return "DOSBox Staging";
+  };
   let heroVideoRef: HTMLVideoElement | undefined;
   const openPlaylistMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -790,6 +800,18 @@ export function GameDetailPanel(props: Props) {
                     has them and from the English row otherwise - LP rows carry
                     little more than a title. */}
                 <div class="game-detail-fields">
+                  <Show when={field("platform")}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">System</span>
+                      <span>{field("platform")}</span>
+                    </div>
+                  </Show>
+                  <Show when={emulatorName()}>
+                    <div class="game-detail-field">
+                      <span class="game-detail-field-label">Emulator</span>
+                      <span>{emulatorName()}</span>
+                    </div>
+                  </Show>
                   <Show when={field("developer")}>
                     <div class="game-detail-field">
                       <span class="game-detail-field-label">Developer</span>

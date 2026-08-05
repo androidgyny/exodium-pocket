@@ -2796,6 +2796,18 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         return Err(format!("{} is not installed. Download it first.", game.title));
     }
 
+    // Refuse a second launch while the game is still running. Two emulator
+    // instances on the same VHDs corrupt them (86Box recreates the shared
+    // child mid-flight, DOSBox-X double-mounts the save drive) - and for the
+    // rest of the catalogue a double launch is never what the user meant.
+    if running_games()
+        .lock()
+        .map(|s| s.contains(&running_game_key(&game)))
+        .unwrap_or(false)
+    {
+        return Err(format!("'{}' is already running.", game.title));
+    }
+
     // Win9x games boot Windows 95/98 from VHDs inside DOSBox-X or 86Box -
     // they have their own engine pipeline and none of the Staging conf
     // machinery below applies (their confs run verbatim, §10a).
