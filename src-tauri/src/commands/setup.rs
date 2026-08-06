@@ -95,6 +95,11 @@ static ROOT_FOLDER: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(N
 /// Default when nothing was stored - what fresh installs have always used.
 pub const DEFAULT_ROOT_FOLDER: &str = "eXoDOS";
 
+/// `root_folder` value meaning "the data dir IS the root" - see
+/// `repair_legacy_root`. A name can never express that, since
+/// `<data>/<name>` is always one level down.
+pub const ROOT_IS_DATA_DIR: &str = ".";
+
 /// Remember the root folder name for this session (and this session only -
 /// the value itself lives in the `root_folder` config key).
 pub fn set_root_folder(name: &str) {
@@ -103,8 +108,56 @@ pub fn set_root_folder(name: &str) {
     }
 }
 
+/// Point an install made before the single-root layout at the tree it already
+/// has, instead of nesting a second one inside it.
+///
+/// Until the single root, the main eXoDOS torrent wrote STRAIGHT INTO the data
+/// dir, so a legacy install looks like `<data>/eXo/…` + `<data>/Content/…`.
+/// `game_root` is `<data>/<root_folder>`, which can never equal `<data>` - so
+/// those users would get `<data>/eXoDOS/` as their root and re-download 282 GB
+/// next to the games they already own. Seen in testing: 8.7 GB of a second
+/// eXoDOS tree inside the first one.
+///
+/// The repair is a re-labelling, not a move: `root_folder` becomes the `.`
+/// sentinel, so `game_root` resolves to the data dir itself - exactly where the
+/// games already are. The data dir stays put deliberately; moving it up a level
+/// would work for the games but strand everything else keyed to it (content
+/// packs, the video and gallery caches) and drop Exodium's `content/` into the
+/// user's parent folder.
+///
+/// Keyed on `root_folder` being unset - true only for installs predating the
+/// change. Once written, the user's value is trusted.
+fn repair_legacy_root(conn: &rusqlite::Connection) {
+    let has_root = queries::get_config(conn, "root_folder")
+        .ok()
+        .flatten()
+        .is_some_and(|v| !v.trim().is_empty());
+    if has_root {
+        return;
+    }
+    let Ok(Some(data_dir)) = queries::get_config(conn, "data_dir") else {
+        return;
+    };
+    let dir = PathBuf::from(&data_dir);
+    // `eXo/` at the data-dir level IS the legacy layout - no other setup
+    // produces it, and a fresh install's data dir never has one.
+    if !dir.join("eXo").is_dir() {
+        return;
+    }
+    log::warn!(
+        "Legacy layout: {} holds the games itself - adopting it as the game root",
+        data_dir
+    );
+    let _ = queries::set_config(conn, "root_folder", ROOT_IS_DATA_DIR);
+}
+
 /// Load the root folder name from config into the cache.
+///
+/// Repairs the pre-single-root layout on the way: every caller reads `data_dir`
+/// right after this, so it is the one place where the fix reliably lands
+/// before a path is derived from either value.
 pub fn load_root_folder(conn: &rusqlite::Connection) {
+    repair_legacy_root(conn);
     let name = queries::get_config(conn, "root_folder")
         .ok()
         .flatten()
@@ -124,6 +177,9 @@ pub fn game_root(data_dir: &str) -> PathBuf {
         .ok()
         .and_then(|g| g.clone())
         .unwrap_or_else(|| DEFAULT_ROOT_FOLDER.to_string());
+    if name == ROOT_IS_DATA_DIR {
+        return PathBuf::from(data_dir);
+    }
     PathBuf::from(data_dir).join(name)
 }
 
@@ -154,8 +210,26 @@ fn stray_roots(data_dir: &str) -> Vec<PathBuf> {
         .map(|c| c.inner_folder)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
-        .map(|name| PathBuf::from(data_dir).join(name))
+        // Three places a per-torrent root can sit. Two are inside the data
+        // dir: beside the game root, and inside it once the data dir IS the
+        // root. The third is BESIDE the data dir - only reachable when the
+        // data dir is the root, because that is the legacy shape whose folders
+        // were created while the data dir was one level up. Scanning a normal
+        // install's parent would mean sweeping the user's home directory.
+        .flat_map(|name| {
+            let mut candidates = vec![PathBuf::from(data_dir).join(name), root.join(name)];
+            if root == Path::new(data_dir) {
+                if let Some(parent) = Path::new(data_dir).parent() {
+                    candidates.push(parent.join(name));
+                }
+            }
+            candidates
+        })
+        // `eXo/` inside tells a pack root apart from the root's own
+        // `eXo/eXoWin3x/`, which is where those files belong.
         .filter(|p| *p != root && p.join("eXo").is_dir())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -242,6 +316,7 @@ pub async fn skip_layout_migration(db_state: State<'_, DbState>) -> Result<(), S
 /// them again.
 #[tauri::command]
 pub async fn migrate_layout(
+    app: AppHandle,
     db_state: State<'_, DbState>,
     torrent_state: State<'_, TorrentState>,
 ) -> Result<MergeTally, String> {
@@ -283,6 +358,20 @@ pub async fn migrate_layout(
             );
         }
     }
+    // Every fastresume bitfield now describes a tree that no longer exists at
+    // the path it was recorded for. Leaving them would have librqbit skip its
+    // check and read the freshly moved-in files as missing pieces.
+    if let Ok(config_dir) = app.path().app_data_dir() {
+        let persistence = fastresume_dir(&config_dir);
+        if let Ok(entries) = std::fs::read_dir(&persistence) {
+            for entry in entries.flatten() {
+                if entry.path().extension().is_some_and(|e| e == "bitv") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         queries::set_config(&conn, "layout_migration", "done").map_err(|e| e.to_string())?;
@@ -1054,16 +1143,26 @@ pub async fn factory_reset(
         .map_err(|e| e.to_string())?;
     }
 
-    // Optionally delete the eXoDOS game folder + content packs + stale downloads.
-    // data_dir is the PARENT of the eXoDOS folder, so we delete <data_dir>/eXoDOS/,
-    // never data_dir itself (which could be the home directory).
+    // Optionally delete the game folder + content packs + stale downloads.
     if let Some(dir) = data_dir {
         if !dir.is_empty() {
             let base = std::path::Path::new(&dir);
-            let exodos_path = base.join("eXoDOS");
-            if exodos_path.exists() {
-                log::info!("Deleting game data folder: {}", exodos_path.display());
-                if let Err(e) = std::fs::remove_dir_all(&exodos_path) {
+            let root = game_root(&dir);
+            // Normally the root is a folder INSIDE the data dir, so it can go
+            // whole. On a legacy install the two are the same directory - the
+            // one the user picked - and removing it would take the folder
+            // itself with it. Delete the two trees eXo puts there instead.
+            let targets: Vec<PathBuf> = if root == base {
+                vec![base.join("eXo"), base.join("Content")]
+            } else {
+                vec![root]
+            };
+            for target in targets {
+                if !target.exists() {
+                    continue;
+                }
+                log::info!("Deleting game data: {}", target.display());
+                if let Err(e) = std::fs::remove_dir_all(&target) {
                     log::error!("Failed to delete game data folder: {}", e);
                     return Err(format!("Failed to delete game data: {}", e));
                 }
@@ -2585,10 +2684,7 @@ fn scan_installed_games_with_db(
     // Note: the shortcode_segment dirs (eXo/eXoDOS/!dos/ etc.) contain only
     // config/script files and are ALWAYS present - the '!' filter below keeps
     // them from counting as installs.
-    let game_base = PathBuf::from(data_dir)
-        .join("eXoDOS")
-        .join("eXo")
-        .join("eXoDOS");
+    let game_base = game_root(data_dir).join("eXo").join("eXoDOS");
 
     // Refuse to scan a data dir that holds no collection tree at all. The
     // scan starts by clearing every installed flag, so running it against a
@@ -3115,6 +3211,59 @@ mod metadata_scan_tests {
 #[cfg(test)]
 mod scan_tests {
     use super::*;
+
+    /// A pre-single-root install keeps its games at the DATA DIR level, so the
+    /// root has to be the folder itself - not a new one nested inside it.
+    #[test]
+    fn legacy_data_dir_holding_the_games_becomes_the_root() {
+        let dir = std::env::temp_dir().join(format!("exodium_legacy_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let old_data = dir.join("eXoDOS");
+        std::fs::create_dir_all(old_data.join("eXo/eXoDOS")).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        queries::set_config(&conn, "data_dir", &old_data.to_string_lossy()).unwrap();
+
+        repair_legacy_root(&conn);
+
+        assert_eq!(
+            queries::get_config(&conn, "data_dir").unwrap().unwrap(),
+            old_data.to_string_lossy(),
+            "the data dir stays put - content packs and caches hang off it"
+        );
+        assert_eq!(
+            queries::get_config(&conn, "root_folder").unwrap().unwrap(),
+            ROOT_IS_DATA_DIR
+        );
+        set_root_folder(ROOT_IS_DATA_DIR);
+        assert_eq!(
+            game_root(&old_data.to_string_lossy()),
+            old_data,
+            "and the root resolves to the folder the games are already in"
+        );
+        set_root_folder(DEFAULT_ROOT_FOLDER);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh install's data dir has no `eXo/` of its own - leave it alone.
+    #[test]
+    fn a_fresh_data_dir_is_not_repaired() {
+        let dir = std::env::temp_dir().join(format!("exodium_fresh_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("eXoDOS/eXo")).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        queries::set_config(&conn, "data_dir", &dir.to_string_lossy()).unwrap();
+
+        repair_legacy_root(&conn);
+
+        assert_eq!(
+            queries::get_config(&conn, "data_dir").unwrap().unwrap(),
+            dir.to_string_lossy()
+        );
+        assert!(queries::get_config(&conn, "root_folder").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The merge has to END with the old folder gone, and it must resolve
     /// duplicates in favour of the real data: the loser is a zero-byte

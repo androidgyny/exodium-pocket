@@ -555,6 +555,11 @@ pub fn run() {
                 }
             }
 
+            // Establishes the game root - and repairs a pre-single-root install
+            // on the way, which rewrites data_dir. Must run before anything
+            // below reads it.
+            commands::setup::load_root_folder(&conn);
+
             // Clean up stale content-pack download artifacts from interrupted installs.
             if let Ok(Some(user_data_dir)) = db::queries::get_config(&conn, "data_dir") {
                 let user_data_path = std::path::Path::new(&user_data_dir);

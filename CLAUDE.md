@@ -139,6 +139,24 @@ clears the managers BEFORE it moves anything - librqbit's init opens, and
 therefore creates, every selected file, so a live session re-materialized the
 whole old tree one second after the merge emptied it.
 
+**A pre-single-root install has its games AT the data dir**, not in a folder
+inside it: the main eXoDOS torrent used to write straight into `<data>/eXo/…` +
+`<data>/Content/…`. `<data>/<root_folder>` can never name that, so those users
+would get `<data>/eXoDOS/` as their root and a 282 GB re-download beside the
+games they own (measured on a dev machine: 8.7 GB of a second eXoDOS tree
+inside the first). `repair_legacy_root` therefore writes the `root_folder`
+sentinel `"."` - `game_root` then returns the data dir itself. It runs from
+`load_root_folder`, the one function every entry point calls before deriving a
+path, and keys on `root_folder` being unset, which is true only for those
+installs. The data dir is deliberately NOT moved up a level instead: content
+packs and the video/gallery caches hang off it, and it would drop Exodium's
+`content/` into the user's parent folder. Two consequences to keep in mind:
+`factory_reset` must delete `eXo/` and `Content/` rather than the root when the
+two are the same directory (never remove the folder the user picked), and
+`stray_roots` may then also look BESIDE the data dir - that is where the old
+per-torrent folders sit in this shape, and it is gated on it so a normal
+install never has its parent swept.
+
 Installs made before this keep their old folders until the user agrees to move
 them: `pending_layout_migration` finds strays, `migrate_layout` renames them
 into the root. Declining writes `layout_migration = skip`, which only silences

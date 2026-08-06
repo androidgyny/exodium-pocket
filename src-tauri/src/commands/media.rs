@@ -272,7 +272,7 @@ pub async fn start_game_video(
 
     let jobs_arc = Arc::clone(&video_state.0);
     let marker = no_video_marker(&data_dir, &source, gamedata_idx);
-    let local_archive = PathBuf::from(&data_dir).join("eXoDOS").join(&file.path);
+    let local_archive = crate::commands::setup::game_root(&data_dir).join(&file.path);
     let archive_len = file.size;
     let archive_path = file.path.clone();
 

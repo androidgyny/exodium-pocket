@@ -53,6 +53,7 @@ function App() {
   const [showWelcomeModal, setShowWelcomeModal] = createSignal(false);
   const [showSeedingConsent, setShowSeedingConsent] = createSignal(false);
   const [dataDir, setDataDir] = createSignal("");
+  const [rootFolder, setRootFolder] = createSignal("eXoDOS");
   /** Old per-collection folders waiting to be merged into the single root. */
   const [layoutMigration, setLayoutMigration] = createSignal<LayoutMigration | null>(null);
   const [migrating, setMigrating] = createSignal(false);
@@ -98,8 +99,11 @@ function App() {
   const gameFolderPath = () => {
     const dir = dataDir();
     if (!dir) return "";
+    // "." means the data dir IS the game root (a pre-single-root install
+    // whose folder was adopted as the root at startup).
+    if (rootFolder() === ".") { return dir; }
     const sep = dir.includes("\\") ? "\\" : "/";
-    return dir.replace(/[/\\]$/, "") + sep + "eXoDOS";
+    return dir.replace(/[/\\]$/, "") + sep + rootFolder();
   };
 
   onMount(() => {
@@ -136,6 +140,11 @@ function App() {
         setShowSeedingConsent(await needsSeedingConsent());
         const dir = await getConfig("data_dir");
         if (dir) { setDataDir(dir); }
+        // Read, never assumed: an imported eXo tree keeps whatever name the
+        // user gave it, and a legacy install has its own folder adopted as the
+        // root at startup.
+        const root = await getConfig("root_folder");
+        if (root) { setRootFolder(root); }
         loadThumbnailDir();
         refreshInstalledPacks();
         // No onCleanup: this runs after an await, where Solid has no owner to
