@@ -60,12 +60,22 @@ fetch() { # fetch <url> <out>
     -C - -o "$2" "$1"
 }
 
+gh_api() { # gh_api <url>
+  # The unauthenticated API allowance is per source IP and CI runners share
+  # theirs, so an asset lookup that works locally can be rate-limited there.
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$1"
+  else
+    curl -fsSL "$1"
+  fi
+}
+
 # ── DOSBox-X ─────────────────────────────────────────────────────────────────
 
 # Release assets embed a build timestamp (dosbox-x-macosx-arm64-20250201150724.zip),
 # so resolve them from the release's asset list instead of hardcoding.
 DBX_API="https://api.github.com/repos/joncampbell123/dosbox-x/releases/tags/dosbox-x-v${DOSBOX_X_VERSION}"
-DBX_URLS="$(curl -fsSL "$DBX_API" | grep -o 'https://[^"]*download/[^"]*' || true)"
+DBX_URLS="$(gh_api "$DBX_API" | grep -o 'https://[^"]*download/[^"]*' || true)"
 
 dbx_url() { # dbx_url <grep-pattern>
   echo "$DBX_URLS" | grep -E "$1" | head -1
@@ -122,7 +132,7 @@ esac
 # Asset names embed a build number (e.g. 86Box-Linux-x86_64-b9001.AppImage),
 # so resolve them from the release's asset list instead of hardcoding.
 E86_API="https://api.github.com/repos/86Box/86Box/releases/tags/v${E86BOX_VERSION}"
-E86_URLS="$(curl -fsSL "$E86_API" | grep -o 'https://[^"]*download/[^"]*' || true)"
+E86_URLS="$(gh_api "$E86_API" | grep -o 'https://[^"]*download/[^"]*' || true)"
 if [[ -z "$E86_URLS" ]]; then
   echo "ERROR: could not list 86Box v${E86BOX_VERSION} release assets"; exit 1
 fi
