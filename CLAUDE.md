@@ -367,6 +367,21 @@ part that has to exist first. See issue #18.
 - The uploaded file must be the exact one whose SHA-256 is in the manifest -
   re-running `tar` changes mtimes and therefore the hash, and the installer
   verifies it.
+- **`install_path` names the EXACT directory and must end in the collection**
+  (`content/posters/eXoWin9x`, `content/metadata/eXoWin9x`). The installer
+  `remove_dir_all`s that path before renaming staging onto it, so a path shared
+  between collections deletes its siblings' art on every install. All three
+  poster packs used to point at a bare `content/posters`, and installing the
+  Win9x pack duly wiped eXoDOS's 396 MB and eXoWin3x's 66 MB while the ledger
+  went on reporting them installed.
+- Archive shape is normalized, not enforced: `unwrapped_source` strips a lone
+  top-level directory **iff it repeats the target's own name**, so
+  `posters-eXoDOS-v5` (wraps everything in `eXoDOS/`) and
+  `posters-eXoWin9x-v1` (tarred from inside, entries are `./<hash>.jpg`) both
+  land correctly. Prefer the wrapped shape for new packs; a mis-packed one is
+  no longer worth a republish. The name check is load-bearing - "one top-level
+  directory" alone would swallow a metadata pack whose payload is just
+  `Images/`.
 
 **Updating a pack whose content grew** (`version` up, `min_compatible_version`
 left alone): installs stay put and Settings offers an "Update" button. Only
@@ -376,7 +391,10 @@ start, which is what the v0.2 shortcode-keyed posters needed and nothing since.
 Torrent-sourced packs (`torrent_file_path`) are incremental, so this only really
 bites the HTTP-hosted poster packs, which are whole-file downloads.
 
-`list_content_packs` also **adopts packs it finds on disk**: `factory_reset`
+`list_content_packs` reconciles the ledger with the disk in BOTH directions:
+a pack whose directory is gone is dropped from the ledger, or Settings shows
+"Remove" for files that do not exist and offers no way back to a working
+install. It also **adopts packs it finds on disk**: `factory_reset`
 clears the whole config table - including the `content_packs` ledger - while
 keeping `content/` unless the user asked for their game data to go. Without
 adoption those kept packs came back as "not installed" and Settings offered a

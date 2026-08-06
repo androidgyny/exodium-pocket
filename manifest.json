@@ -14,7 +14,7 @@
           "sha256": "7399983a4ff412a6b8b0444944346b24ba17b8901ba577bab0fa4b76ab23d1d8",
           "size_bytes": 396948419,
           "version": 5,
-          "install_path": "content/posters",
+          "install_path": "content/posters/eXoDOS",
           "supersedes": [],
           "min_compatible_version": 3
         },
@@ -93,7 +93,7 @@
           "sha256": "21c68369e4affb28f3409361f4c868a0ef1fcdb70d402b0075232c90eace3443",
           "size_bytes": 66784296,
           "version": 1,
-          "install_path": "content/posters",
+          "install_path": "content/posters/eXoWin3x",
           "supersedes": []
         },
         "metadata": {
@@ -120,7 +120,7 @@
           "sha256": "1f9244321a98b2c96cd8faf25bf62c6dcbb16888ec831000d1d0e18eba321578",
           "size_bytes": 39508524,
           "version": 1,
-          "install_path": "content/posters",
+          "install_path": "content/posters/eXoWin9x",
           "supersedes": []
         },
         "metadata": {

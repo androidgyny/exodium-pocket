@@ -182,28 +182,45 @@ fn adopt_packs_on_disk(
     let mut state = read_installed_packs(conn);
     let recorded = state.entry(collection.to_string()).or_default();
     let mut adopted = Vec::new();
+    let mut vanished = Vec::new();
     for (id, info) in &col.content_packs {
-        if recorded.contains_key(id) {
-            continue;
+        // install_path names the exact directory - it already carries the
+        // collection (`content/posters/eXoWin9x`). Appending it a second time
+        // meant metadata packs were never adopted at all.
+        let dir = Path::new(&data_dir).join(&info.install_path);
+        let present =
+            dir.is_dir() && !std::fs::read_dir(&dir).map(|mut d| d.next().is_none()).unwrap_or(true);
+        match (recorded.contains_key(id), present) {
+            (false, true) => {
+                recorded.insert(
+                    id.clone(),
+                    InstalledPack {
+                        version: info.version,
+                        size_bytes: info.size_bytes,
+                        installed_at: chrono_now(),
+                    },
+                );
+                adopted.push(id.clone());
+            }
+            // The ledger is not evidence, the disk is. A pack recorded as
+            // installed whose files are gone otherwise shows "Remove" forever
+            // and Settings offers no way back to a working state.
+            (true, false) => {
+                recorded.remove(id);
+                vanished.push(id.clone());
+            }
+            _ => {}
         }
-        let dir = Path::new(&data_dir).join(&info.install_path).join(collection);
-        if !dir.is_dir() || std::fs::read_dir(&dir).map(|mut d| d.next().is_none()).unwrap_or(true) {
-            continue;
-        }
-        recorded.insert(
-            id.clone(),
-            InstalledPack {
-                version: info.version,
-                size_bytes: info.size_bytes,
-                installed_at: chrono_now(),
-            },
-        );
-        adopted.push(id.clone());
     }
-    if adopted.is_empty() {
+    if adopted.is_empty() && vanished.is_empty() {
         return;
     }
-    log::info!("Adopting content packs found on disk for {}: {:?}", collection, adopted);
+    if !adopted.is_empty() {
+        log::info!("Adopting content packs found on disk for {}: {:?}", collection, adopted);
+    }
+    if !vanished.is_empty() {
+        log::info!("Content packs recorded but missing on disk for {}: {:?}", collection, vanished);
+    }
     if let Err(e) = write_installed_packs(conn, &state) {
         log::warn!("Could not record adopted packs: {}", e);
     }
@@ -376,6 +393,38 @@ pub async fn install_content_pack(
     });
 
     Ok(())
+}
+
+/// The directory whose CONTENTS should become `install_dir`.
+///
+/// `install_path` names the exact target (`content/posters/eXoWin9x`), but the
+/// archives disagree about whether they carry that last segment themselves:
+/// `posters-eXoDOS-v5` and `posters-eXoWin3x-v1` wrap everything in a
+/// `<collection>/` directory, `posters-eXoWin9x-v1` was packed from inside it
+/// and is flat. Unwrapping makes both shapes land in the same place, so a
+/// mis-packed archive is a non-event instead of a republish.
+///
+/// The wrapper must be the ONLY entry and must repeat the target's own name -
+/// "one top-level directory" alone would swallow a pack whose real payload
+/// happens to be a single `Images/`.
+fn unwrapped_source(staging_dir: &Path, install_dir: &Path) -> PathBuf {
+    let Some(target_name) = install_dir.file_name() else {
+        return staging_dir.to_path_buf();
+    };
+    let Ok(entries) = std::fs::read_dir(staging_dir) else {
+        return staging_dir.to_path_buf();
+    };
+    let mut only: Option<PathBuf> = None;
+    for entry in entries.flatten() {
+        if only.is_some() {
+            return staging_dir.to_path_buf();
+        }
+        only = Some(entry.path());
+    }
+    match only {
+        Some(p) if p.is_dir() && p.file_name() == Some(target_name) => p,
+        _ => staging_dir.to_path_buf(),
+    }
 }
 
 /// Resolve the install dir for a given pack_id, checking the manifest for its
@@ -601,10 +650,11 @@ async fn do_install_torrent(
         std::fs::remove_dir_all(&install_dir)
             .map_err(|e| format!("Cannot remove old install: {}", e))?;
     }
-    if std::fs::rename(&staging_dir, &install_dir).is_err() {
-        copy_dir_recursive(&staging_dir, &install_dir)?;
-        let _ = std::fs::remove_dir_all(&staging_dir);
+    let source_dir = unwrapped_source(&staging_dir, &install_dir);
+    if std::fs::rename(&source_dir, &install_dir).is_err() {
+        copy_dir_recursive(&source_dir, &install_dir)?;
     }
+    let _ = std::fs::remove_dir_all(&staging_dir);
 
     log::info!(
         "Content pack installed (torrent): {} → {}",
@@ -792,12 +842,14 @@ async fn do_install(
             .map_err(|e| format!("Cannot remove old install: {}", e))?;
     }
 
+    let source_dir = unwrapped_source(&staging_dir, &install_dir);
+
     // Atomic rename; fall back to copy+remove on EXDEV.
-    if std::fs::rename(&staging_dir, &install_dir).is_err() {
+    if std::fs::rename(&source_dir, &install_dir).is_err() {
         // Cross-filesystem: copy then remove.
-        copy_dir_recursive(&staging_dir, &install_dir)?;
-        let _ = std::fs::remove_dir_all(&staging_dir);
+        copy_dir_recursive(&source_dir, &install_dir)?;
     }
+    let _ = std::fs::remove_dir_all(&staging_dir);
 
     // Clean up temp tarball.
     let _ = std::fs::remove_file(&tmp_file);
@@ -1081,7 +1133,7 @@ mod adopt_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("abc.jpg"), b"x").unwrap();
 
-        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters"));
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters/eXoDOS"));
 
         let state = read_installed_packs(&conn);
         let entry = state.get("eXoDOS").and_then(|c| c.get("posters")).expect("adopted");
@@ -1110,7 +1162,7 @@ mod adopt_tests {
         std::fs::write(dir.join("abc.jpg"), b"x").unwrap();
         mark_pack_installed(&conn, "eXoDOS", "posters", installed_version, 1).unwrap();
 
-        let mut col = manifest("content/posters");
+        let mut col = manifest("content/posters/eXoDOS");
         let p = col.content_packs.get_mut("posters").unwrap();
         p.version = 5;
         p.min_compatible_version = floor;
@@ -1147,8 +1199,67 @@ mod adopt_tests {
         crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
         std::fs::create_dir_all(tmp.path().join("content/posters/eXoDOS")).unwrap();
 
-        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters"));
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters/eXoDOS"));
 
         assert!(read_installed_packs(&conn).get("eXoDOS").is_none_or(|c| c.is_empty()));
+    }
+
+    /// Every poster pack used to unpack over the shared `content/posters`,
+    /// so installing one deleted the others' art while the ledger kept
+    /// claiming all three were installed - "Remove" with nothing to remove.
+    #[test]
+    fn forgets_a_pack_whose_directory_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
+        mark_pack_installed(&conn, "eXoDOS", "posters", 5, 1).unwrap();
+
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters/eXoDOS"));
+
+        let recorded = read_installed_packs(&conn);
+        assert!(
+            recorded.get("eXoDOS").is_none_or(|c| !c.contains_key("posters")),
+            "a pack with no files on disk must read as not installed"
+        );
+    }
+
+    fn staging_with(entries: &[(&str, bool)]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, is_dir) in entries {
+            let p = tmp.path().join(name);
+            if *is_dir {
+                std::fs::create_dir_all(&p).unwrap();
+            } else {
+                std::fs::write(&p, b"x").unwrap();
+            }
+        }
+        tmp
+    }
+
+    #[test]
+    fn unwraps_an_archive_that_repeats_the_target_directory() {
+        let staging = staging_with(&[("eXoDOS", true)]);
+        let install = Path::new("/data/content/posters/eXoDOS");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path().join("eXoDOS"));
+    }
+
+    /// posters-eXoWin9x-v1 was tarred from inside its own directory, so its
+    /// entries are `./<hash>.jpg`. That has to install just as cleanly.
+    #[test]
+    fn leaves_a_flat_archive_alone() {
+        let staging = staging_with(&[("a.jpg", false), ("b.jpg", false)]);
+        let install = Path::new("/data/content/posters/eXoWin9x");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path());
+    }
+
+    /// A lone directory is only a wrapper if it repeats the target's name -
+    /// otherwise it is the payload, and unwrapping would discard its siblings'
+    /// structure (a metadata pack that ships only `Images/`).
+    #[test]
+    fn keeps_a_lone_directory_that_is_not_the_wrapper() {
+        let staging = staging_with(&[("Images", true)]);
+        let install = Path::new("/data/content/metadata/eXoWin9x");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path());
     }
 }
