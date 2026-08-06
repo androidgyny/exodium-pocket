@@ -219,9 +219,9 @@ export function GameDetailPanel(props: Props) {
     if (videoPlaybackUnsupported()) {
       return {
         key: "no-gstreamer",
-        text: "Preview videos are turned off: this system is missing GStreamer's audio "
-          + "plugins. Install gstreamer1.0-plugins-good (and gstreamer1.0-libav for "
-          + "H.264) to enable them.",
+        text: "Preview videos are turned off: this system is missing GStreamer plugins. "
+          + "Install gstreamer1.0-plugins-good and gstreamer1.0-libav (names vary by "
+          + "distribution), then restart Exodium.",
       };
     }
     return null;

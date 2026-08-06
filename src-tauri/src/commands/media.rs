@@ -471,28 +471,60 @@ pub async fn video_playback_supported() -> bool {
     {
         static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *SUPPORTED.get_or_init(|| {
-            // gst-inspect answers authoritatively when it is installed.
-            if let Ok(out) = std::process::Command::new("gst-inspect-1.0")
-                .arg("autoaudiosink")
-                .output()
-            {
-                return out.status.success();
+            // Two independent requirements, and each fails differently:
+            // no autoaudiosink wedges the WebKit process outright, no H.264
+            // decoder plays an eternally black rectangle. Both mean the
+            // preview feature should stand down and say why.
+            let audio = gst_has_any(&["autoaudiosink"], &["libgstautodetect.so"]);
+            let h264 = gst_has_any(
+                // Any one of these decodes our MP4s: ffmpeg's, Cisco's, VA-API
+                // or NVIDIA's. gst-libav is the note's install advice because
+                // it works without particular hardware.
+                &["avdec_h264", "openh264dec", "vah264dec", "nvh264dec"],
+                &["libgstlibav.so", "libgstopenh264.so"],
+            );
+            let ok = audio && h264;
+            if !ok {
+                log::warn!(
+                    "Preview videos disabled: GStreamer audio sink present: {}, H.264 decoder present: {}",
+                    audio,
+                    h264
+                );
             }
-            // Without the tool, look for the autodetect plugin in the usual
-            // multiarch homes. Erring towards "no" is the safe direction:
-            // a skipped preview beats a frozen app.
-            [
-                "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
-                "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
-                "/usr/lib64/gstreamer-1.0",
-                "/usr/lib/gstreamer-1.0",
-            ]
-            .iter()
-            .any(|dir| Path::new(dir).join("libgstautodetect.so").exists())
+            ok
         })
     }
     #[cfg(not(target_os = "linux"))]
     true
+}
+
+/// Whether GStreamer offers any of the named elements, or - when gst-inspect
+/// is not installed - whether any of the named plugin files exists in the
+/// usual multiarch homes. Erring towards "no" is the safe direction: a
+/// skipped preview beats a frozen app or a black box.
+#[cfg(target_os = "linux")]
+fn gst_has_any(elements: &[&str], plugin_files: &[&str]) -> bool {
+    let mut inspect_ran = false;
+    for element in elements {
+        if let Ok(out) = std::process::Command::new("gst-inspect-1.0").arg(element).output() {
+            inspect_ran = true;
+            if out.status.success() {
+                return true;
+            }
+        }
+    }
+    if inspect_ran {
+        return false;
+    }
+    const PLUGIN_DIRS: [&str; 4] = [
+        "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
+        "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
+        "/usr/lib64/gstreamer-1.0",
+        "/usr/lib/gstreamer-1.0",
+    ];
+    PLUGIN_DIRS
+        .iter()
+        .any(|dir| plugin_files.iter().any(|f| Path::new(dir).join(f).exists()))
 }
 
 #[tauri::command]
