@@ -549,8 +549,7 @@ function App() {
                           <div class="setting-row">
                             <span class="setting-label">Folder layout</span>
                             <span class="setting-hint">
-                              Windows games sit in separate folders and stay invisible until
-                              they are moved into the one Exodium reads
+                              Windows games sit outside the folder Exodium reads
                             </span>
                             <Button
                               variant="small"
@@ -780,8 +779,8 @@ function App() {
             installs are asked once, because this moves their game files. */}
         <ConfirmDialog
           open={layoutMigration()?.prompt === true}
-          title="Tidy up the game folder?"
-          message={`Windows games currently sit in separate folders (${layoutMigration()?.folders.join(", ")}). Exodium keeps everything in one folder now - the layout eXo's own setup produces - and only looks there, so until these are moved those games stay invisible and downloading them again would put a second copy on your disk. Moving takes a moment and copies nothing. You can also do it later under Settings → Library.`}
+          title="Move your Windows games?"
+          message={`${layoutMigration()?.folders.join(" and ")} sit outside the folder Exodium reads, so those games show as not installed. Moving them in is instant and copies nothing - or do it later under Settings → Library.`}
           confirmLabel={migrating() ? "Moving…" : "Move them"}
           cancelLabel="Not now"
           onConfirm={() => void runLayoutMigration()}
