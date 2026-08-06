@@ -100,6 +100,9 @@ describe("GameDetailPanel", () => {
     expect(video?.getAttribute("src") ?? "").toContain("videocache");
     // The cover crossfades out only once playback actually started.
     expect(video?.className).toContain("is-visible");
+    // Previews carry sound. Re-adding `muted` to buy back autoplay would take
+    // it away silently - the muted retry in the effect is the fallback path.
+    expect((video as HTMLVideoElement | null)?.muted).toBe(false);
     dispose(); host.remove();
   });
 

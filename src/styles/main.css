@@ -3772,7 +3772,12 @@ body {
   max-height: 240px;
   object-fit: cover;
   display: block;
-  background: #000;
+  /* Transparent, NOT black. object-fit: cover leaves no letterbox to fill, so
+     the only thing a black background painted was the gap between "the element
+     exists" and "it has decoded a frame" - and since the video fades in on top
+     of the cover, that gap read as a cut to black. Transparent lets the cover
+     show through until there is a real frame to cross-fade to. */
+  background: transparent;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.45s ease;
@@ -3784,13 +3789,13 @@ body {
   pointer-events: auto;
 }
 
-/* The cover stays mounted underneath and simply dims out. */
+/* The cover stays mounted AND fully opaque underneath: the video covers it
+   completely while visible, so dimming it bought nothing and cost a
+   half-transparent mid-point in every cross-fade. Keeping it lit means every
+   direction - start, end, replay, switching games - dissolves against the
+   artwork instead of through a dark frame. */
 .game-detail-thumb {
   transition: opacity 0.45s ease;
-}
-
-.game-detail-thumb.is-behind-video {
-  opacity: 0;
 }
 
 /* Fetch progress, bottom-left of the hero so it never covers the close button. */
@@ -3806,7 +3811,15 @@ body {
   background: rgba(0, 0, 0, 0.62);
   backdrop-filter: blur(4px);
   color: var(--text-primary);
+  font-family: inherit;
   font-size: 11px;
+  /* The hero art zeroes line-height to kill the inline gap under the cover,
+     and every pill inherits it. One with a spinner still got its height from
+     that 12px flex item; the text-only "No video" pill collapsed to 8px of
+     padding with the label hanging out of its own background. Buttons escaped
+     via the UA's line-height/font, which is the other half of why the three
+     looked like three different components. */
+  line-height: 1.4;
   font-variant-numeric: tabular-nums;
   animation: videoStatusIn 0.3s ease;
 }
@@ -3846,7 +3859,9 @@ body {
   background: rgba(0, 0, 0, 0.62);
   backdrop-filter: blur(4px);
   color: var(--text-primary);
+  font-family: inherit;
   font-size: 12px;
+  line-height: 1;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.3s ease, background 0.15s;

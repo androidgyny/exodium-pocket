@@ -433,9 +433,10 @@ export function GameDetailPanel(props: Props) {
     });
   });
 
-  // Autoplay as soon as it lands, muted - a preview that demands a click is
-  // barely better than no preview, and unmuted autoplay is a good way to make
-  // someone close the app.
+  // Autoplay as soon as it lands, with sound. Autoplay policies only grant
+  // that once the document has seen a user gesture, and opening this panel is
+  // one - but a preview is worth more than its audio, so a rejected unmuted
+  // play retries muted rather than leaving the cover sitting there.
   createEffect(() => {
     if (!videoReady()) { return; }
     // Deferred: the <video> mounts from the same signal change, so the ref is
@@ -445,13 +446,22 @@ export function GameDetailPanel(props: Props) {
       if (!el) { return; }
       try {
         el.currentTime = 0;
+        el.muted = false;
         const started = el.play();
         // Older WebKit returns undefined here instead of a promise. Calling
         // .then on that throws INSIDE the effect, and Solid propagates the
         // exception back to whoever set the signal - which made the video
         // store record a fetch error for a video that had arrived fine.
         if (started && typeof started.then === "function") {
-          started.then(() => setVideoPlaying(true)).catch(() => setVideoPlaying(false));
+          started.then(() => setVideoPlaying(true)).catch(() => {
+            el.muted = true;
+            const retry = el.play();
+            if (retry && typeof retry.then === "function") {
+              retry.then(() => setVideoPlaying(true)).catch(() => setVideoPlaying(false));
+            } else {
+              setVideoPlaying(true);
+            }
+          });
         } else {
           setVideoPlaying(true);
         }
@@ -459,6 +469,14 @@ export function GameDetailPanel(props: Props) {
         setVideoPlaying(false);
       }
     });
+  });
+
+  // The lightbox plays the same preview with its own controls, and both have
+  // sound now - so the hero has to step aside or the trailer runs twice over
+  // itself. Pausing also cross-fades the cover back in, which is what should
+  // be behind the lightbox anyway.
+  createEffect(() => {
+    if (lightboxOpen()) { heroVideoRef?.pause(); }
   });
 
   const handleManualClick = () => {
@@ -636,7 +654,7 @@ export function GameDetailPanel(props: Props) {
             <div class="game-detail-hero-art">
             <Show when={thumbSrc() && !imgError()}>
               <img
-                class={`game-detail-thumb${videoPlaying() ? " is-behind-video" : ""}`}
+                class="game-detail-thumb"
                 src={thumbSrc()!}
                 alt=""
                 onError={() => setImgError(true)}
@@ -654,7 +672,6 @@ export function GameDetailPanel(props: Props) {
                 ref={heroVideoRef}
                 class={`game-detail-hero-video${videoPlaying() ? " is-visible" : ""}`}
                 src={videoSrc()!}
-                muted
                 playsinline
                 preload="auto"
                 onEnded={() => setVideoPlaying(false)}
@@ -698,7 +715,12 @@ export function GameDetailPanel(props: Props) {
               <button
                 class="game-detail-video-replay"
                 title="Play the preview again"
-                onClick={() => heroVideoRef?.play()}
+                onClick={() => {
+                  // A click is the gesture autoplay may have lacked, so undo a
+                  // muted fallback rather than replaying silently forever.
+                  if (heroVideoRef) { heroVideoRef.muted = false; }
+                  heroVideoRef?.play();
+                }}
               >▶</button>
             </Show>
             </div>
