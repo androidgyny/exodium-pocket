@@ -424,6 +424,11 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<MergeTally, String> {
     let entries = std::fs::read_dir(src).map_err(|e| e.to_string())?;
     for entry in entries.filter_map(|e| e.ok()) {
         let from = entry.path();
+        // Not worth carrying across, and counting it would inflate the report
+        // the user reads. remove_empty_tree deletes what is left.
+        if is_os_metadata(&from) {
+            continue;
+        }
         let to = dst.join(entry.file_name());
         if !to.exists() {
             std::fs::rename(&from, &to)
@@ -466,9 +471,24 @@ fn remove_empty_tree(dir: &Path) {
         let p = entry.path();
         if p.is_dir() {
             remove_empty_tree(&p);
+        } else if is_os_metadata(&p) {
+            let _ = std::fs::remove_file(&p);
         }
     }
     let _ = std::fs::remove_dir(dir);
+}
+
+/// Files the OS drops into a folder on its own. They are not user data, and
+/// keeping them is not free: a merged folder that still holds a `.DS_Store` is
+/// not empty, so it survives, `stray_roots` finds it again and the migration
+/// prompt returns at every start with nothing left to move. Seen in testing
+/// with exactly two `.DS_Store` files against 48 GB moved.
+fn is_os_metadata(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    // `._x` is the AppleDouble sidecar a Mac writes on non-native filesystems.
+    matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini") || name.starts_with("._")
 }
 
 /// Look up a collection definition by ID.  Returns None for unknown IDs.
@@ -3283,6 +3303,9 @@ mod scan_tests {
         // And the other way round.
         std::fs::write(old.join("Placeholder.zip"), b"").unwrap();
         std::fs::write(new_root.join("Placeholder.zip"), b"already downloaded").unwrap();
+
+        // Finder leaves one of these in every folder it has been shown.
+        std::fs::write(dir.join("eXoWin9x/.DS_Store"), b"finder junk").unwrap();
 
         let stray = dir.join("eXoWin9x");
         let tally = merge_tree(&stray, &dir.join("eXoDOS")).unwrap();

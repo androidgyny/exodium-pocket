@@ -178,8 +178,11 @@ again at every start with nothing left to do (seen in testing). So on a
 conflict the **larger file wins** and the other is deleted: the loser is a
 zero-byte placeholder (librqbit allocates one per file in the collection) or a
 half-finished download, the winner the real archive. Emptied directories are
-removed; a folder still holding a file Exodium did not place there is kept and
-logged. Test: `merging_keeps_the_larger_copy_and_clears_the_old_folder`.
+removed - including OS junk (`.DS_Store`, `Thumbs.db`, `desktop.ini`,
+AppleDouble `._*`), which `is_os_metadata` skips on the way over and deletes on
+the way out; without that, two Finder files survived a 48 GB merge, the folder
+stayed, and the prompt came back at every start. A folder still holding a real
+file Exodium did not place there is kept and logged. Test: `merging_keeps_the_larger_copy_and_clears_the_old_folder`.
 
 ### 2b. History: per-collection subdirectories
 All four eXoDOS torrents have the same internal name `eXoDOS`, which causes librqbit file-path collisions when run against a shared directory. The layout is:
