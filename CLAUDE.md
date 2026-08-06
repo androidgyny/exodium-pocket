@@ -829,9 +829,17 @@ Net, Japanese and Win95DX8 parents; 86Box (Boso View Express) and 86boxME
 launch → save → uninstall → reinstall through Exodium itself; the wrapped-zip
 and zip-mount fixes; rescan and the folder-layout migration.
 
-**Still open**: `posters-eXoWin9x-v1.tar.gz` (38.9 MB, sha256 already in the
-manifest) is built in `thumbnails/` but content-v5 is NOT published - per §10
-it must go up BEFORE any app release referencing it. Nothing on Linux or
+`posters-eXoWin9x-v1.tar.gz` (39.5 MB, 664 covers for 663 distinct thumbnail
+keys - the two multi-entry titles share one) went up as **content-v5** on
+2026-08-06, `--latest=false`, hash round-trip verified against the manifest.
+All three poster tarballs carry macOS AppleDouble `._*` entries (one per image,
+invisible to `tar tzf` but not to Python/GNU tar) and `install_content_pack`'s
+blanket `.unpack()` writes them to disk. Harmless - the lookup is exact on
+`<key>.jpg` - and content-v4 shipped the same, so rebuilding one pack alone
+would only change its hash. Fix all three with `COPYFILE_DISABLE=1` at the next
+pack bump that re-downloads anyway.
+
+**Still open**: Nothing on Linux or
 Windows has been run at all (DOSBox-X via PATH/Flatpak, the 86Box AppImage,
 `pkexec setcap`, the parent-VHD case aliases, npcap, the PowerShell Wi-Fi
 probe). Remote multiplayer is unverified end to end - it needs a wired
