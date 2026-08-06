@@ -69,7 +69,7 @@ function App() {
     setMigrating(true);
     try {
       setMigrateStep("Moving files…");
-      const moved = await migrateLayout();
+      const tally = await migrateLayout();
       setMigrateStep("Reconnecting downloads…");
       await initDownloadManager();
       setMigrateStep("Checking your library…");
@@ -77,7 +77,10 @@ function App() {
       fetchGames();
       setLayoutMigration(null);
       setLayoutSkipped(false);
-      showToast(`Moved ${moved} item${moved !== 1 ? "s" : ""}`, "success", {
+      const parts = [`${tally.moved} moved`];
+      if (tally.deduped) { parts.push(`${tally.deduped} duplicates removed`); }
+      if (tally.skipped) { parts.push(`${tally.skipped} left alone`); }
+      showToast(parts.join(", "), "success", {
         detail: `${installed} game${installed !== 1 ? "s" : ""} available.`,
       });
     } catch (e) {

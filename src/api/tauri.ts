@@ -198,8 +198,14 @@ export async function pendingLayoutMigration(): Promise<LayoutMigration | null> 
   return invoke("pending_layout_migration");
 }
 
-/** Moves them; returns how many entries were relocated. */
-export async function migrateLayout(): Promise<number> {
+export interface MergeTally {
+  moved: number;
+  deduped: number;
+  skipped: number;
+}
+
+/** Moves them into the single root; reports what it did. */
+export async function migrateLayout(): Promise<MergeTally> {
   return invoke("migrate_layout");
 }
 

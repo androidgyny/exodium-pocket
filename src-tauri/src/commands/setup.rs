@@ -241,7 +241,7 @@ pub async fn skip_layout_migration(db_state: State<'_, DbState>) -> Result<(), S
 /// managers; librqbit re-checks the files in place rather than downloading
 /// them again.
 #[tauri::command]
-pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<usize, String> {
+pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<MergeTally, String> {
     let data_dir = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         load_root_folder(&conn);
@@ -250,9 +250,15 @@ pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<usize, Strin
             .ok_or("No data directory configured")?
     };
     let root = game_root(&data_dir);
-    let mut moved = 0usize;
-    for stray in stray_roots(&data_dir) {
-        moved += merge_tree(&stray, &root)?;
+    let mut tally = MergeTally::default();
+    let strays = stray_roots(&data_dir);
+    log::info!(
+        "Layout migration: merging {:?} into {}",
+        strays.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        root.display()
+    );
+    for stray in strays {
+        tally.add(merge_tree(&stray, &root)?);
         // Everything is either moved or a deleted duplicate by now, so what
         // remains is empty directories - clear them out so the folder is gone
         // and the prompt has nothing left to find. A folder that still holds
@@ -269,8 +275,13 @@ pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<usize, Strin
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         queries::set_config(&conn, "layout_migration", "done").map_err(|e| e.to_string())?;
     }
-    log::info!("Layout migration: moved {} entries into {}", moved, root.display());
-    Ok(moved)
+    log::info!(
+        "Layout migration: {} moved, {} duplicates removed, {} left alone",
+        tally.moved,
+        tally.deduped,
+        tally.skipped
+    );
+    Ok(tally)
 }
 
 /// Move `src`'s children into `dst`, descending where both sides have the
@@ -284,9 +295,31 @@ pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<usize, Strin
 /// Leaving both behind was the first attempt - it meant the old folders never
 /// disappeared, so the migration prompt came back at every start with nothing
 /// left to do.
-fn merge_tree(src: &Path, dst: &Path) -> Result<usize, String> {
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct MergeTally {
+    /// Files that only existed on the old side and were renamed across.
+    pub moved: usize,
+    /// Duplicates resolved - the smaller copy (usually a zero-byte torrent
+    /// placeholder) was deleted.
+    pub deduped: usize,
+    /// Entries neither side could resolve: a directory facing a file, or the
+    /// reverse. Counted rather than ignored, because "nothing happened and
+    /// nothing was reported" is exactly how the first version of this hid a
+    /// folder that never emptied.
+    pub skipped: usize,
+}
+
+impl MergeTally {
+    fn add(&mut self, other: MergeTally) {
+        self.moved += other.moved;
+        self.deduped += other.deduped;
+        self.skipped += other.skipped;
+    }
+}
+
+fn merge_tree(src: &Path, dst: &Path) -> Result<MergeTally, String> {
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    let mut moved = 0;
+    let mut tally = MergeTally::default();
     let entries = std::fs::read_dir(src).map_err(|e| e.to_string())?;
     for entry in entries.filter_map(|e| e.ok()) {
         let from = entry.path();
@@ -294,11 +327,11 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<usize, String> {
         if !to.exists() {
             std::fs::rename(&from, &to)
                 .map_err(|e| format!("moving {} to {}: {e}", from.display(), to.display()))?;
-            moved += 1;
+            tally.moved += 1;
             continue;
         }
         if from.is_dir() && to.is_dir() {
-            moved += merge_tree(&from, &to)?;
+            tally.add(merge_tree(&from, &to)?);
             let _ = std::fs::remove_dir(&from);
             continue;
         }
@@ -308,13 +341,21 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<usize, String> {
             std::fs::remove_file(&to).map_err(|e| e.to_string())?;
             std::fs::rename(&from, &to)
                 .map_err(|e| format!("replacing {}: {e}", to.display()))?;
-            log::info!("Layout migration: {} replaced a smaller copy", to.display());
-            moved += 1;
+            tally.moved += 1;
         } else if from.is_file() {
-            std::fs::remove_file(&from).map_err(|e| e.to_string())?;
+            std::fs::remove_file(&from)
+                .map_err(|e| format!("removing duplicate {}: {e}", from.display()))?;
+            tally.deduped += 1;
+        } else {
+            log::warn!(
+                "Layout migration: {} and {} are different kinds of entry - left alone",
+                from.display(),
+                to.display()
+            );
+            tally.skipped += 1;
         }
     }
-    Ok(moved)
+    Ok(tally)
 }
 
 /// Delete a directory tree that contains only (empty) directories.
@@ -3080,7 +3121,7 @@ mod scan_tests {
         std::fs::write(new_root.join("Placeholder.zip"), b"already downloaded").unwrap();
 
         let stray = dir.join("eXoWin9x");
-        let moved = merge_tree(&stray, &dir.join("eXoDOS")).unwrap();
+        let tally = merge_tree(&stray, &dir.join("eXoDOS")).unwrap();
         remove_empty_tree(&stray);
 
         assert!(new_root.join("Moved.zip").is_file(), "new files move across");
@@ -3094,7 +3135,9 @@ mod scan_tests {
             "already downloaded",
             "and the existing archive is kept when the old side is empty"
         );
-        assert!(moved >= 2);
+        assert_eq!(tally.moved, 2, "Moved.zip and the larger Real.zip");
+        assert_eq!(tally.deduped, 1, "the zero-byte Placeholder.zip is dropped");
+        assert_eq!(tally.skipped, 0);
         assert!(!stray.exists(), "the old folder must be gone, or we ask again forever");
         let _ = std::fs::remove_dir_all(&dir);
     }
