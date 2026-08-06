@@ -59,20 +59,32 @@ function App() {
   /** Set once the user declined, so Settings can still offer the merge. */
   const [layoutSkipped, setLayoutSkipped] = createSignal(false);
 
+  /** Move the old folders, then rebuild everything derived from them.
+   *
+   *  Blocking on purpose (see the overlay below): it renames thousands of
+   *  entries and re-checks the library afterwards, and a launcher that looks
+   *  idle while doing that invites a second click. */
+  const [migrateStep, setMigrateStep] = createSignal("");
   const runLayoutMigration = async () => {
     setMigrating(true);
     try {
-      await migrateLayout();
+      setMigrateStep("Moving files…");
+      const moved = await migrateLayout();
+      setMigrateStep("Reconnecting downloads…");
       await initDownloadManager();
-      await scanInstalledGames().catch(() => 0);
+      setMigrateStep("Checking your library…");
+      const installed = await scanInstalledGames().catch(() => 0);
       fetchGames();
       setLayoutMigration(null);
       setLayoutSkipped(false);
-      showToast("Game folders merged", "success");
+      showToast(`Moved ${moved} item${moved !== 1 ? "s" : ""}`, "success", {
+        detail: `${installed} game${installed !== 1 ? "s" : ""} available.`,
+      });
     } catch (e) {
-      showToast("Could not merge the folders", "error", { detail: String(e) });
+      showToast("Could not move the games", "error", { detail: String(e) });
     } finally {
       setMigrating(false);
+      setMigrateStep("");
     }
   };
   const [resetError, setResetError] = createSignal("");
@@ -773,6 +785,26 @@ function App() {
           open={showWelcomeModal()}
           onClose={() => setShowWelcomeModal(false)}
         />
+
+        {/* No cancel and no backdrop dismiss: half a move is the one state
+            worth avoiding, so the app stays busy until it is done. */}
+        <Show when={migrating()}>
+          <Portal>
+            <div class="ark-dialog-backdrop" />
+            <div class="ark-dialog-positioner">
+              <div class="ark-dialog-content playlist-dialog">
+                <h2 class="ark-dialog-title">Migrating your games</h2>
+                <p class="ark-dialog-desc">
+                  Files are moved, not copied - this should only take a moment.
+                </p>
+                <div class="dialog-progress">
+                  <span class="btn-spinner" />
+                  <span>{migrateStep()}</span>
+                </div>
+              </div>
+            </div>
+          </Portal>
+        </Show>
 
         {/* Layout merge: eXo ships one folder per pack but expects them
             merged, and Exodium now writes that same single tree. Older

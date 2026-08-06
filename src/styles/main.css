@@ -4145,3 +4145,13 @@ body {
   flex: 1;
   min-width: 180px;
 }
+
+/* Spinner row inside a blocking progress dialog (folder migration). */
+.dialog-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
