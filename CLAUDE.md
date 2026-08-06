@@ -789,13 +789,22 @@ menu (no `-nomenu`, unlike eXo's bats) so users can reach Video → output /
 fullscreen at runtime, and default to `windowresolution = 1024x768`, which
 fits every common display.
 
-**Still open**: 86Box end-to-end run (28+1 games - ROM discovery via `-P`
-with a non-adjacent exe is the open question); full in-app flow (download →
-install → launch through Exodium itself); NetHost/NetJoin multiplayer menus
-out of scope (solo play.cfg only);
-`posters-eXoWin9x-v1.tar.gz` (38.9 MB, sha256 in manifest) is built in
-`thumbnails/` but content-v5 is NOT published yet - per §10 it must go up
-BEFORE any app release referencing it.
+**Verified end to end on macOS** (dev build and .app): x98 games incl. the
+Net, Japanese and Win95DX8 parents; 86Box (Boso View Express) and 86boxME
+(Wing Commander IV, the only one); download → support-file fetch → install →
+launch → save → uninstall → reinstall through Exodium itself; the wrapped-zip
+and zip-mount fixes; rescan and the folder-layout migration.
+
+**Still open**: `posters-eXoWin9x-v1.tar.gz` (38.9 MB, sha256 already in the
+manifest) is built in `thumbnails/` but content-v5 is NOT published - per §10
+it must go up BEFORE any app release referencing it. Nothing on Linux or
+Windows has been run at all (DOSBox-X via PATH/Flatpak, the 86Box AppImage,
+`pkexec setcap`, the parent-VHD case aliases, npcap, the PowerShell Wi-Fi
+probe). Remote multiplayer is unverified end to end - it needs a wired
+connection nobody had. The catalogue upgrade for an existing 0.11 install
+(CATALOG_VERSION 6 + `enable_new_collections`) has only been exercised by
+resetting the stamp by hand. NetHost/NetJoin multiplayer menus stay out of
+scope (solo play.cfg only).
 
 ## Conventions
 
