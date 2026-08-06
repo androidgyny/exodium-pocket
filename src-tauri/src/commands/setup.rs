@@ -483,7 +483,7 @@ fn remove_empty_tree(dir: &Path) {
 /// not empty, so it survives, `stray_roots` finds it again and the migration
 /// prompt returns at every start with nothing left to move. Seen in testing
 /// with exactly two `.DS_Store` files against 48 GB moved.
-fn is_os_metadata(path: &Path) -> bool {
+pub(crate) fn is_os_metadata(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
@@ -1886,6 +1886,25 @@ pub async fn get_default_data_dir() -> Result<String, String> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "Cannot determine home directory".to_string())?;
     Ok(home)
+}
+
+/// Whether a directory holds nothing Exodium would recognise as game data.
+///
+/// "Change game folder" POINTS Exodium at a folder, it does not move anything
+/// into one - so an empty target is the signature of the misunderstanding: the
+/// user meant to relocate their library and is about to end up with an empty
+/// view and their games still on the old disk. OS metadata does not count as
+/// content; a Finder visit is not an install.
+#[tauri::command]
+pub async fn data_dir_is_empty(path: String) -> Result<bool, String> {
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Ok(true);
+    }
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    Ok(!entries
+        .flatten()
+        .any(|entry| !is_os_metadata(&entry.path())))
 }
 
 /// All known eXo collections.
@@ -3643,5 +3662,46 @@ mod gallery_cache_tests {
 
         assert!(gallery_thumbnail(&src, &cache).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_with_only_os_metadata_counts_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".DS_Store"), b"x").unwrap();
+        std::fs::write(tmp.path().join("._something"), b"x").unwrap();
+        // A Finder visit is not an install - the warning has to fire here, or
+        // it never fires for the macOS users who most need it.
+        let empty = tauri::async_runtime::block_on(data_dir_is_empty(
+            tmp.path().to_string_lossy().to_string(),
+        ))
+        .unwrap();
+        assert!(empty);
+    }
+
+    #[test]
+    fn a_folder_holding_game_data_is_not_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("eXo/eXoDOS")).unwrap();
+        let empty = tauri::async_runtime::block_on(data_dir_is_empty(
+            tmp.path().to_string_lossy().to_string(),
+        ))
+        .unwrap();
+        assert!(!empty);
+    }
+
+    #[test]
+    fn a_folder_that_does_not_exist_yet_counts_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nope");
+        let empty = tauri::async_runtime::block_on(data_dir_is_empty(
+            missing.to_string_lossy().to_string(),
+        ))
+        .unwrap();
+        assert!(empty);
     }
 }

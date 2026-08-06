@@ -341,6 +341,12 @@ export async function getDefaultDataDir(): Promise<string> {
   return invoke("get_default_data_dir");
 }
 
+/** True when a folder holds nothing Exodium would recognise as game data.
+ *  Used to catch the "I meant to move my library" misreading of Change. */
+export async function dataDirIsEmpty(path: string): Promise<boolean> {
+  return invoke("data_dir_is_empty", { path });
+}
+
 export async function getTorrentInfo(): Promise<TorrentInfo> {
   return invoke("get_torrent_info");
 }

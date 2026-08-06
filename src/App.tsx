@@ -24,6 +24,7 @@ import {
   setConfig,
   setRateLimits,
   scanInstalledGames,
+  dataDirIsEmpty,
   openLogFolder,
   pendingLayoutMigration,
   migrateLayout,
@@ -204,17 +205,36 @@ function App() {
     }
   };
 
-  /** Point the app at a different game folder.
-   *
-   *  Everything derived from the old location has to be rebuilt, and the
-   *  install flags most of all: they are per-game rows in the database, so
-   *  after a move every game still claims to live at the old path and Play
-   *  fails with "not installed" until something re-checks the disk. Doing
-   *  that here (and reporting the count) also answers the question the user
-   *  actually has at this moment - did it find my games? */
+  /** Point the app at a different game folder. */
+  /** Folder the user picked but has not confirmed yet, or null. */
+  const [pendingDataDir, setPendingDataDir] = createSignal<string | null>(null);
+
   const handleChangeDataDir = async () => {
     const selected = await open({ title: "Select new data directory", directory: true });
     if (!selected) return;
+    // An EMPTY target is the signature of the misreading this setting invites:
+    // Change points Exodium at a folder, it never moves anything into one. Ask
+    // before leaving someone with an empty library and their games still on
+    // the old disk. Only worth asking if they HAVE anything to leave behind -
+    // a user with nothing downloaded is just choosing where to start.
+    const [targetEmpty, currentEmpty] = await Promise.all([
+      dataDirIsEmpty(selected).catch(() => false),
+      dataDir() ? dataDirIsEmpty(dataDir()).catch(() => true) : Promise.resolve(true),
+    ]);
+    if (targetEmpty && !currentEmpty) {
+      setPendingDataDir(selected);
+      return;
+    }
+    await applyDataDir(selected);
+  };
+
+  /** Everything derived from the old location has to be rebuilt, and the
+   *  install flags most of all: they are per-game rows in the database, so
+   *  after a change every game still claims to live at the old path and Play
+   *  fails with "not installed" until something re-checks the disk. Doing that
+   *  here (and reporting the count) also answers the question the user
+   *  actually has at this moment - did it find my games? */
+  const applyDataDir = async (selected: string) => {
     await setConfig("data_dir", selected);
     setDataDir(selected);
     await initDownloadManager();
@@ -552,10 +572,18 @@ function App() {
                     <div class="settings-body">
                       <section class="settings-section">
                         <h3 class="settings-section-title">Library</h3>
+                        {/* "Change" is a POINTER, not a move - and nothing on
+                            the row said so, which invites the reading that it
+                            relocates a 282 GB library. */}
                         <div class="setting-row">
                           <span class="setting-label">Game folder</span>
                           <span class="setting-value">{gameFolderPath() || "Not set"}</span>
-                          <Button variant="small" onClick={handleChangeDataDir}>Change</Button>
+                          <Button variant="small" onClick={handleChangeDataDir}>Change…</Button>
+                        </div>
+                        <div class="setting-row setting-row-note">
+                          <span class="setting-hint">
+                            Points Exodium at an existing folder - your downloaded games are not moved.
+                          </span>
                         </div>
                         <div class="setting-row">
                           <span class="setting-label">Installed games</span>
@@ -835,6 +863,23 @@ function App() {
             // is lost by taking the offer away here.
             if (declined) { void skipLayoutMigration().then(() => setLayoutSkipped(true)); }
           }}
+        />
+        {/* Change points at a folder, it never moves one - so the case worth
+            catching is an empty target chosen by someone who meant to
+            relocate. Naming the old path is the point: it says where the games
+            actually stay. */}
+        <ConfirmDialog
+          open={pendingDataDir() !== null}
+          title="That folder is empty"
+          message={`Exodium will look for games in ${pendingDataDir() ?? ""}, but it does not move anything there. Your downloaded games stay in ${dataDir()} and keep using that space. Use the empty folder anyway?`}
+          confirmLabel="Use it anyway"
+          cancelLabel="Cancel"
+          onConfirm={() => {
+            const dir = pendingDataDir();
+            setPendingDataDir(null);
+            if (dir) { void applyDataDir(dir); }
+          }}
+          onClose={() => setPendingDataDir(null)}
         />
         <SeedingConsentDialog
           open={showSeedingConsent()}
