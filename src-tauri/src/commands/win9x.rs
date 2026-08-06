@@ -1122,7 +1122,31 @@ pub(crate) async fn launch_win9x_game(
                 })
                 .await
                 .map_err(|e| format!("extraction task failed: {e}"))?;
-                extract.map_err(|e| format!("Failed to extract game before launch: {e}"))?;
+                if let Err(e) = extract {
+                    // `zip.exists()` is true for almost the whole collection:
+                    // librqbit allocates a 0-byte placeholder per torrent file,
+                    // and a neighbouring download leaves piece-sized fragments
+                    // (measured on this pack: 620 placeholders + 29 fragments
+                    // of 664). So the "files not found" arm below is nearly
+                    // unreachable and an undownloaded game arrives HERE, as a
+                    // zip that won't open. Say so, and clear `installed` so the
+                    // next click offers a download instead of repeating this.
+                    let msg = e.to_string();
+                    if msg.contains("EOCD")
+                        || msg.contains("invalid Zip")
+                        || msg.contains("Invalid archive")
+                    {
+                        if let Ok(conn) = app.state::<super::DbState>().0.lock() {
+                            let _ = crate::db::queries::set_game_installed(&conn, id, false);
+                        }
+                        return Err(format!(
+                            "Game ZIP for '{}' is incomplete or corrupted (torrent placeholder). \
+                             Please re-download the game.",
+                            game.title
+                        ));
+                    }
+                    return Err(format!("Failed to extract game before launch: {msg}"));
+                }
             } else {
                 return Err(format!(
                     "Game files not found for '{}'. The game may need to be re-downloaded.",
