@@ -177,6 +177,21 @@ pub async fn pending_layout_migration(
     if strays.is_empty() {
         return Ok(None);
     }
+    if asked.as_deref() == Some("skip") {
+        // Worth a log line every start: those folders are not read, so their
+        // games look uninstalled and a re-download lands a second copy in the
+        // real root while the first keeps occupying the disk.
+        log::warn!(
+            "Layout: {} folder(s) next to the game root are being ignored ({}). \
+             Merge them from Settings to make their games visible again.",
+            strays.len(),
+            strays
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     // Apparent size only - walking 282 GB of files to add up bytes would
     // stall startup, and the dialog only needs an order of magnitude.
     let bytes = strays.iter().map(|p| dir_size_shallow(p)).sum();

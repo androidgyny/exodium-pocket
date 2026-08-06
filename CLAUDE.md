@@ -134,6 +134,13 @@ so Settings → Library can offer the merge later. Hence no "don't ask again"
 checkbox: with the merge reachable from Settings, "Not now" can simply mean
 "not now, ask me nowhere else".
 
+Declining is not free, and the dialog says so: paths come from the single root
+only, so an unmerged folder is invisible - its games read as uninstalled and
+re-downloading one puts a SECOND copy in the real root while the first keeps
+the disk space. Reading from both roots was deliberately not reintroduced;
+that is the multi-root complexity this change removed, and it would let the
+split grow instead of ending it.
+
 The migration must LEAVE NOTHING BEHIND, because the prompt keys on "does a
 stray root still exist" - a merge that stops at the first name clash asks
 again at every start with nothing left to do (seen in testing). So on a
