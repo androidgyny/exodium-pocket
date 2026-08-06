@@ -1109,9 +1109,41 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Anchor for the two cover layers. The sharp one stays in normal flow so it
+   keeps defining the card's height - only the blurry understudy is taken out
+   of it, which leaves the `:has(.game-card-thumb)` aspect-ratio rule intact. */
+.game-card-art {
+  position: relative;
+}
+
 .game-card-thumb {
+  position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
+  object-fit: cover;
+  display: block;
+  background: var(--bg-secondary);
+}
+
+/* A cover only fades when it REPLACES one already on screen - installing a
+   poster pack swapping blurry for sharp. First paint has nothing to dissolve
+   from, and fading it in put a 350 ms ramp on every tile of every scroll. */
+.game-card-thumb.is-fading-in {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.game-card-thumb.is-fading-in.is-loaded {
+  opacity: 1;
+}
+
+/* The outgoing cover, held underneath until its replacement has decoded. No
+   transition of its own: it is the floor the new one dissolves onto. */
+.game-card-thumb-base {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   display: block;
   background: var(--bg-secondary);
@@ -1151,11 +1183,26 @@ body {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
+/* Year and genre are two different KINDS of fact, and side by side with only
+   a gap between them they read as one string ("1995 Action"). A separator
+   gives them structure without adding colour - the grid shows thousands of
+   these at once, and a hue per genre turned the whole page restless. */
 .game-card-meta {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.game-card-meta > span + span::before {
+  content: "\00B7";
+  margin-right: 5px;
+  opacity: 0.55;
+}
+
+/* The genre is the half you scan by, so it keeps the brighter tone. */
+.game-card-meta .genre {
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .genre {
@@ -1240,6 +1287,28 @@ body {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   min-width: 120px;
   max-width: 240px;
+}
+
+/* Anchored by its right edge: the ⋯ button sits at the end of the action bar,
+   and a left-anchored menu hangs off the panel at its narrow end. */
+.context-menu.is-right-anchored {
+  transform: translateX(-100%);
+}
+
+/* The grid's own context menu sits at 61, which is under the detail panel
+   (150) - opened from there it rendered behind it and read as a dead button.
+   Same pair of layers the playlist menu already uses over the panel. */
+.context-menu.is-above-panel {
+  z-index: 401;
+}
+
+.context-backdrop.is-above-panel {
+  z-index: 400;
+}
+
+.context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .context-menu-item {
@@ -2045,6 +2114,13 @@ body {
   white-space: nowrap;
 }
 
+/* A note that belongs to the row above rather than a setting of its own:
+   no label column, no control, and pulled up tight against it. */
+.setting-row-note {
+  margin-top: -6px;
+  padding-top: 0;
+}
+
 .setting-hint {
   font-size: 12px;
   color: var(--text-muted);
@@ -2595,9 +2671,9 @@ body {
   top: 0;
   right: 0;
   bottom: 0;
-  /* Wide enough for fields and description to sit side by side on a normal
-     window; falls back to the old single-column width on small ones, where
-     .game-detail-columns wraps by itself. */
+  /* The description now runs the full width instead of sharing it with the
+     field table, so this only has to be a comfortable reading measure - it no
+     longer has to be wide enough for two columns at once. */
   width: clamp(380px, 40vw, 560px);
   z-index: 150;
   background: var(--bg-secondary);
@@ -2641,6 +2717,49 @@ body {
   color: var(--danger);
 }
 
+/* ── Hover controls over the artwork ─────────────────────────────────────────
+   Close, sound, replay and the zoom hint all sit ON the cover. At rest the
+   panel opens on the artwork alone; the controls arrive with the pointer.
+   Focus counts as hover, or a keyboard user tabs to buttons they cannot see. */
+.game-detail-close,
+.game-detail-video-sound,
+.game-detail-video-replay,
+.game-detail-zoom-hint {
+  opacity: 0;
+}
+
+.game-detail-hero:hover .game-detail-close,
+.game-detail-hero:hover .game-detail-video-replay,
+.game-detail-hero:hover .game-detail-zoom-hint,
+.game-detail-close:focus-visible {
+  opacity: 1;
+}
+
+.game-detail-hero:hover .game-detail-video-sound {
+  opacity: 0.75;
+}
+
+/* Centred, and deliberately NOT a button: the artwork underneath already
+   opens the lightbox, and a real target here would swallow clicks aimed at
+   the middle of the cover. */
+.game-detail-zoom-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  color: var(--text-primary);
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
 .game-detail-hero {
   position: relative;
   flex-shrink: 0;
@@ -2654,14 +2773,33 @@ body {
 }
 
 .game-detail-thumb {
+  position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
   /* Cap the height so a wider panel doesn't spend its extra pixels on box art
      that then pushes everything else below the fold. */
   max-height: 240px;
-  object-fit: cover;
+  /* CONTAIN, not cover. Box art is portrait (3:4) and the hero is 16:9, so
+     cover threw away the top and bottom third - the panel opened on a crop of
+     the middle of the artwork, often just a background texture. */
+  object-fit: contain;
   display: block;
   cursor: pointer;
+}
+
+/* The same artwork, blown up and blurred, fills what `contain` leaves empty.
+   Cheaper than letterbox bars and it carries the cover's own palette into the
+   panel. scale() hides the soft edge the blur pulls in from the border. */
+.game-detail-thumb-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(22px) saturate(1.25);
+  transform: scale(1.15);
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .game-detail-thumb-placeholder {
@@ -2682,11 +2820,6 @@ body {
   margin-bottom: 6px;
 }
 
-.game-detail-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
 
 .game-detail-body {
   padding: 8px 16px 12px;
@@ -2723,15 +2856,85 @@ body {
 .game-detail-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 2px; }
 .game-detail-scroll::-webkit-scrollbar-track { background: transparent; }
 
+/* A compatibility note is an aside, not an alarm. The accent bar down one
+   edge made every one of them read as a system warning and pulled the eye off
+   the actions below, so the container is a plain hairline card and the only
+   varying element is a small round mark - "i" for what merely differs, "!"
+   for a launch that cannot work. No color bar, no fill tint by severity. */
 .game-detail-note {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 9px;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.04);
-  border-left: 3px solid var(--accent);
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: var(--border-radius);
-  padding: 8px 12px;
+  padding: 9px 10px 9px 11px;
   margin-bottom: 12px;
+}
+
+.game-detail-note-mark {
+  /* Optically centred on the first line of text rather than the box: with
+     align-items: start a 16px circle beside a 18px line sits 1px high. */
+  margin-top: 1px;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  font-style: italic;
+  line-height: 1;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.game-detail-note.is-blocking .game-detail-note-mark {
+  border-color: rgba(233, 69, 96, 0.5);
+  color: var(--danger);
+  font-style: normal;
+}
+
+.game-detail-note-text {
+  margin: 0;
+}
+
+/* Visible at rest, because a note the user cannot see how to silence is just
+   a note. Quiet enough not to compete with the action bar underneath. */
+.game-detail-note-dismiss {
+  flex: none;
+  margin: -2px -2px 0 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.game-detail-note-dismiss:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-primary);
+}
+
+.game-detail-note-dismiss:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .game-detail-status {
@@ -2942,18 +3145,8 @@ body {
   padding: 4px 0;
 }
 
-/* Fields + description as a wrapping pair: side by side while the panel is
-   wide, stacked below ~460px of content width. No media query - the flex
-   basis values decide, so it also holds if the panel width changes. */
-.game-detail-columns {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 12px;
-}
 
 .game-detail-text {
-  flex: 2 1 250px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -2970,38 +3163,122 @@ body {
   padding: 5px 8px;
 }
 
+/* The "Information" long tail. Full panel width now, so two label/value pairs
+   fit per line and nothing wraps - the block is both shorter and calmer than
+   the single narrow column it replaced. Rows are `display: contents`, so the
+   columns align across the whole grid rather than per row. */
 .game-detail-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1 1 200px;
+  display: grid;
+  grid-template-columns: 13px auto minmax(0, 1fr) 13px auto minmax(0, 1fr);
+  align-items: baseline;
+  /* The row gap has to beat the LINE gap inside a value, or a wrapped value
+     runs straight into the next field and the block reads as one paragraph. */
+  gap: 9px 8px;
   min-width: 0;
-  padding: 6px 10px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 6px;
 }
 
-.game-detail-field {
+@media (max-width: 470px) {
+  .game-detail-fields {
+    grid-template-columns: 13px auto minmax(0, 1fr);
+  }
+}
+
+.game-detail-info {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ── Credits and tags under the title ────────────────────────────────────────
+   The pictogram replaces the label here: with three lines whose values read
+   as names and a year, uppercase labels were three columns of furniture. */
+.game-detail-credits {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.game-detail-credit {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.game-detail-credit .game-detail-field-icon {
+  transform: none;
+  flex: none;
+}
+
+/* Tinted per CATEGORY, not per state: the same category is the same colour on
+   every game, so the row reads as a legend. Deliberately quieter than the
+   badges in the grid - this is context, not a call to action. */
+.game-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.game-detail-tag {
+  padding: 3px 9px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.game-detail-tag.is-genre {
+  background: rgba(124, 92, 252, 0.16);
+  color: #b9a6ff;
+}
+
+.game-detail-tag.is-platform {
+  background: rgba(56, 139, 253, 0.15);
+  color: #8ab4f8;
+}
+
+.game-detail-tag.is-mode {
+  background: rgba(46, 160, 67, 0.15);
+  color: #7ee787;
+}
+
+.game-detail-tag.is-emulator {
+  background: rgba(240, 180, 41, 0.13);
+  color: #f0c674;
+}
+
+/* Icon, label, value. A grid rather than flex so the three columns line up
+   down the whole block - with flex, a wrapping value pulled its label out of
+   alignment with the rest and the icon rail lost its rhythm. */
+.game-detail-field {
+  display: contents;
   font-size: 11.5px;
   color: var(--text-primary);
 }
 
+/* Dimmer than the label it precedes: it marks the row, it does not name it. */
+.game-detail-field-icon {
+  /* Baseline alignment puts an inline SVG's bottom edge on the text baseline,
+     which sits it a touch high next to 10px uppercase. */
+  transform: translateY(2px);
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
 .game-detail-field-label {
   color: var(--text-muted);
-  min-width: 70px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  flex-shrink: 0;
 }
 
 .game-detail-field > span:last-child {
   word-break: break-word;
-  flex: 1;
+  line-height: 1.4;
   min-width: 0;
 }
 
@@ -3057,6 +3334,40 @@ body {
 .btn-manual:disabled {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-muted);
+}
+
+/* Outline star until it is set, then filled and amber - the same reading as
+   the grid's overlay star, so the two never disagree at a glance. */
+.btn-fav {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  padding: 7px 12px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.btn-fav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.btn-fav.is-favorited {
+  background: rgba(240, 180, 41, 0.14);
+  color: #f0b429;
+}
+
+/* Deliberately the quietest control in the bar: it holds what is rarely
+   wanted, including the two operations that destroy data. */
+.btn-more {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  padding: 7px 12px;
+  letter-spacing: 0.08em;
+}
+
+.btn-more:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
 }
 
 .btn-settings {
@@ -3824,15 +4135,6 @@ body {
   animation: videoStatusIn 0.3s ease;
 }
 
-/* Held briefly, then faded: a closing statement, not a label. */
-.game-detail-video-status.is-fading-out {
-  animation: videoStatusIn 0.3s ease, videoStatusOut 0.6s ease 2s forwards;
-}
-
-@keyframes videoStatusOut {
-  to { opacity: 0; transform: translateY(4px); }
-}
-
 @keyframes videoStatusIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
@@ -3863,17 +4165,52 @@ body {
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
+  /* No entry animation. `videoStatusIn ... forwards` left the button parked at
+     opacity 1 - an animation's fill wins over the declarative value - so the
+     hover rule below never actually did anything and Replay sat on the cover
+     permanently. */
   transition: opacity 0.3s ease, background 0.15s;
-  animation: videoStatusIn 0.3s ease forwards;
-}
-
-.game-detail-hero:hover .game-detail-video-replay {
-  opacity: 1;
 }
 
 .game-detail-video-replay:hover {
   background: rgba(124, 92, 252, 0.85);
+}
+
+/* Bottom-RIGHT, so it never shares a corner with the progress pill or the
+   replay button - both of which live bottom-left. Visible while the preview
+   runs rather than on hover only: muting is the reason someone reaches for
+   the hero at all, and a control they have to find first is no control. */
+.game-detail-video-sound {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(4px);
+  color: var(--text-primary);
+  font-family: inherit;
+  /* Grid, not line-height: the icon is an <svg>, and an inline child would
+     sit on the text baseline and hang a pixel low inside the circle. */
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.15s;
+}
+
+.game-detail-video-sound:hover,
+.game-detail-video-sound:focus-visible {
+  opacity: 1;
+  background: rgba(124, 92, 252, 0.85);
+}
+
+.game-detail-video-sound:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* The thumbnail strip floats over the stage, which is fine for images but put

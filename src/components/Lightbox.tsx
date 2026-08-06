@@ -2,6 +2,7 @@ import { createSignal, createEffect, on, onCleanup, Show, For } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { previewMuted } from "../stores/playback";
 
 interface LightboxProps {
   images: string[];
@@ -156,11 +157,15 @@ export function Lightbox(props: LightboxProps) {
             onMouseMove={onMouseMove}
           >
             <Show when={isVideoAt(idx())}>
+              {/* Same global preference as the hero preview - opening the
+                  lightbox is a bigger view of the same trailer, not a reason
+                  to start making noise. Its own controls can override. */}
               <video
                 class="lightbox-video"
                 src={props.video!}
                 controls
                 autoplay
+                muted={previewMuted()}
                 playsinline
                 onClick={(e) => e.stopPropagation()}
               />

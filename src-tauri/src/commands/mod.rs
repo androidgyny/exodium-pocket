@@ -25,7 +25,7 @@ pub use playlists::{
 pub use setup::{
     bundled_metadata_dir, collection_base_id, factory_reset, game_name_from_app_path,
     get_available_collections, get_default_data_dir, get_game_metadata, get_log_dir,
-    get_poster_dir, get_preview_dir, get_setup_status, get_thumbnail_dir, get_torrent_info,
+    data_dir_is_empty, get_poster_dir, get_preview_dir, get_setup_status, get_thumbnail_dir, get_torrent_info,
     init_download_manager, init_log_dir, init_resource_dir, open_log_folder,
     scan_installed_games, setup_from_local, setup_import, setup_start, validate_exodos_dir,
     CollectionDef, COLLECTION_MAP, TorrentState,
