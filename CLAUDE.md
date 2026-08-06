@@ -126,6 +126,19 @@ layout, it made an imported eXo installation look half-empty (only the DOS
 pack was found, inviting a second 282 GB download), and it is not a layout any
 eXo tool creates.
 
+**librqbit's session persistence pins the output folder, so it has to be
+policed on every start.** `session.json` stores each torrent's
+`output_folder` from when it was ADDED, and a restored torrent keeps it - our
+`add_torrent` then returns `AlreadyManaged` and the option is ignored.
+`evict_mismatched_session_torrents` therefore drops every persisted torrent
+whose folder is not EXACTLY `game_root` (an "is it under the data dir?" check
+is not enough - `<data>/eXoWin9x` passes that one) and lets the normal add
+recreate it. Eviction also removes the `.bitv`, which is correct: the
+bitfield described a tree at the old path. For the same reason `migrate_layout`
+clears the managers BEFORE it moves anything - librqbit's init opens, and
+therefore creates, every selected file, so a live session re-materialized the
+whole old tree one second after the merge emptied it.
+
 Installs made before this keep their old folders until the user agrees to move
 them: `pending_layout_migration` finds strays, `migrate_layout` renames them
 into the root. Declining writes `layout_migration = skip`, which only silences

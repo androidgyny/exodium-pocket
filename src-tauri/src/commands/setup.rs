@@ -241,7 +241,19 @@ pub async fn skip_layout_migration(db_state: State<'_, DbState>) -> Result<(), S
 /// managers; librqbit re-checks the files in place rather than downloading
 /// them again.
 #[tauri::command]
-pub async fn migrate_layout(db_state: State<'_, DbState>) -> Result<MergeTally, String> {
+pub async fn migrate_layout(
+    db_state: State<'_, DbState>,
+    torrent_state: State<'_, TorrentState>,
+) -> Result<MergeTally, String> {
+    // Stop the torrent engine before touching a single file. librqbit's
+    // session opens (and therefore CREATES) every selected file of a torrent,
+    // so a live session pointed at the old folder re-materializes the whole
+    // tree the instant the merge empties it - measured: 673 files back one
+    // second after the move. Dropping the managers releases the last Arc to
+    // the session; the frontend calls init_download_manager afterwards, which
+    // rebuilds it against the single root.
+    torrent_state.0.write().await.clear();
+
     let data_dir = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         load_root_folder(&conn);
@@ -882,11 +894,17 @@ fn apply_transfer_preferences(session: &Arc<librqbit::Session>, db_state: &State
     crate::torrent::manager::apply_session_limits(session, seeding, up_kbps, down_kbps);
 }
 
-/// Drop session torrents whose persisted output folder is outside the current
-/// data dir (the user changed the data dir since they were added). Adopting
-/// them via hydrate_from_session would report progress against files librqbit
-/// writes to the OLD location - extraction probes the new one and loops on
-/// "100% but ZIP missing" forever.
+/// Drop session torrents whose persisted output folder is not the current game
+/// root. Adopting them via hydrate_from_session would report progress against
+/// files librqbit writes to the OLD location - extraction probes the new one
+/// and loops on "100% but ZIP missing" forever.
+///
+/// The test is EXACT, not "somewhere under the data dir": every torrent is
+/// added with `output_folder = game_root`, so any other value is stale by
+/// definition. The looser check let the pre-single-root layout survive - a
+/// torrent persisted with `<data>/eXoWin9x` sat inside the data dir, passed,
+/// and librqbit re-created its whole file tree there seconds after the layout
+/// migration had merged it away.
 async fn evict_mismatched_session_torrents(
     session: &Arc<librqbit::Session>,
     persistence_dir: &Path,
@@ -924,7 +942,7 @@ async fn evict_mismatched_session_torrents(
             s
         }
     };
-    let data_norm = normalize(&data_path.to_string_lossy());
+    let root_norm = normalize(&game_root(&data_path.to_string_lossy()).to_string_lossy());
 
     for entry in torrents.values() {
         let (Some(hash), Some(folder)) = (
@@ -933,10 +951,7 @@ async fn evict_mismatched_session_torrents(
         ) else {
             continue;
         };
-        let folder_norm = normalize(folder);
-        // Explicit path boundary: "/data/eXoDOS-old" must not pass a
-        // "/data/eXoDOS" prefix check.
-        if folder_norm == data_norm || folder_norm.starts_with(&format!("{}/", data_norm)) {
+        if normalize(folder) == root_norm {
             continue;
         }
         let stale_id = session.with_torrents(|iter| {
@@ -949,8 +964,8 @@ async fn evict_mismatched_session_torrents(
         });
         if let Some(tid) = stale_id {
             log::warn!(
-                "Evicting session torrent {} - persisted output folder {} is outside data dir {}",
-                hash, folder, data_norm
+                "Evicting session torrent {} - persisted output folder {} is not the game root {}",
+                hash, folder, root_norm
             );
             if let Err(e) = session
                 .delete(librqbit::api::TorrentIdOrHash::Id(tid), false)
