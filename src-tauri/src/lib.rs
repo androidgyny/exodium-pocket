@@ -30,7 +30,8 @@ use commands::{
     get_transfer_stats, open_log_folder, open_manual, scan_installed_games, set_config, set_rate_limits,
     set_seeding_enabled, setup_from_local, setup_import,
     update_check_supported,
-    setup_start, toggle_favorite, uninstall_content_pack, uninstall_game, validate_exodos_dir,
+    reset_game_data, setup_start, toggle_favorite, uninstall_content_pack, uninstall_game,
+    validate_exodos_dir,
     ContentPackState, DbState, TorrentState,
 };
 
@@ -621,6 +622,7 @@ pub fn run() {
             download_game,
             cancel_download,
             uninstall_game,
+            reset_game_data,
             get_download_progress,
             toggle_favorite,
             get_section_keys,

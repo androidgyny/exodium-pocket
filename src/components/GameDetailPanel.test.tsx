@@ -127,6 +127,35 @@ describe("GameDetailPanel", () => {
     b.dispose(); b.host.remove();
   });
 
+  // Reset throws away savegames, so a single stray click must not do it.
+  it("only resets game data on the second click", async () => {
+    const { host, dispose } = mount(makeGame({ installed: true }));
+    await Promise.resolve();
+
+    const button = [...host.ownerDocument.querySelectorAll("button")]
+      .find((b) => b.className.includes("btn-reset"));
+    expect(button, "installed games should offer Reset").toBeTruthy();
+
+    button!.click();
+    await Promise.resolve();
+    expect(mockInvoke).not.toHaveBeenCalledWith("reset_game_data", expect.anything());
+    expect(button!.textContent).toContain("Discard all game data?");
+
+    button!.click();
+    await Promise.resolve();
+    expect(mockInvoke).toHaveBeenCalledWith("reset_game_data", { id: 1 });
+    dispose(); host.remove();
+  });
+
+  it("does not offer Reset for a game that is not installed", async () => {
+    const { host, dispose } = mount(makeGame({ installed: false }));
+    await Promise.resolve();
+    const button = [...host.ownerDocument.querySelectorAll("button")]
+      .find((b) => b.className.includes("btn-reset"));
+    expect(button).toBeUndefined();
+    dispose(); host.remove();
+  });
+
   // The header names the row every button acts on. PL/ES variants carry
   // genuinely different titles, so showing the English one while DE is
   // selected would misidentify what Play/Uninstall would touch.

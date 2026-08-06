@@ -210,6 +210,25 @@ This lets the "My Games" view show a download progress card immediately when the
 ### 5. Save backup via atomic rename (not file-diff)
 On uninstall, the entire game directory is moved to `!save/<shortcode>/` (EN) or `<lang_dir>/!save/<shortcode>/` (LP variants - language-scoped since 0.8.4 so variants can't clobber each other's backup) via `std::fs::rename`. On reinstall, `extract_game_zip` restores it, probing the lang-scoped location first, then the legacy shared one. Simple, preserves every user modification, no `zip --dif` gymnastics.
 
+Because that restore is unconditional, **uninstall + reinstall cannot produce a
+clean slate** - `reset_game_data` (detail panel, "↺ Reset", two-click confirm)
+is the operation that can: it deletes the game dir AND the `!save/` backup, then
+unpacks the ZIP again. It validates the ZIP BEFORE deleting anything, since
+`zip.exists()` is true for almost every uninstalled game (see §16) and a
+placeholder must not cost the user their install.
+
+It matters beyond savegames for eXoWin9x, where the game's own VHD is D: and
+holds the guest filesystem. Windows clears that volume's FAT "clean shutdown"
+bit on the first write and only restores it on a proper shutdown, so a session
+ended by closing the emulator window leaves it dirty and the next boot runs
+ScanDisk - self-perpetuating, since the repaired volume is dirtied again on the
+next unclean exit. Measured on a dev machine: 2 of 11 installed Win9x games sat
+at `FAT[1] = 0x07ffffff` between sessions. Do NOT "fix" that by clearing the bit
+directly - that skips the filesystem check after a hard abort, turning a
+detected inconsistency into silent save corruption. Reset restores the pristine
+VHD from the ZIP instead; the durable answer is shutting Windows down from the
+Start menu.
+
 ### 6. LP games auto-download shared EN GameData
 Videos and animations for LP games live in the main eXoDOS torrent's GameData folder. `download_game` in `games.rs` auto-fetches the matching EN GameData entry when installing an LP variant. `get_game_variants` dynamically subtracts the EN GameData size from the displayed download size if it's already on disk.
 
@@ -838,6 +857,16 @@ blanket `.unpack()` writes them to disk. Harmless - the lookup is exact on
 `<key>.jpg` - and content-v4 shipped the same, so rebuilding one pack alone
 would only change its hash. Fix all three with `COPYFILE_DISABLE=1` at the next
 pack bump that re-downloads anyway.
+
+**`zip.exists()` is not "the game is downloaded".** librqbit allocates a 0-byte
+placeholder per torrent file and a neighbouring download leaves piece-sized
+fragments behind - measured on this pack: of 664 zips on disk, 620 were
+placeholders and 29 fragments. So the launch-time auto-extract's "files not
+found" arm is nearly unreachable and an undownloaded game arrives as a zip that
+won't open; both launch paths therefore map an EOCD/invalid-archive error to
+"incomplete or corrupted (torrent placeholder)" and clear `installed`, or the
+user hits the same failure on every click. The DOS path had this from the
+start; `win9x.rs` did not until 2026-08-06.
 
 **Still open**: Nothing on Linux or
 Windows has been run at all (DOSBox-X via PATH/Flatpak, the 86Box AppImage,

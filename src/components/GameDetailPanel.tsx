@@ -9,7 +9,7 @@ import { PlaylistMenu } from "./PlaylistMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xMultiplayerInfo, dismissWin9xNetworkPrompt, enableWin9xNetwork } from "../api/tauri";
+import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xMultiplayerInfo, dismissWin9xNetworkPrompt, enableWin9xNetwork, resetGameData } from "../api/tauri";
 import type { Win9xMultiplayerInfo } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
 import { showToast } from "../stores/toasts";
@@ -139,6 +139,8 @@ export function GameDetailPanel(props: Props) {
   };
   const [launchingId, setLaunchingId] = createSignal<number | null>(null);
   const [uninstallingId, setUninstallingId] = createSignal<number | null>(null);
+  const [resettingId, setResettingId] = createSignal<number | null>(null);
+  const [confirmReset, setConfirmReset] = createSignal(false);
   // The panel always describes exactly ONE row. Multi-language cards are a
   // merged group, so the user picks which language everything below the title
   // refers to - actions, description, manual, screenshots. Before this, the
@@ -250,6 +252,7 @@ export function GameDetailPanel(props: Props) {
     }
     setImgError(false);
     setStatus("");
+    setConfirmReset(false);
     setVariants([]);
     setMetadata(null);
     setBrokenImages(new Set<number>());
@@ -526,6 +529,29 @@ export function GameDetailPanel(props: Props) {
     }
   };
 
+  // A pending "really?" must not carry over to another language variant -
+  // the action bar targets the selected row, so the second click would hit a
+  // game the user never armed.
+  createEffect(() => {
+    selected()?.id;
+    setConfirmReset(false);
+  });
+
+  const handleReset = async (gameId: number) => {
+    if (resettingId() != null) { return; }
+    const title = variants().find((v) => v.id === gameId)?.title ?? props.game?.title;
+    setConfirmReset(false);
+    setResettingId(gameId);
+    try {
+      const msg = await resetGameData(gameId);
+      showToast(msg, "success");
+    } catch (e) {
+      showToast(`Couldn't reset ${title ?? "game"}`, "error", { detail: String(e) });
+    } finally {
+      setResettingId(null);
+    }
+  };
+
   const ratingStars = (rating: number | null) => {
     if (rating == null) { return null; }
     // eXoDOS ratings are 0–5 scale
@@ -792,6 +818,26 @@ export function GameDetailPanel(props: Props) {
                       <div class="game-detail-btn btn-offline" title="Enable downloads in Settings → Network">
                         Not installed - offline mode
                       </div>
+                    </Show>
+                    {/* Uninstall keeps saves by design (they are renamed into
+                        !save/ and restored on reinstall), so it cannot give a
+                        clean slate - this can. Only offered while installed:
+                        it restores from the game's own ZIP. */}
+                    <Show when={selectedInstalled() && sel().id != null}>
+                      <Button
+                        variant="action"
+                        class="btn-reset"
+                        title="Discard saves and every in-game change, then unpack the game again"
+                        disabled={launchingId() != null || resettingId() != null}
+                        onClick={() => (confirmReset() ? handleReset(sel().id!) : setConfirmReset(true))}
+                      >
+                        <Show
+                          when={resettingId() !== sel().id}
+                          fallback={<><span class="btn-spinner" /> Resetting…</>}
+                        >
+                          {confirmReset() ? "Discard all game data?" : "↺ Reset"}
+                        </Show>
+                      </Button>
                     </Show>
                     <Show when={!selectedDownloading() && (selectedInstalled() || sel().in_library) && sel().id != null}>
                       <Button

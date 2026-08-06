@@ -382,6 +382,11 @@ export async function uninstallGame(id: number): Promise<string> {
   return invoke("uninstall_game", { id });
 }
 
+/** Discard saves and every in-game change, then unpack the ZIP again. */
+export async function resetGameData(id: number): Promise<string> {
+  return invoke("reset_game_data", { id });
+}
+
 export async function downloadGame(id: number): Promise<string> {
   return invoke("download_game", { id });
 }

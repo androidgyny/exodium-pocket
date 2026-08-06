@@ -1147,6 +1147,118 @@ pub async fn uninstall_game(
     Ok(format!("Uninstalled: {}", game.title))
 }
 
+/// Put a game back into the state it had right after installing: drop the
+/// extracted directory AND its save backup, then unpack the ZIP again.
+///
+/// Uninstall deliberately KEEPS user data (§5) - it renames the game dir to
+/// `!save/<shortcode>` and `extract_game_zip` restores it on the next
+/// install - so "uninstall, then reinstall" cannot produce a clean slate.
+/// This is the operation that can.
+///
+/// It matters beyond savegames for eXoWin9x, where the game's own VHD is
+/// mounted as D: and holds the guest's filesystem: Windows clears that
+/// volume's FAT "clean shutdown" bit on the first write and only restores it
+/// on a proper shutdown, so a session ended by closing the emulator window
+/// leaves it dirty and the next boot runs ScanDisk. Replacing the VHD with
+/// the one from the ZIP is the only way back to a pristine volume.
+///
+/// The ZIP is validated BEFORE anything is deleted - a torrent placeholder
+/// or a half-downloaded archive must not cost the user their install.
+#[tauri::command]
+pub async fn reset_game_data(db_state: State<'_, DbState>, id: i64) -> Result<String, String> {
+    let (game, data_dir) = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let game = queries::fetch_game_by_id(&conn, id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Game {} not found", id))?;
+        let data_dir = queries::get_config(&conn, "data_dir")
+            .map_err(|e| e.to_string())?
+            .ok_or("Data directory not configured")?;
+        (game, data_dir)
+    };
+
+    if running_games()
+        .lock()
+        .map(|s| s.contains(&running_game_key(&game)))
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "'{}' is currently running - quit the emulator before resetting it.",
+            game.title
+        ));
+    }
+
+    let op_lock = game_op_lock(id);
+    let _op_guard = op_lock.lock().await;
+
+    let shortcode = game.shortcode.as_deref().ok_or("Game has no shortcode")?.to_string();
+    let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
+    let torrent_root = crate::commands::setup::game_root(&data_dir);
+    let game_name = game
+        .application_path
+        .as_deref()
+        .and_then(crate::commands::setup::game_name_from_app_path)
+        .unwrap_or_else(|| game.title.clone());
+
+    let rel_game_dir =
+        collection_rel_game_dir(source, &shortcode, game.application_path.as_deref());
+    let rel_save_dir = match rel_game_dir.rsplit_once('/') {
+        Some((parent, _)) => format!("{}/!save/{}", parent, shortcode),
+        None => format!("!save/{}", shortcode),
+    };
+    let zip = torrent_root.join(collection_rel_zip(
+        source,
+        &game_name,
+        game.application_path.as_deref(),
+    ));
+    let game_dir = torrent_root.join(&rel_game_dir);
+    let save_dir = torrent_root.join(&rel_save_dir);
+    let title = game.title.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        // Validate first: opening the archive reads its central directory,
+        // which is exactly what distinguishes a real ZIP from librqbit's
+        // 0-byte placeholder or a piece-sized fragment.
+        let file = std::fs::File::open(&zip).map_err(|_| {
+            format!(
+                "The ZIP for '{}' is not on disk, so there is nothing to restore from. \
+                 Re-download the game instead.",
+                title
+            )
+        })?;
+        zip::ZipArchive::new(file).map_err(|_| {
+            format!(
+                "The ZIP for '{}' is incomplete or corrupted (torrent placeholder), \
+                 so there is nothing to restore from. Re-download the game instead.",
+                title
+            )
+        })?;
+
+        if game_dir.exists() {
+            std::fs::remove_dir_all(&game_dir)
+                .map_err(|e| format!("Failed to remove {}: {e}", game_dir.display()))?;
+        }
+        // Must go too, or extract_game_zip restores the very data this is
+        // meant to discard.
+        if save_dir.exists() {
+            let _ = std::fs::remove_dir_all(&save_dir);
+        }
+
+        let dest = game_dir.parent().map(PathBuf::from).unwrap_or_else(|| torrent_root.clone());
+        extract_game_zip(&zip, &dest)
+    })
+    .await
+    .map_err(|e| format!("reset task failed: {e}"))??;
+
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let _ = queries::set_game_installed(&conn, id, true);
+    }
+
+    log::info!("Reset game data: {}", game.title);
+    Ok(format!("Reset {} to its original state", game.title))
+}
+
 /// In-flight + failure-backoff guard for the !DOSmetadata.zip extraction.
 /// Without it, every 1 Hz progress poll during the (long) extraction spawned
 /// another overlapping full extraction - and a corrupt ZIP retried forever.
