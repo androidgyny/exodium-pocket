@@ -801,7 +801,7 @@ export function Library() {
               <h2 class="section-title">Installed <span class="section-count">{shownInstalled().length}</span></h2>
               <div class="game-grid">
                 <For each={shownInstalled()}>
-                  {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} showFavoriteBtn={false} onDetail={setDetailGame} />}
+                  {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
                 </For>
               </div>
             </div>
