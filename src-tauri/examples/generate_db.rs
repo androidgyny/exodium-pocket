@@ -1,6 +1,11 @@
 //! Build tool: generates the pre-built exodium.db from bundled XML metadata + torrents.
 //!
-//! Run from src-tauri/:  cargo run --bin generate_db
+//! Run from src-tauri/:  cargo run --example generate_db
+//!
+//! An EXAMPLE, not a `[[bin]]`: the Tauri bundler copies every bin target of
+//! the crate into the installer, so this 6 MB developer tool was shipping to
+//! users in /usr/bin next to the app. `required-features` does not help - the
+//! bundler still demands the file and fails the build when Cargo skips it.
 
 use std::collections::HashMap;
 use std::io::BufReader;

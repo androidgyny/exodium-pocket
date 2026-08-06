@@ -10,10 +10,6 @@ default-run = "exodium"
 name = "exodium_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[[bin]]
-name = "generate_db"
-path = "src/bin/generate_db.rs"
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
