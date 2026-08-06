@@ -92,6 +92,18 @@ export function startGameDownload(gameId: number, title?: string) {
     }
     try {
       const p = await getDownloadProgress(gameId);
+      // Re-check the generation: the guard at the top of the tick ran BEFORE
+      // this await, so a cancel that landed while the poll was in flight has
+      // already deleted the store entry. Every branch below writes it back,
+      // which resurrects the card - and since the next tick then bails on the
+      // same generation mismatch, nothing ever removes it again. The card sits
+      // at its last percentage with a Cancel button that does nothing. A
+      // stalled download makes this the common case, not the rare one: that is
+      // when people press Cancel, and the backend poll is slowest.
+      if (attempts[gameId] !== attempt) {
+        clearInterval(interval);
+        return;
+      }
       if (!p) {
         // Backend returned null - torrent handle not attached yet. While the
         // download_game command is still running that's expected (first-ever
@@ -404,8 +416,21 @@ export async function cancelGameDownload(gameId: number) {
     delete next[gameId];
     return next;
   });
+  const generation = attempts[gameId];
   try {
     await cancelDownload(gameId);
+    // Second sweep: cancel_download can take seconds (deselect + session
+    // bookkeeping), and anything that wrote the store in the meantime would
+    // otherwise leave a card behind. Skipped when a new download for the same
+    // game started while this was running - that one owns the entry now.
+    if (attempts[gameId] === generation) {
+      setDownloads((prev) => {
+        if (!prev[gameId]) { return prev; }
+        const next = { ...prev };
+        delete next[gameId];
+        return next;
+      });
+    }
     refreshLoadedGames();
   } catch {}
 }
