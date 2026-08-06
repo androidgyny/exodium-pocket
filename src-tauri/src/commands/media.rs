@@ -464,7 +464,11 @@ where
 /// preview nobody can watch is wasted torrent traffic anyway.
 ///
 /// The .deb/.rpm declare the GStreamer packages as dependencies, so this
-/// mainly guards the AppImage, which cannot declare any.
+/// mainly guards the AppImage - which needs the OPPOSITE probe: linuxdeploy
+/// bundles the GStreamer core (a WebKit dependency), and plugins only load
+/// into the core they were built against, so the host's plugins are invisible
+/// to the app's WebKit no matter what gst-inspect says. Only plugins bundled
+/// next to that core (bundleMediaFramework) count there.
 #[tauri::command]
 pub async fn video_playback_supported() -> bool {
     #[cfg(target_os = "linux")]
@@ -475,14 +479,26 @@ pub async fn video_playback_supported() -> bool {
             // no autoaudiosink wedges the WebKit process outright, no H.264
             // decoder plays an eternally black rectangle. Both mean the
             // preview feature should stand down and say why.
-            let audio = gst_has_any(&["autoaudiosink"], &["libgstautodetect.so"]);
-            let h264 = gst_has_any(
-                // Any one of these decodes our MP4s: ffmpeg's, Cisco's, VA-API
-                // or NVIDIA's. gst-libav is the note's install advice because
-                // it works without particular hardware.
-                &["avdec_h264", "openh264dec", "vah264dec", "nvh264dec"],
-                &["libgstlibav.so", "libgstopenh264.so"],
-            );
+            let (audio, h264) = if let Some(lib) = appimage_bundled_gst_lib() {
+                let plugins = lib.join("gstreamer-1.0");
+                (
+                    plugins.join("libgstautodetect.so").exists(),
+                    ["libgstlibav.so", "libgstopenh264.so"]
+                        .iter()
+                        .any(|f| plugins.join(f).exists()),
+                )
+            } else {
+                (
+                    gst_has_any(&["autoaudiosink"], &["libgstautodetect.so"]),
+                    gst_has_any(
+                        // Any one of these decodes our MP4s: ffmpeg's, Cisco's,
+                        // VA-API or NVIDIA's. gst-libav is the note's install
+                        // advice because it works without particular hardware.
+                        &["avdec_h264", "openh264dec", "vah264dec", "nvh264dec"],
+                        &["libgstlibav.so", "libgstopenh264.so"],
+                    ),
+                )
+            };
             let ok = audio && h264;
             if !ok {
                 log::warn!(
@@ -496,6 +512,16 @@ pub async fn video_playback_supported() -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     true
+}
+
+/// The lib dir of an AppImage that carries its own GStreamer core, when
+/// running inside one. APPDIR is exported by the AppRun hooks (also for an
+/// extracted tree); the core check guards the day bundling stops, at which
+/// point the host probe below becomes the right question again.
+#[cfg(target_os = "linux")]
+fn appimage_bundled_gst_lib() -> Option<std::path::PathBuf> {
+    let lib = std::path::PathBuf::from(std::env::var_os("APPDIR")?).join("usr/lib");
+    lib.join("libgstreamer-1.0.so.0").exists().then_some(lib)
 }
 
 /// Whether GStreamer offers any of the named elements, or - when gst-inspect

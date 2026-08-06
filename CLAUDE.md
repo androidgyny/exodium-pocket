@@ -589,6 +589,19 @@ cold torrent takes a minute; the panel starts one on open, keeps it running
 when it closes, and caps concurrency at three (each stream has its own 32 MB
 lookahead and they compete for peers).
 
+**Linux playback runs through WebKit's GStreamer, and WHICH GStreamer differs
+by package.** The .deb/.rpm use the distro's WebKit, so the distro's plugins
+apply and the packages declare them as dependencies. The AppImage bundles
+WebKit, and linuxdeploy walks the GStreamer CORE in as its dependency - a core
+that only loads plugins built against it (measured on Arch: bundled 1.20 core,
+host 1.28 plugins, symbol gap in both directions - videos fetch fine and play
+nothing, silently). `bundleMediaFramework` therefore bundles the build
+runner's plugins next to that core (CI installs them), and
+`video_playback_supported` answers from the bundle when APPDIR carries a core,
+from the host otherwise. Don't strip `libgst*` from the AppImage instead: the
+host's core needs the host's glib, and the bundle's older glib shadows it
+(measured: `g_once_init_leave_pointer` unresolved, app aborts at startup).
+
 ### 15. eXoWin3x is the first non-DOS collection
 
 1,138 Windows 3.x games, 345.8 GB. Structurally the same pack shape as eXoDOS -
