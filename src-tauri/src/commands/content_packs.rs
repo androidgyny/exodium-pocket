@@ -407,6 +407,13 @@ pub async fn install_content_pack(
 /// The wrapper must be the ONLY entry and must repeat the target's own name -
 /// "one top-level directory" alone would swallow a pack whose real payload
 /// happens to be a single `Images/`.
+///
+/// OS metadata does not count towards "only". All three tarballs were rolled
+/// on a Mac and carry an AppleDouble sidecar per entry, INCLUDING one for the
+/// wrapper itself (`._eXoDOS`, the archive's very first member). `tar tzf`
+/// hides those - bsdtar folds them back into xattrs - but the `tar` crate
+/// writes them as ordinary files, so staging held two entries and the wrapper
+/// went unrecognised: `content/posters/eXoDOS/eXoDOS/`, and every cover 404'd.
 fn unwrapped_source(staging_dir: &Path, install_dir: &Path) -> PathBuf {
     let Some(target_name) = install_dir.file_name() else {
         return staging_dir.to_path_buf();
@@ -416,15 +423,44 @@ fn unwrapped_source(staging_dir: &Path, install_dir: &Path) -> PathBuf {
     };
     let mut only: Option<PathBuf> = None;
     for entry in entries.flatten() {
+        let path = entry.path();
+        if crate::commands::setup::is_os_metadata(&path) {
+            continue;
+        }
         if only.is_some() {
             return staging_dir.to_path_buf();
         }
-        only = Some(entry.path());
+        only = Some(path);
     }
     match only {
         Some(p) if p.is_dir() && p.file_name() == Some(target_name) => p,
         _ => staging_dir.to_path_buf(),
     }
+}
+
+/// Move a finished staging tree into its install dir.
+///
+/// Shared by both install routes (HTTP tarball and torrent zip), which had a
+/// byte-identical copy of this until the AppleDouble fix had to be made twice
+/// - the second copy is exactly the one a future fix forgets.
+fn commit_staging(staging_dir: &Path, install_dir: &Path) -> Result<(), String> {
+    if let Some(parent) = install_dir.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create install parent dir: {}", e))?;
+    }
+    // Whatever a previous version left there goes: packs are replaced whole.
+    if install_dir.exists() {
+        std::fs::remove_dir_all(install_dir)
+            .map_err(|e| format!("Cannot remove old install: {}", e))?;
+    }
+    let source_dir = unwrapped_source(staging_dir, install_dir);
+    // Atomic rename; fall back to copy on EXDEV (staging and install can sit
+    // on different filesystems).
+    if std::fs::rename(&source_dir, install_dir).is_err() {
+        copy_dir_recursive(&source_dir, install_dir)?;
+    }
+    let _ = std::fs::remove_dir_all(staging_dir);
+    Ok(())
 }
 
 /// Resolve the install dir for a given pack_id, checking the manifest for its
@@ -642,19 +678,7 @@ async fn do_install_torrent(
         }
     }
 
-    if let Some(parent) = install_dir.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create install parent dir: {}", e))?;
-    }
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)
-            .map_err(|e| format!("Cannot remove old install: {}", e))?;
-    }
-    let source_dir = unwrapped_source(&staging_dir, &install_dir);
-    if std::fs::rename(&source_dir, &install_dir).is_err() {
-        copy_dir_recursive(&source_dir, &install_dir)?;
-    }
-    let _ = std::fs::remove_dir_all(&staging_dir);
+    commit_staging(&staging_dir, &install_dir)?;
 
     log::info!(
         "Content pack installed (torrent): {} → {}",
@@ -830,26 +854,7 @@ async fn do_install(
         }
     }
 
-    // Ensure parent exists.
-    if let Some(parent) = install_dir.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create install parent dir: {}", e))?;
-    }
-
-    // Remove any existing install dir (e.g. from a previous version).
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)
-            .map_err(|e| format!("Cannot remove old install: {}", e))?;
-    }
-
-    let source_dir = unwrapped_source(&staging_dir, &install_dir);
-
-    // Atomic rename; fall back to copy+remove on EXDEV.
-    if std::fs::rename(&source_dir, &install_dir).is_err() {
-        // Cross-filesystem: copy then remove.
-        copy_dir_recursive(&source_dir, &install_dir)?;
-    }
-    let _ = std::fs::remove_dir_all(&staging_dir);
+    commit_staging(&staging_dir, &install_dir)?;
 
     // Clean up temp tarball.
     let _ = std::fs::remove_file(&tmp_file);
@@ -1240,6 +1245,16 @@ mod adopt_tests {
     #[test]
     fn unwraps_an_archive_that_repeats_the_target_directory() {
         let staging = staging_with(&[("eXoDOS", true)]);
+        let install = Path::new("/data/content/posters/eXoDOS");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path().join("eXoDOS"));
+    }
+
+    /// The real tarballs open with `._eXoDOS`, the AppleDouble sidecar for the
+    /// wrapper directory. `tar tzf` never shows it; the `tar` crate writes it.
+    /// Counting it as content hid the wrapper and double-nested every pack.
+    #[test]
+    fn unwraps_past_the_appledouble_sidecar_of_the_wrapper() {
+        let staging = staging_with(&[("._eXoDOS", false), ("eXoDOS", true), (".DS_Store", false)]);
         let install = Path::new("/data/content/posters/eXoDOS");
         assert_eq!(unwrapped_source(staging.path(), install), staging.path().join("eXoDOS"));
     }

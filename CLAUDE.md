@@ -379,9 +379,15 @@ part that has to exist first. See issue #18.
   `posters-eXoDOS-v5` (wraps everything in `eXoDOS/`) and
   `posters-eXoWin9x-v1` (tarred from inside, entries are `./<hash>.jpg`) both
   land correctly. Prefer the wrapped shape for new packs; a mis-packed one is
-  no longer worth a republish. The name check is load-bearing - "one top-level
-  directory" alone would swallow a metadata pack whose payload is just
-  `Images/`.
+  no longer worth a republish. Two details are load-bearing: the NAME check
+  (plain "one top-level directory" would swallow a metadata pack whose payload
+  is just `Images/`), and skipping `is_os_metadata` entries. Every tarball was
+  rolled on a Mac and its FIRST member is `._<collection>`, the AppleDouble
+  sidecar for the wrapper itself - `tar tzf` hides it (bsdtar folds it back
+  into xattrs) but the `tar` crate writes it as a file, so staging holds two
+  entries and the wrapper goes unrecognised. That shipped once and installed
+  every pack to `content/posters/<col>/<col>/`, where `get_poster_dir` finds a
+  directory, reports Tier 1, and every cover 404s back to the blurry preview.
 
 **Updating a pack whose content grew** (`version` up, `min_compatible_version`
 left alone): installs stay put and Settings offers an "Update" button. Only
