@@ -510,6 +510,12 @@ export interface VideoStatus {
 /** Start (or join) the fetch of a game's preview video. Returns immediately -
  *  the video is streamed out of the GameData archive, which can take a minute
  *  on a cold torrent. Poll getVideoStatus. */
+/** False on a Linux system whose GStreamer cannot build an audio pipeline -
+ *  mounting a <video> there wedges the WebKit process and freezes the app. */
+export async function videoPlaybackSupported(): Promise<boolean> {
+  return invoke("video_playback_supported");
+}
+
 export async function startGameVideo(id: number): Promise<VideoStatus> {
   return invoke("start_game_video", { id });
 }

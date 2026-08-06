@@ -19,7 +19,7 @@ import { loadGameMetadata } from "../stores/metadata";
 import { isOffline } from "../stores/network";
 import { loadVariants } from "../stores/variants";
 import { toggleFavorite, updateGameFavorited } from "../stores/games";
-import { videos, requestVideo, releaseVideo, setForegroundVideo, getVideoState, PHASE_QUEUED, PHASE_PROBING } from "../stores/videos";
+import { videos, requestVideo, releaseVideo, setForegroundVideo, getVideoState, videoPlaybackUnsupported, PHASE_QUEUED, PHASE_PROBING } from "../stores/videos";
 import { ensureDismissedNotesLoaded, isNoteDismissed, dismissedNotesLoaded, dismissNote } from "../stores/notes";
 import { ensurePreviewMutedLoaded, previewMuted, setPreviewMuted } from "../stores/playback";
 
@@ -211,6 +211,17 @@ export function GameDetailPanel(props: Props) {
         key: "86box-perf",
         text: "This game runs under 86Box, a full PC hardware emulator - startup is slower and "
           + "the system requirements are higher than for other games.",
+      };
+    }
+    // Last, because it is the least about THIS game: without a working
+    // GStreamer audio sink the webview freezes the moment a video mounts, so
+    // previews are disabled wholesale and this says why.
+    if (videoPlaybackUnsupported()) {
+      return {
+        key: "no-gstreamer",
+        text: "Preview videos are turned off: this system is missing GStreamer's audio "
+          + "plugins. Install gstreamer1.0-plugins-good (and gstreamer1.0-libav for "
+          + "H.264) to enable them.",
       };
     }
     return null;

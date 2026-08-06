@@ -618,6 +618,7 @@ pub fn run() {
             init_download_manager,
             commands::media::start_game_video,
             commands::media::get_video_status,
+            commands::media::video_playback_supported,
             commands::media::cancel_game_video,
             factory_reset,
             download_game,

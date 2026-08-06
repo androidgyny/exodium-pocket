@@ -453,6 +453,48 @@ where
     Ok(Some(bytes))
 }
 
+/// Whether mounting a `<video>` element is SAFE on this system.
+///
+/// On Linux the webview plays media through GStreamer, and a missing
+/// `autoaudiosink` does not degrade gracefully: WebKit's pipeline setup hits a
+/// NULL instance ("GStreamer element autoaudiosink not found", then
+/// g_signal_connect_data assertion failures) and the WebKitWebProcess wedges -
+/// the whole app freezes the moment a preview starts. The frontend asks this
+/// once and simply never mounts a video when the answer is no; a fetched
+/// preview nobody can watch is wasted torrent traffic anyway.
+///
+/// The .deb/.rpm declare the GStreamer packages as dependencies, so this
+/// mainly guards the AppImage, which cannot declare any.
+#[tauri::command]
+pub async fn video_playback_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *SUPPORTED.get_or_init(|| {
+            // gst-inspect answers authoritatively when it is installed.
+            if let Ok(out) = std::process::Command::new("gst-inspect-1.0")
+                .arg("autoaudiosink")
+                .output()
+            {
+                return out.status.success();
+            }
+            // Without the tool, look for the autodetect plugin in the usual
+            // multiarch homes. Erring towards "no" is the safe direction:
+            // a skipped preview beats a frozen app.
+            [
+                "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
+                "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
+                "/usr/lib64/gstreamer-1.0",
+                "/usr/lib/gstreamer-1.0",
+            ]
+            .iter()
+            .any(|dir| Path::new(dir).join("libgstautodetect.so").exists())
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
+}
+
 #[tauri::command]
 pub async fn get_video_status(
     video_state: State<'_, VideoState>,
