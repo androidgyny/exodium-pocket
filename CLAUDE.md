@@ -717,15 +717,28 @@ a fresh C: per boot is by design, not waste.
 - **pcbox games**: PCBox is a Windows-only 86Box fork we don't ship;
   launching errors with a clear message and the panel shows a note.
 
-**Engine resolution** (`resolve_dosbox_x` / `resolve_86box`): Windows prefers
-eXo's own x98 DOSBox-X build out of the extracted support tree (ECE
-precedent), then bundled, then PATH; macOS bundled-then-PATH; Linux
-PATH-then-Flatpak (`com.dosbox_x.DOSBox-X`) because DOSBox-X publishes no
-Linux binaries. 86Box is bundled on all three platforms
-(`scripts/get-emulators.sh`, pinned versions, resources
-`dosbox-x[-bin]`/`86box[-bin]` with `.placeholder` gitkeep). The panel's
+**Engine resolution** (`resolve_dosbox_x` / `resolve_86box`): **Windows bundles
+neither emulator.** eXo's EXTWin9x.zip carries Windows builds of both next to
+the parent VHDs, and `win9x_support_ready` refuses to launch without those
+VHDs - so a bundled Windows build could never be the reason a launch succeeds,
+and cost 68 MB of installer to never run (measured: setup.exe 55 -> 123 MB).
+Both resolvers therefore take the extracted tree first on Windows, then PATH.
+macOS is bundled-then-PATH; Linux gets a bundled 86Box AppImage, and DOSBox-X
+from PATH-then-Flatpak (`com.dosbox_x.DOSBox-X`) because it publishes no Linux
+binaries. `scripts/get-emulators.sh` fetches the two platform builds that are
+still bundled (pinned versions, resources `dosbox-x`/`86box` with
+`.placeholder` gitkeep, downloading nothing at all on Windows); **CI must run
+it** - the resource entries are gitignored, so a fresh checkout without that
+step fails the bundler with "resource path doesn't exist". The panel's
 "emulator missing" note asks the backend (`win9x_engine_available`), which
 answers with the launcher's own resolver.
+
+Do not re-add the Windows builds "for users without support files": that state
+cannot launch a Win9x game for want of a parent VHD, so the bundle only ever
+adds download size. The same argument does NOT extend to macOS/Linux - the
+pack ships `.exe` only, so those two genuinely need their own builds. Making
+them lazy is a separate, open question (a content pack per §10; note 86Box's
+macOS `.app` is 292 MB, 209 MB of it Qt, serving 29 of 662 games).
 
 **Support files**: parent OS VHDs + both emulators sit in the torrent's
 `eXo/util/utilWin9x.zip` (2.5 GB, inner `EXTWin9x.zip` - same matryoshka as

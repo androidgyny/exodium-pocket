@@ -308,9 +308,9 @@ fn resource_candidate(app: &AppHandle, sub: &str) -> Option<PathBuf> {
 }
 
 /// DOSBox-X for x98 games. On Windows eXo's own "x98" build (extracted from
-/// EXTWin9x.zip) is the intended emulator, exactly like the ECE precedent;
-/// bundled builds serve macOS/Windows-without-support-files; Linux falls
-/// back to a system DOSBox-X or its Flatpak.
+/// EXTWin9x.zip) is the intended emulator, exactly like the ECE precedent, and
+/// nothing is bundled for it - see `resolve_86box` for why. macOS gets the
+/// bundled build; Linux falls back to a system DOSBox-X or its Flatpak.
 fn resolve_dosbox_x(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
     if cfg!(windows) {
         let exo_build = torrent_root.join("eXo/emulators/dosbox/x98/dosbox-x.exe");
@@ -318,9 +318,7 @@ fn resolve_dosbox_x(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
             return Some(EngineCmd::Direct(exo_build));
         }
     }
-    let bundled = if cfg!(windows) {
-        resource_candidate(app, "dosbox-x-bin/dosbox-x.exe")
-    } else if cfg!(target_os = "macos") {
+    let bundled = if cfg!(target_os = "macos") {
         resource_candidate(app, "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x")
     } else {
         None
@@ -343,14 +341,25 @@ fn resolve_dosbox_x(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
     None
 }
 
-/// 86Box for 86box* games. Bundled on all three platforms; PATH fallback.
-fn resolve_86box(app: &AppHandle) -> Option<EngineCmd> {
-    let bundled = if cfg!(windows) {
-        resource_candidate(app, "86box-bin/86Box.exe")
-    } else if cfg!(target_os = "macos") {
+/// 86Box for 86box* games. On Windows eXo's own build is used, for the same
+/// reason as DOSBox-X: it comes out of EXTWin9x.zip together with the parent
+/// VHDs, and `win9x_support_ready` already refuses to launch without those -
+/// so a bundled Windows build can never be the reason a launch succeeds, and
+/// cost 68 MB of installer to never run. macOS/Linux need their own builds
+/// (the pack ships .exe only). PATH fallback on every platform.
+fn resolve_86box(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
+    if cfg!(windows) {
+        let exo_build = torrent_root.join("eXo/emulators/86Box98/86Box.exe");
+        if exo_build.exists() {
+            return Some(EngineCmd::Direct(exo_build));
+        }
+    }
+    let bundled = if cfg!(target_os = "macos") {
         resource_candidate(app, "86box/86Box.app/Contents/MacOS/86Box")
-    } else {
+    } else if cfg!(target_os = "linux") {
         resource_candidate(app, "86box/86Box.AppImage")
+    } else {
+        None
     };
     if let Some(bin) = bundled {
         return Some(EngineCmd::Direct(bin));
@@ -1161,7 +1170,16 @@ pub(crate) async fn launch_win9x_game(
     let exo_dir = torrent_root.join("eXo");
 
     if variant.starts_with("86box") {
-        launch_86box(app, game, id, &exo_dir, &conf_dir, variant, fullscreen)
+        launch_86box(
+            app,
+            game,
+            id,
+            &torrent_root,
+            &exo_dir,
+            &conf_dir,
+            variant,
+            fullscreen,
+        )
     } else {
         launch_dosbox_x(
             app,
@@ -1297,21 +1315,31 @@ fn launch_dosbox_x(
     super::games::spawn_emulator_and_track(cmd, &bin, &game, id)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn launch_86box(
     app: &AppHandle,
     game: Game,
     id: i64,
+    torrent_root: &Path,
     exo_dir: &Path,
     conf_dir: &Path,
     variant: &str,
     fullscreen: bool,
 ) -> Result<String, String> {
-    let Some(engine) = resolve_86box(app) else {
-        return Err(
+    let Some(engine) = resolve_86box(app, torrent_root) else {
+        return Err(if cfg!(windows) {
+            // Nothing is bundled here, so the extracted support tree is the
+            // only source - and it passed the readiness gate, meaning the
+            // parent VHDs arrived but 86Box.exe did not.
+            "86Box is required for this game but is missing from the Windows 9x \
+             support files (expected eXo\\emulators\\86Box98\\86Box.exe). Place \
+             86Box on your PATH, or re-download the support files."
+                .to_string()
+        } else {
             "86Box is required for this game but was not found. Re-run the app \
              installer or place 86Box on your PATH."
-                .to_string(),
-        );
+                .to_string()
+        });
     };
 
     let emul_dir = exo_dir.join("emulators/86Box98");
@@ -1433,9 +1461,6 @@ pub async fn win9x_engine_available(
     if variant == "pcbox" {
         return Ok(false);
     }
-    if variant.starts_with("86box") {
-        return Ok(resolve_86box(&app).is_some());
-    }
     let data_dir = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         crate::db::queries::get_config(&conn, "data_dir")
@@ -1443,6 +1468,9 @@ pub async fn win9x_engine_available(
             .unwrap_or_default()
     };
     let torrent_root = crate::commands::setup::game_root(&data_dir);
+    if variant.starts_with("86box") {
+        return Ok(resolve_86box(&app, &torrent_root).is_some());
+    }
     Ok(resolve_dosbox_x(&app, &torrent_root).is_some())
 }
 

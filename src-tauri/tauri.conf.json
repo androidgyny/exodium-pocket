@@ -55,9 +55,7 @@
       "resources/dosbox-glshaders": "glshaders",
       "resources/dosbox-bin": "dosbox-bin",
       "resources/dosbox-x": "dosbox-x",
-      "resources/dosbox-x-bin": "dosbox-x-bin",
-      "resources/86box": "86box",
-      "resources/86box-bin": "86box-bin"
+      "resources/86box": "86box"
     },
     "icon": [
       "icons/32x32.png",
