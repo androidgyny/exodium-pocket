@@ -1,18 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 - 2026-08-07
 
 ### Added
 
 - **New collection: eXoWin9x (Vol. 1, 1994-1996).** 662 Windows 95/98 games as
   the sixth collection. These boot a real Windows 9x from virtual hard-disk
-  images: DOSBox-X runs most of the catalogue, 86Box (bundled for all three
-  platforms) covers the hardware-picky rest. The shared OS images and
-  emulators (~2.5 GB) download automatically with the first Win9x game. Note:
-  the median game is ~316 MB and boots a whole operating system - expect real
-  downloads and slower first starts than DOS games. On Linux, DOSBox-X is
-  found via PATH or Flatpak (no official Linux builds exist); a handful of
-  PCBox-tuned games stay unlaunchable for now.
+  images: DOSBox-X runs most of the catalogue, 86Box covers the hardware-picky
+  rest. On Windows both emulators come out of eXo's own support files; on
+  macOS and Linux they install themselves as content packs alongside the first
+  Win9x download (the Linux DOSBox-X is our own build - upstream publishes
+  none). The shared OS images (~2.5 GB) also download automatically with the
+  first Win9x game. Note: the median game is ~316 MB and boots a whole
+  operating system - expect real downloads and slower first starts than DOS
+  games. A handful of PCBox-tuned games stay unlaunchable for now.
 - **Windows 9x online play.** The 67 titles that dial eXo's community IPX
   gateway can now do so on macOS and Linux: Exodium bridges the emulated
   network card once you grant packet access, offered on the first Play of such
@@ -74,6 +75,13 @@
 
 ### Fixed
 
+- Opening a Windows 9x game on Windows no longer flashes two console windows
+  (the emulator probe now runs windowless).
+- The Windows 9x detail panel no longer claims "emulator not found" while the
+  shared support files are still on their way: it shows the download's live
+  progress, names the one-time ~2.5 GB payload next to the game's own size
+  before the first download, and reports an extraction failure instead of
+  showing progress forever.
 - The Manual button no longer looks clickable while a game's media is still
   being scanned (it shows a spinner), and a temporary scan failure no longer
   leaves it dead until the next app start.
