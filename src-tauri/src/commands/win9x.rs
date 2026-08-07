@@ -1600,7 +1600,8 @@ mod tests {
         let wrapped = dir.join("CC32.zip");
         write_zip(&wrapped, &["CC32/", "CC32/CCHECK11.EXE"]);
         let out = extract_zip_mounts(&format!("MOUNT e \"{}\"", wrapped.display()), &dir);
-        assert!(out.ends_with("CC32.exodium_mount/CC32\""), "{out}");
+        let expected = format!("{}\"", dir.join("CC32.exodium_mount").join("CC32").display());
+        assert!(out.ends_with(&expected), "{out}");
         assert!(dir.join("CC32.exodium_mount/CC32/CCHECK11.EXE").is_file());
 
         // A zip laid out eXo's way is extracted too - mounting the zip
