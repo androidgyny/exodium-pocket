@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.12.1 - 2026-08-07
+
+### Fixed
+
+- Preview videos stayed black on Linux. 0.12.0 started serving them from a
+  local HTTP server because WebKitGTK cannot play media from the asset
+  protocol, but the app's content policy never allowed that server, so the
+  player was blocked before it made a request. Both the fetched video and the
+  detail panel's hero play again.
+- Emulators hung on window close when Exodium ran as an AppImage, leaving the
+  desktop to offer the kill dialog. The AppImage points its child processes at
+  its own bundled libraries, so an emulator started from Exodium loaded a mix
+  of those and the system's. They now start with a clean environment. The .deb
+  and .rpm packages were never affected.
+- The game detail panel stuttered as it slid in, most visibly on Linux. The
+  media scan, the Windows 9x support check and the emulator probe all ran
+  inside the animation; they now wait for it to finish. Game details, the
+  language picker and the Manual button still appear immediately.
+
 ## 0.12.0 - 2026-08-07
 
 ### Added
