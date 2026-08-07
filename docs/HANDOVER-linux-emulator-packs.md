@@ -1,7 +1,7 @@
 # Handover: Win9x-Emulatoren als Content-Packs + DOSBox-X-AppImage für Linux
 
-Stand 2026-08-07, Branch `feat/exowin9x`, alles UNCOMMITTED (13 geänderte +
-3 neue Dateien, siehe `git status`). Implementiert und auf macOS verifiziert;
+Stand 2026-08-07, Branch `feat/exowin9x` (Commit 8dc0ad61 + dieser
+Doc-Nachtrag). Implementiert und auf macOS verifiziert;
 dieses Dokument ist die Übergabe an eine Linux-Session für Runtime-Tests und
 den Workflow-Erstlauf. Plan-Referenz: die Design-Entscheidungen stehen in
 CLAUDE.md §10/§16 (bereits aktualisiert).
@@ -57,6 +57,74 @@ CLAUDE.md §10/§16 (bereits aktualisiert).
   Symlink-Copy), `tsc --noEmit` sauber, `vitest` 116 grün.
 - Dev-App bootet sauber, alle 6 Manager initialisiert (UI-Smoke abgebrochen —
   Maschine war in Benutzung).
+
+## Verifiziert (Linux, 2026-08-07, CachyOS x86_64 / RTX 3080 / Wayland)
+
+- **Sanity**: clippy `-D warnings` sauber, `cargo test` 131 grün, vitest 116
+  grün. (Maschinen-Detail: System-pnpm 11 braucht Node ≥22, Node ist 20 →
+  `npx pnpm@10` verwenden.)
+- **AppImage-Build lief OHNE Script-Änderungen durch** - die budgetierte
+  GCC-Reibung blieb aus (Tag baut mit gnu++14 unter Arch-aktuellem GCC,
+  libslirp statisch erkannt). Lokal im pkgforge-Container (podman +
+  anylinux-setup-Schritte aus der Action) gebaut; beide Netzwerk-Libs im
+  AppDir, Gate grün. Ergebnis: `DOSBox-X.AppImage` 41.5 MB (uruntime
+  static-pie, läuft ohne FUSE), meldet exakt 2025.02.01. Upstream-Detail:
+  `build-sdl2` hardcodet `make -j3`.
+- **Beide Linux-Tarballs gerollt** (`dosbox-x` 41.1 MB / `86box` 92.7 MB) und
+  das CI-Verification-Gate lokal nachgestellt: Binary-Pfad + Exec-Bit da,
+  keine `._*`-Einträge.
+- **x98-Kette end-to-end** (3D Maze installiert; Connect4 frisch aus dem
+  Torrent): Pack-AppImage bootet Windows 98 mit der exakten App-Conf-Kette
+  (base → play → options9x → override-Frag, cwd `eXo/`). Log belegt:
+  vhdmake-Differencing-Child, IMGMOUNT C/D, Zip-Mount → `.exodium_mount`-
+  Verzeichnis, `Converting drive E: to FAT`, `NE2000 backend: slirp`,
+  APM-BIOS-Calls (= Windows läuft), Child-VHD wächst. Desktop-Session war
+  GESPERRT - Verifikation über Logs/fd-Offsets/VHD-Wachstum, visuelle
+  Bestätigung steht aus.
+- **86Box-Kette** (Boso View Express, play.cfg): eXos MITGELIEFERTES Child
+  scheitert unter Linux mit "parent VHD image not found" (W2ru-Locator
+  `.\parent\…`, minivhd joint per cwalk im Unix-Stil - exakt der in vhd.rs
+  §Locator dokumentierte Fall; W2ku zeigt auf eXos `R:\`-Buildpfad). Das ist
+  OK: `launch_86box` löscht das Child und schreibt es neu. Ein mit dem ECHTEN
+  `vhd::create_differencing` erzeugtes Child (Forward-Slash-W2ru + absoluter
+  W2ku) löst 86Box sauber auf, Windows bootet, Child wuchs auf 117 MB.
+  **Debug-Falle, kein Bug**: 86Box splittet sein `-c`-Argument in-place im
+  argv-Speicher (`86box.c`, `*(p - 1) = '\0'` beim usr_path-Ableiten) -
+  `/proc/<pid>/cmdline` zeigt danach scheinbar `-c <dir> <basename>`. Die cfg
+  kommt korrekt an; nicht "fixen".
+- **Masque Solitaire Antics (Win3x/Staging, IDE-Pfad)**: Conf per
+  rewrite_host_paths + `-ide`-Translation nachgestellt, bundled Staging-Binary.
+  Guest bootet vom HDD-Image (6.3 MB gelesen) und LIEST von der CD
+  (`cd.BIN` fd-pos > 0) - der ATAPI-Attach funktioniert unter Linux.
+  Beobachtung: hinter dem Lockscreen blieb Staging mit x11-Video (XWayland)
+  bei 0 CPU hängen, ohne die Images zu öffnen; mit `SDL_VIDEODRIVER=wayland`
+  lief es. Vermutlich Locked-Session-Artefakt (die DOSBox-X-Läufe waren
+  davon nicht betroffen) - bei entsperrter Session gegenprüfen, bevor daraus
+  eine Code-Änderung wird.
+- **Resolver-Primitives**: `getcap`-Roundtrip verhält sich wie
+  `has_cap_net_raw` erwartet (Grant → Output enthält `cap_net_raw`, `-r` →
+  leer; getcap liegt in /usr/bin). `ip -o route get` → `dev wlan0`,
+  `/sys/class/net/wlan0/{wireless,phy80211}` existieren → wired=false-Zweig
+  korrekt.
+- **UX-Notiz**: SIGTERM/Fenster-Schließen an DOSBox-X öffnet dessen
+  kdialog-Quit-Warnung ("guest system running") - erwartet, keine Aktion.
+- Die Testspiele (Connect4, Boso, Masque) liegen jetzt entpackt im Game-Root
+  (per aria2c geholt), DB-Flags unverändert - ein Rescan adoptiert sie.
+
+**Auf Linux noch offen** (Desktop-Session war gesperrt; Unlock wurde vom
+Permission-Classifier verweigert, ebenso ein Dev-Command-Hook in die laufende
+App - diese Punkte brauchen eine entsperrte Session mit App-UI):
+
+- Resolver-ORDNUNG in der App (Pack schlägt PATH; `setcap` auf PATH-Kopie →
+  PATH gewinnt; `setcap -r` → Pack wieder vorn).
+- `win9x_network_status`-Zeile in Settings; der "braucht
+  System-Installation"-Text sitzt im wired-Zweig und die Maschine hängt an
+  Wi-Fi - für diesen Punkt Ethernet-Kabel einstecken.
+- Flatpak-Fallback (com.dosbox_x.DOSBox-X ist nicht installiert; Probe
+  antwortet korrekt "nein").
+- Offline-Modus-UI (Button disabled-mit-Hinweis), Auto-Queue + ActivityBadge
+  end-to-end über die App (Pack war für die Emulator-Läufe vorab entpackt -
+  `pack_candidate` gewinnt dann, Auto-Queue feuert korrekt nicht).
 
 ## Für die Linux-Session
 
