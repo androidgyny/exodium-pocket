@@ -14,7 +14,7 @@
   first Win9x game. Note: the median game is ~316 MB and boots a whole
   operating system - expect real downloads and slower first starts than DOS
   games. A handful of PCBox-tuned games stay unlaunchable for now.
-- **Windows 9x online play.** The 67 titles that dial eXo's community IPX
+- **Windows 9x online play.** Titles that dial the community-run IPX
   gateway can now do so on macOS and Linux: Exodium bridges the emulated
   network card once you grant packet access, offered on the first Play of such
   a game or in Settings → Network (and removable in the same place). This

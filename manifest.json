@@ -9,7 +9,7 @@
       "content_packs": {
         "posters": {
           "display_name": "Box Art",
-          "description": "HD game box-art thumbnails for all 8,100+ games",
+          "description": "HD game box-art thumbnails for the whole catalogue",
           "url": "https://github.com/tvollstaedt/exodium/releases/download/content-v4/posters-eXoDOS-v5.tar.gz",
           "sha256": "7399983a4ff412a6b8b0444944346b24ba17b8901ba577bab0fa4b76ab23d1d8",
           "size_bytes": 396948419,
@@ -20,7 +20,7 @@
         },
         "metadata": {
           "display_name": "Game Metadata",
-          "description": "Screenshots, fanart, and additional box-art variants for all 7,600+ games (sourced from the eXoDOS torrent)",
+          "description": "Screenshots, fanart, and additional box-art variants for the whole catalogue (sourced from the eXoDOS torrent)",
           "url": "",
           "sha256": "",
           "torrent_file_path": "Content/XODOSMetadata.zip",
@@ -88,7 +88,7 @@
       "content_packs": {
         "posters": {
           "display_name": "Box Art",
-          "description": "HD box art for all 1,138 Windows 3.x games",
+          "description": "HD box art for the Windows 3.x collection",
           "url": "https://github.com/tvollstaedt/exodium/releases/download/content-v4/posters-eXoWin3x-v1.tar.gz",
           "sha256": "21c68369e4affb28f3409361f4c868a0ef1fcdb70d402b0075232c90eace3443",
           "size_bytes": 66784296,
@@ -98,7 +98,7 @@
         },
         "metadata": {
           "display_name": "Game Metadata",
-          "description": "Box art, screenshots and manuals for all 1,138 Windows 3.x games (sourced from the eXoWin3x torrent)",
+          "description": "Box art, screenshots and manuals for the Windows 3.x collection (sourced from the eXoWin3x torrent)",
           "url": "",
           "sha256": "",
           "torrent_file_path": "Content/XOWin3xMetadata.zip",
@@ -115,7 +115,7 @@
       "content_packs": {
         "dosbox-x": {
           "display_name": "DOSBox-X Emulator",
-          "description": "Runs most Windows 9x games (633 of 662). Downloads automatically with your first Windows 9x game.",
+          "description": "Runs most Windows 9x games. Downloads automatically with your first Windows 9x game.",
           "url": "",
           "sha256": "",
           "size_bytes": 0,
@@ -137,7 +137,7 @@
         },
         "86box": {
           "display_name": "86Box Emulator",
-          "description": "Runs the 29 Windows 9x games that need full PC hardware emulation. Downloads automatically with your first such game.",
+          "description": "Runs the few Windows 9x games that need full PC hardware emulation. Downloads automatically with your first such game.",
           "url": "",
           "sha256": "",
           "size_bytes": 0,
@@ -159,7 +159,7 @@
         },
         "posters": {
           "display_name": "Box Art",
-          "description": "HD box art for all 662 Windows 9x games",
+          "description": "HD box art for the Windows 9x collection",
           "url": "https://github.com/tvollstaedt/exodium/releases/download/content-v5/posters-eXoWin9x-v1.tar.gz",
           "sha256": "1f9244321a98b2c96cd8faf25bf62c6dcbb16888ec831000d1d0e18eba321578",
           "size_bytes": 39508524,
@@ -169,7 +169,7 @@
         },
         "metadata": {
           "display_name": "Game Metadata",
-          "description": "Box art, screenshots, manuals and videos for all 662 Windows 9x games (sourced from the eXoWin9x torrent)",
+          "description": "Box art, screenshots, manuals and videos for the Windows 9x collection (sourced from the eXoWin9x torrent)",
           "url": "",
           "sha256": "",
           "torrent_file_path": "Content/XOWin9xMetadata.zip",
