@@ -125,6 +125,12 @@ function App() {
   });
 
   onMount(async () => {
+    // Linux always runs WebKit's fallback renderer (lib.rs disables the
+    // DMA-BUF path, which aborts on NVIDIA/Wayland). Backdrop blur is a
+    // per-frame CPU repaint there - main.css drops it under this class.
+    if (navigator.userAgent.includes("Linux")) {
+      document.documentElement.classList.add("soft-render");
+    }
     // Before anything else: the backend can start pack installs on its own
     // (Win9x emulator auto-queue), and only this listener makes them visible.
     initContentPackEvents().catch(() => {});

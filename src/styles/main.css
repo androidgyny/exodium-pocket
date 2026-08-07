@@ -3455,11 +3455,19 @@ body {
 }
 
 .game-settings-select {
-  background: var(--bg-primary);
+  /* appearance: none keeps WebKitGTK from painting these with the native GTK
+     theme (light chrome in a dark dialog on Linux); the chevron the native
+     look provided comes back as an inline SVG. */
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--bg-primary);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
   color: var(--text-primary);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 4px;
-  padding: 5px 10px;
+  padding: 5px 24px 5px 10px;
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
@@ -4526,4 +4534,15 @@ body {
   margin-top: 14px;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+/* ── Linux software rendering ──────────────────────────────────────────────
+   Linux runs WebKit's fallback renderer (the DMA-BUF path aborts with a
+   Wayland protocol error on NVIDIA - see lib.rs), where backdrop blur is
+   recomputed on the CPU every frame; two dialogs even ANIMATE the blur, and
+   transitions visibly stutter. The overlays keep their rgba dim - only the
+   blur goes. Class set in App.tsx at mount. */
+html.soft-render * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
