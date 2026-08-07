@@ -614,6 +614,12 @@ from the host otherwise. Don't strip `libgst*` from the AppImage instead: the
 host's core needs the host's glib, and the bundle's older glib shadows it
 (measured: `g_once_init_leave_pointer` unresolved, app aborts at startup).
 
+**Linux serves the video over a localhost HTTP server (`media_url`, WebKitGTK
+cannot play media through the asset protocol), so `http://127.0.0.1:*` must
+stay in the `media-src` of both CSPs in `tauri.conf.json` - 0.12.0 shipped the
+server without that entry and every preview was blocked into a silent black
+frame.**
+
 ### 15. eXoWin3x is the first non-DOS collection
 
 1,138 Windows 3.x games, 345.8 GB. Structurally the same pack shape as eXoDOS -
