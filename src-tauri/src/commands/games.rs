@@ -3218,6 +3218,104 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     spawn_emulator_and_track(cmd, &dosbox_bin, &game, id)
 }
 
+/// Variables the AppImage runtime and linuxdeploy's GTK/GStreamer hooks export
+/// that point ONLY into `$APPDIR`. Dropped wholesale for emulator children;
+/// unset, each falls back to its spec default, which is what a packaged install
+/// (.deb/.rpm) gives them anyway.
+#[cfg(target_os = "linux")]
+const APPIMAGE_ONLY_VARS: &[&str] = &[
+    // AppImage runtime / Tauri's AppRun
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "APPDIR",
+    "APPIMAGE",
+    "OWD",
+    "ARGV0",
+    "PYTHONHOME",
+    // linuxdeploy-plugin-gtk.sh
+    "GDK_BACKEND",
+    "GTK_DATA_PREFIX",
+    "GTK_THEME",
+    "GTK_EXE_PREFIX",
+    "GTK_PATH",
+    "GTK_IM_MODULE_FILE",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GIO_EXTRA_MODULES",
+    "GSETTINGS_SCHEMA_DIR",
+    // linuxdeploy-plugin-gstreamer.sh + AppRun
+    "GST_REGISTRY_REUSE_PLUGIN_SCANNER",
+    "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "GST_PLUGIN_PATH_1_0",
+    "GST_PLUGIN_SCANNER_1_0",
+    "GST_PTP_HELPER_1_0",
+];
+
+/// Variables the AppRun PREPENDS `$APPDIR` entries to, keeping the host value
+/// behind them. Removing these outright would take the host's own entries with
+/// them (`PATH` most obviously), so only the `$APPDIR` entries are stripped.
+#[cfg(target_os = "linux")]
+const APPIMAGE_PREFIXED_PATH_VARS: &[&str] = &[
+    "PATH",
+    "XDG_DATA_DIRS",
+    "PERLLIB",
+    "PYTHONPATH",
+    "QT_PLUGIN_PATH",
+];
+
+/// Drop the `$APPDIR`-rooted entries from a colon-separated path list.
+/// `None` means nothing but AppImage entries were left.
+#[cfg(target_os = "linux")]
+fn strip_appdir_entries(value: &str, appdir: &str) -> Option<String> {
+    let kept: Vec<&str> = value
+        .split(':')
+        .filter(|e| !e.is_empty() && !Path::new(e).starts_with(appdir))
+        .collect();
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept.join(":"))
+    }
+}
+
+/// Strip the AppImage's environment from an emulator child.
+///
+/// Our AppImage's AppRun exports `LD_LIBRARY_PATH` plus the GTK/GStreamer/GIO
+/// overrides from linuxdeploy's hooks, and every child inherits them. An
+/// emulator started that way loads a MIX of the AppImage's bundled libraries
+/// (built against Ubuntu 22.04 / glib 2.72) and the host's current ones, which
+/// hangs in library teardown when the emulator window is closed - the process
+/// never exits and the desktop offers to kill it.
+///
+/// Gated on `APPIMAGE` being set, so .deb/.rpm installs (which run against the
+/// host's libraries to begin with) are untouched. The Win9x emulator packs are
+/// themselves sharun-based AppImages that rebuild their own environment on
+/// start, so a clean env is correct for them too; DOSBox Staging, a plain
+/// binary, is the main beneficiary.
+#[cfg(target_os = "linux")]
+fn sanitize_appimage_env(cmd: &mut Command) {
+    if std::env::var_os("APPIMAGE").is_none() {
+        return;
+    }
+    let appdir = std::env::var("APPDIR").ok();
+    for var in APPIMAGE_ONLY_VARS {
+        cmd.env_remove(var);
+    }
+    if let Some(appdir) = appdir.as_deref().filter(|d| !d.is_empty()) {
+        for var in APPIMAGE_PREFIXED_PATH_VARS {
+            if let Ok(value) = std::env::var(var) {
+                match strip_appdir_entries(&value, appdir) {
+                    Some(kept) => cmd.env(var, kept),
+                    None => cmd.env_remove(var),
+                };
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sanitize_appimage_env(_cmd: &mut Command) {}
+
 /// Platform-correct stdio setup, spawn and child-reaping for an emulator
 /// process. Shared by the Staging/ECE path above and the Win9x engines
 /// (DOSBox-X / 86Box) - the macOS EBADF workarounds and the per-game log
@@ -3312,6 +3410,8 @@ pub(crate) fn spawn_emulator_and_track(
         unsafe { cmd.pre_exec(|| Ok(())); }
     }
 
+    sanitize_appimage_env(&mut cmd);
+
     log::info!("Spawning emulator: {}", emulator_bin.display());
     let mut child = cmd.spawn().map_err(|e| {
         log::error!("Emulator spawn failed for {}: {} (raw_os_error={:?})",
@@ -3341,6 +3441,34 @@ pub(crate) fn spawn_emulator_and_track(
 
 #[cfg(test)]
 mod tests {
+    // The AppImage's LD_LIBRARY_PATH is what makes an emulator hang on window
+    // close, and PATH must survive the cleanup or nothing launches at all.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_cleanup_drops_the_library_overrides_but_keeps_path() {
+        assert!(super::APPIMAGE_ONLY_VARS.contains(&"LD_LIBRARY_PATH"));
+        assert!(super::APPIMAGE_ONLY_VARS.contains(&"GIO_EXTRA_MODULES"));
+        assert!(super::APPIMAGE_ONLY_VARS.contains(&"GST_PLUGIN_SYSTEM_PATH_1_0"));
+        assert!(!super::APPIMAGE_ONLY_VARS.contains(&"PATH"));
+        assert!(super::APPIMAGE_PREFIXED_PATH_VARS.contains(&"PATH"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn strip_appdir_entries_keeps_the_host_half() {
+        assert_eq!(
+            super::strip_appdir_entries("/tmp/.mount_x/usr/share/:/usr/share:/usr/local/share", "/tmp/.mount_x"),
+            Some("/usr/share:/usr/local/share".to_string())
+        );
+        // A path that merely starts with the same characters is not inside it.
+        assert_eq!(
+            super::strip_appdir_entries("/tmp/.mount_xy/usr/bin:/usr/bin", "/tmp/.mount_x"),
+            Some("/tmp/.mount_xy/usr/bin:/usr/bin".to_string())
+        );
+        // Nothing but AppImage entries left → the child gets no variable at all.
+        assert_eq!(super::strip_appdir_entries("/tmp/.mount_x/usr/bin:", "/tmp/.mount_x"), None);
+    }
+
     // Both cleanups run against directories that also hold the user's own
     // files, so "only ours, only .conf, never recurse" is the contract.
     #[test]
