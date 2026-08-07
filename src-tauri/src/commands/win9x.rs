@@ -20,6 +20,11 @@ use crate::models::Game;
 
 static WIN9X_EXTRACTION_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// Latched when the watcher gives up (3 failed attempts, e.g. disk full):
+/// lets `get_win9x_support_status` answer "failed" instead of leaving the
+/// panel on an eternal "Setting up…". Cleared when a watcher is (re-)armed.
+static WIN9X_EXTRACTION_FAILED: AtomicBool = AtomicBool::new(false);
+
 /// The subtrees extracted from EXTWin9x.zip into `<torrent_root>/eXo/`.
 /// `emulators/dosbox/` holds the x98 tree (parent VHDs, differencing
 /// children, base conf) plus options9x.conf/config9x.bat at its root;
@@ -157,6 +162,7 @@ pub(crate) fn spawn_win9x_support_watcher(
     util_index: usize,
 ) {
     tauri::async_runtime::spawn(async move {
+        WIN9X_EXTRACTION_FAILED.store(false, Ordering::SeqCst);
         let torrent_root = mgr.torrent_root();
         let expected_size = mgr.index().files.get(util_index).map(|f| f.size).unwrap_or(0);
         let mut failures = 0u32;
@@ -196,11 +202,13 @@ pub(crate) fn spawn_win9x_support_watcher(
                             failures, e
                         );
                         if failures >= 3 {
+                            WIN9X_EXTRACTION_FAILED.store(true, Ordering::SeqCst);
                             return;
                         }
                     }
                     Err(e) => {
                         log::error!("Win9x extraction task panicked: {}", e);
+                        WIN9X_EXTRACTION_FAILED.store(true, Ordering::SeqCst);
                         return;
                     }
                 }
@@ -285,9 +293,25 @@ impl EngineCmd {
     }
 }
 
+/// A Command for console-subsystem helpers (`where`, `powershell`). Exodium
+/// is a GUI-subsystem exe on Windows, so without CREATE_NO_WINDOW every such
+/// child gets its own console - the panel's engine probe flashed two CMD
+/// windows per open.
+fn hidden_command(program: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 fn binary_exists_on_path(name: &str) -> bool {
     let checker = if cfg!(windows) { "where" } else { "which" };
-    Command::new(checker)
+    hidden_command(checker)
         .arg(name)
         .output()
         .map(|o| o.status.success())
@@ -798,7 +822,7 @@ fn on_wireless_link() -> Option<bool> {
     }
     #[cfg(windows)]
     {
-        let out = Command::new("powershell")
+        let out = hidden_command("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
@@ -1597,10 +1621,13 @@ mod tests {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Win9xSupportStatus {
-    /// "ready" | "downloading" | "missing"
+    /// "ready" | "downloading" | "missing" | "failed"
     pub phase: String,
     /// Download progress 0..1 while phase == "downloading".
     pub progress: f32,
+    /// Size of utilWin9x.zip - lets the panel say what the one-time
+    /// support download costs. 0 when the torrent index is unavailable.
+    pub total_bytes: u64,
 }
 
 /// Whether the emulator a Win9x game needs is resolvable on this machine.
@@ -1630,36 +1657,62 @@ pub async fn win9x_engine_available(
 
 /// Support-file state for the detail panel: lets it show "Windows 9x support
 /// files still downloading (N%)" instead of a bare launch failure.
+///
+/// `variant` scopes the readiness check to the tree that game actually
+/// boots from - the same scoping `download_game`'s queue gate uses. Without
+/// it, an x98-ready/86Box-missing install reads "missing" for x98 games
+/// whose download would never fetch anything.
 #[tauri::command]
 pub async fn get_win9x_support_status(
     torrent_state: State<'_, TorrentState>,
+    variant: Option<String>,
 ) -> Result<Win9xSupportStatus, String> {
     let mgr = {
         let guard = torrent_state.0.read().await;
         guard.get("eXoWin9x").cloned()
     };
     let Some(mgr) = mgr else {
-        return Ok(Win9xSupportStatus { phase: "missing".into(), progress: 0.0 });
+        return Ok(Win9xSupportStatus { phase: "missing".into(), progress: 0.0, total_bytes: 0 });
     };
     let root = mgr.torrent_root();
-    if win9x_support_ready(&root, None) && win9x_support_ready(&root, Some("86box")) {
-        return Ok(Win9xSupportStatus { phase: "ready".into(), progress: 1.0 });
+    let ready = match variant.as_deref() {
+        Some(v) => win9x_support_ready(&root, Some(v)),
+        None => win9x_support_ready(&root, None) && win9x_support_ready(&root, Some("86box")),
+    };
+    if ready {
+        return Ok(Win9xSupportStatus { phase: "ready".into(), progress: 1.0, total_bytes: 0 });
     }
     let Some(util) = mgr.index().find_by_suffix("util/utilWin9x.zip") else {
-        return Ok(Win9xSupportStatus { phase: "missing".into(), progress: 0.0 });
+        return Ok(Win9xSupportStatus { phase: "missing".into(), progress: 0.0, total_bytes: 0 });
     };
+    if WIN9X_EXTRACTION_FAILED.load(Ordering::SeqCst) {
+        return Ok(Win9xSupportStatus {
+            phase: "failed".into(),
+            progress: 1.0,
+            total_bytes: util.size,
+        });
+    }
     if mgr.is_file_selected(util.index).await {
         let on_disk = mgr
             .file_output_path(util.index)
             .and_then(|p| std::fs::metadata(p).ok())
             .map(|m| m.len())
             .unwrap_or(0);
-        let progress = if util.size > 0 {
-            (on_disk as f32 / util.size as f32).min(1.0)
+        // Torrent pieces land out of order, so the sparse file's length
+        // reaches full size long before the download is done - only a
+        // verified-complete file may claim 100% (= "setting up" in the UI).
+        let progress = if mgr.is_file_complete(util.index).await {
+            1.0
+        } else if util.size > 0 {
+            (on_disk as f32 / util.size as f32).min(0.99)
         } else {
             0.0
         };
-        return Ok(Win9xSupportStatus { phase: "downloading".into(), progress });
+        return Ok(Win9xSupportStatus {
+            phase: "downloading".into(),
+            progress,
+            total_bytes: util.size,
+        });
     }
-    Ok(Win9xSupportStatus { phase: "missing".into(), progress: 0.0 })
+    Ok(Win9xSupportStatus { phase: "missing".into(), progress: 0.0, total_bytes: util.size })
 }

@@ -254,13 +254,16 @@ export async function disableWin9xNetwork(): Promise<Win9xNetworkStatus> {
 }
 
 export interface Win9xSupportStatus {
-  phase: "ready" | "downloading" | "missing";
+  phase: "ready" | "downloading" | "missing" | "failed";
   progress: number;
+  /** Size of utilWin9x.zip; 0 when the torrent index is unavailable. */
+  total_bytes: number;
 }
 
-/** State of the shared Win9x support files (OS parent images + emulators). */
-export async function getWin9xSupportStatus(): Promise<Win9xSupportStatus> {
-  return invoke("get_win9x_support_status");
+/** State of the shared Win9x support files (OS parent images + emulators),
+ *  scoped to the tree the given variant boots from when one is passed. */
+export async function getWin9xSupportStatus(variant?: string | null): Promise<Win9xSupportStatus> {
+  return invoke("get_win9x_support_status", { variant });
 }
 
 export async function getConfig(key: string): Promise<string | null> {
