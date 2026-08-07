@@ -1206,6 +1206,15 @@ pub(crate) async fn launch_win9x_game(
     let variant = game.dosbox_variant.clone().unwrap_or_else(|| "x98".to_string());
     let variant = variant.as_str();
 
+    // Per-game fullscreen override, same tri-state the Staging path honors
+    // ("" = global default). This path used to read only the global flag, so
+    // the Game Settings toggle silently did nothing for Win9x games.
+    let fullscreen = match per_game_config.get("fullscreen").map(String::as_str) {
+        Some("true") => true,
+        Some("false") => false,
+        _ => fullscreen,
+    };
+
     if variant == "pcbox" {
         return Err(format!(
             "'{}' needs PCBox, a Windows-only emulator Exodium does not ship yet.",
