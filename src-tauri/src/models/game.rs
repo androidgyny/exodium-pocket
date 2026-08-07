@@ -14,6 +14,7 @@ pub struct Game {
     pub series: Option<String>,
     pub play_mode: Option<String>,
     pub rating: Option<f64>,
+    pub rating_votes: Option<i64>,
     pub description: Option<String>,
     pub notes: Option<String>,
     pub source: Option<String>,

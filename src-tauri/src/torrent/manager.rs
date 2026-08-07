@@ -447,9 +447,17 @@ impl DownloadManager {
         self.selected_files.read().await.contains(&file_index)
     }
 
-    /// Get the torrent root directory: <data_dir>/<torrent_name>/
+    /// The directory this torrent's files live in.
+    ///
+    /// ONE root for every collection, not `<data_dir>/<torrent name>`: eXo's
+    /// packs are separate torrents but a single installation (their
+    /// Setup/eXoMerge bats merge `eXo\` and `Content\` into one folder), and
+    /// their file paths - `eXo/eXoDOS/…`, `eXo/eXoWin9x/…` - are built to sit
+    /// side by side. Following librqbit's naming instead gave every pack its
+    /// own tree, which no eXo tool produces and which made an imported
+    /// installation look half-empty.
     pub fn torrent_root(&self) -> PathBuf {
-        self.data_dir.join(&self.torrent_index.name)
+        crate::commands::setup::game_root(&self.data_dir.to_string_lossy())
     }
 
     /// Wait out an in-progress initial check, then apply the CURRENT

@@ -64,7 +64,7 @@ eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the
 ### Planned
 - 🔲 Game videos and remaining media from the eXoDOS archive
 - 🔲 Improved download management - queue, pause/resume, bandwidth throttling, progress history
-- 🔲 Support for other eXo collections - eXoWin3x, eXoWin9x, eXoScummVM, eXoDream, and future releases
+- 🔲 Support for other eXo collections - eXoScummVM, eXoDREAMM, eXoIF, and future releases (eXoWin3x and eXoWin9x are in)
 
 ---
 
@@ -184,7 +184,7 @@ The pre-built SQLite database (`metadata/exodium.db.gz`) ships with the app. To 
 
 ```bash
 cd src-tauri
-cargo run --bin generate_db
+cargo run --example generate_db
 gzip -k ../metadata/exodium.db
 ```
 
@@ -201,7 +201,7 @@ exodium/
 │   └── stores/             games, downloads, thumbnails
 ├── src-tauri/
 │   └── src/
-│       ├── bin/            generate_db build tool
+│       ├── examples/       generate_db build tool (not shipped)
 │       ├── commands/       Tauri commands (games, setup, updates)
 │       ├── db/             SQLite schema + queries
 │       ├── import/         LaunchBox XML parser

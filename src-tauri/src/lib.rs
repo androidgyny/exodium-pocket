@@ -3,6 +3,7 @@ pub mod db;
 pub mod import;
 pub mod models;
 pub mod torrent;
+pub mod vhd;
 
 // Re-export utilities used by the generate_db binary and integration tests
 pub use commands::game_name_from_app_path;
@@ -18,7 +19,8 @@ use commands::{
     bundled_metadata_dir, cancel_content_pack_install, cancel_download,
     download_game, factory_reset, get_available_collections, get_config,
     get_content_pack_progress, get_default_data_dir, get_download_progress, get_game,
-    get_game_metadata, get_game_settings, get_log_dir, get_poster_dir, get_preview_dir,
+    data_dir_is_empty, get_game_metadata, get_game_settings, get_log_dir, get_poster_dir,
+    get_preview_dir,
     get_game_variants, get_games, get_genres, get_installed_games, get_recently_played,
     get_section_keys, set_game_settings,
     create_playlist, delete_playlist, get_game_playlists, get_playlists, rename_playlist,
@@ -29,7 +31,8 @@ use commands::{
     get_transfer_stats, open_log_folder, open_manual, scan_installed_games, set_config, set_rate_limits,
     set_seeding_enabled, setup_from_local, setup_import,
     update_check_supported,
-    setup_start, toggle_favorite, uninstall_content_pack, uninstall_game, validate_exodos_dir,
+    reset_game_data, setup_start, toggle_favorite, uninstall_content_pack, uninstall_game,
+    validate_exodos_dir,
     ContentPackState, DbState, TorrentState,
 };
 
@@ -159,12 +162,16 @@ pub fn install_bundled_db(target: &Path) -> Result<(), String> {
 /// (often $HOME) would expose far more than the app serves.
 pub fn allow_asset_dir(app: &tauri::AppHandle, data_dir: &Path) {
     use tauri::Manager;
-    // Two served subtrees: game media in <data>/eXoDOS and installed
-    // content packs (posters, metadata screenshots) in <data>/content.
-    // Regression note: v0.7.x granted only eXoDOS/, silently blocking every
-    // content-pack image ("asset protocol not configured to allow" spam).
-    for sub in ["eXoDOS", "content"] {
-        let dir = data_dir.join(sub);
+    // Two served subtrees: every collection's media in the single game root
+    // and installed content packs (posters, metadata screenshots) in
+    // <data>/content. Regression note: v0.7.x granted only eXoDOS/, silently
+    // blocking every content-pack image ("asset protocol not configured to
+    // allow" spam).
+    let dirs = [
+        commands::setup::game_root(&data_dir.to_string_lossy()),
+        data_dir.join("content"),
+    ];
+    for dir in dirs {
         if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
             log::warn!("Failed to extend asset scope to {}: {}", dir.display(), e);
         }
@@ -550,6 +557,11 @@ pub fn run() {
                 }
             }
 
+            // Establishes the game root - and repairs a pre-single-root install
+            // on the way, which rewrites data_dir. Must run before anything
+            // below reads it.
+            commands::setup::load_root_folder(&conn);
+
             // Clean up stale content-pack download artifacts from interrupted installs.
             if let Ok(Some(user_data_dir)) = db::queries::get_config(&conn, "data_dir") {
                 let user_data_path = std::path::Path::new(&user_data_dir);
@@ -567,6 +579,7 @@ pub fn run() {
             app.manage(TorrentState(RwLock::new(std::collections::HashMap::new())));
             app.manage(ContentPackState::new());
             app.manage(commands::media::VideoState::new());
+            app.manage(commands::media::MediaServerState::new());
 
             // macOS uses native traffic-light controls (no custom titlebar).
             // Linux/Windows keep the framed shell from tauri.conf.json
@@ -606,16 +619,29 @@ pub fn run() {
             init_download_manager,
             commands::media::start_game_video,
             commands::media::get_video_status,
+            commands::media::media_url,
+            commands::media::video_playback_supported,
             commands::media::cancel_game_video,
             factory_reset,
             download_game,
             cancel_download,
             uninstall_game,
+            reset_game_data,
             get_download_progress,
             toggle_favorite,
             get_section_keys,
             validate_exodos_dir,
             scan_installed_games,
+            commands::setup::pending_layout_migration,
+            commands::setup::migrate_layout,
+            commands::setup::skip_layout_migration,
+            commands::win9x::get_win9x_support_status,
+            commands::win9x::win9x_engine_available,
+            commands::win9x::win9x_network_status,
+            commands::win9x::enable_win9x_network,
+            commands::win9x::disable_win9x_network,
+            commands::win9x::win9x_multiplayer_info,
+            commands::win9x::dismiss_win9x_network_prompt,
             list_content_packs,
             install_content_pack,
             uninstall_content_pack,
@@ -623,6 +649,7 @@ pub fn run() {
             cancel_content_pack_install,
             get_preview_dir,
             get_poster_dir,
+            data_dir_is_empty,
             get_game_metadata,
             get_game_settings,
             set_game_settings,

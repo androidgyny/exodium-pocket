@@ -61,13 +61,18 @@ jobs:
           DOSBOX_X_VERSION: ${{ inputs.dosbox_x_version }}
           E86BOX_VERSION: ${{ inputs.e86box_version }}
           PACK_VERSION: ${{ inputs.pack_version }}
-        run: bash scripts/build-emulator-packs.sh --platform linux --dosbox-x-appimage dist/DOSBox-X.AppImage
+        run: |
+          bash scripts/build-emulator-packs.sh --platform linux --dosbox-x-appimage dist/DOSBox-X.AppImage
+          # The GPL source tarball travels inside the same artifact. It must be
+          # COPIED into dist/packs first: a second path pattern would re-root
+          # the artifact at dist/ and nest the packs under packs/packs/, which
+          # is exactly where the verification gate does not look (first run
+          # failed on this).
+          cp dist/dosbox-x-*-source.tar.gz dist/packs/
       - uses: actions/upload-artifact@v4
         with:
           name: packs-linux
-          path: |
-            dist/packs/*.tar.gz
-            dist/dosbox-x-*-source.tar.gz
+          path: dist/packs/*.tar.gz
           if-no-files-found: error
 
   macos-packs:
@@ -127,7 +132,10 @@ jobs:
           V="${{ inputs.pack_version }}"
           check "dosbox-x-linux-x86_64-v$V.tar.gz" "dosbox-x/DOSBox-X.AppImage"
           check "86box-linux-x86_64-v$V.tar.gz"    "86box/86Box.AppImage"
-          check "dosbox-x-macos-arm64-v$V.tar.gz"  "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x" yes
+          # dosbox-x.app is fully static - the upstream release zip carries 0
+          # symlinks (verified against dosbox-x-macosx-arm64-20250201150724.zip),
+          # so only 86Box.app (Qt framework links) gets the symlink assertion.
+          check "dosbox-x-macos-arm64-v$V.tar.gz"  "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x"
           check "86box-macos-universal-v$V.tar.gz" "86box/86Box.app/Contents/MacOS/86Box" yes
       - name: Emit manifest snippet + checksums
         run: |

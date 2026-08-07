@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
 import {
   listContentPacks,
   installContentPack,
@@ -83,7 +84,10 @@ function startPolling(collection: string, packId: string) {
     try {
       const progress = await getContentPackProgress(collection, packId);
       if (!progress) {
+        // No job on the backend: drop the optimistic entry too, or the row
+        // keeps showing a download nobody is running.
         stopPolling(key);
+        clearJob(key);
         return;
       }
       setActiveJobs((prev) => ({
@@ -135,12 +139,79 @@ function stopPolling(key: string) {
   }
 }
 
+function clearJob(key: string) {
+  setActiveJobs((prev) => {
+    if (!prev[key]) { return prev; }
+    const next = { ...prev };
+    delete next[key];
+    return next;
+  });
+}
+
 // ── Public actions ───────────────────────────────────────────────────────────
+
+/** Pick up pack jobs the backend starts on its own (the Win9x emulator
+ *  auto-queue): the poll loop only watches jobs it knows about, so without
+ *  this a backend-initiated download runs invisibly until the next full
+ *  refresh. Registered once at app mount. */
+export async function initContentPackEvents() {
+  await listen<{ collection: string; pack_id: string; display_name: string }>(
+    "content-pack-install-started",
+    (event) => {
+      const { collection, pack_id, display_name } = event.payload;
+      const key = `${collection}:${pack_id}`;
+      jobLabels[key] = display_name;
+      setActiveJobs((prev) =>
+        prev[key]
+          ? prev
+          : {
+              ...prev,
+              [key]: {
+                phase: "starting",
+                progress: 0,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                finished: false,
+                installed: false,
+                error: null,
+                label: display_name,
+              },
+            },
+      );
+      startPolling(collection, pack_id);
+    },
+  );
+}
 
 export async function startContentPackInstall(collection: string, packId: string, displayName?: string) {
   const key = `${collection}:${packId}`;
   if (displayName) { jobLabels[key] = displayName; }
-  await installContentPack(collection, packId);
+  // Claim the row synchronously. The first poll is a full second out and the
+  // invoke round-trip sits in front of it, so the click landed on a button
+  // that went on saying "Install" for one to three seconds. cancelContentPackJob
+  // already clears its entry up-front for the same reason - this is that rule
+  // in the other direction.
+  setActiveJobs((prev) => ({
+    ...prev,
+    [key]: {
+      phase: "starting",
+      progress: 0,
+      downloaded_bytes: 0,
+      total_bytes: 0,
+      finished: false,
+      installed: false,
+      error: null,
+      label: jobLabels[key],
+    },
+  }));
+  try {
+    await installContentPack(collection, packId);
+  } catch (e) {
+    // Nothing is running, so the optimistic entry has to go - otherwise the
+    // row is stuck on a download that never started, with only Cancel offered.
+    clearJob(key);
+    throw e;
+  }
   startPolling(collection, packId);
 }
 
@@ -150,12 +221,7 @@ export async function cancelContentPackJob(collection: string, packId: string) {
   // immediately. The backend marks the job failed with error "Cancelled"
   // asynchronously; by then we no longer care about its final state.
   stopPolling(key);
-  setActiveJobs((prev) => {
-    if (!prev[key]) { return prev; }
-    const next = { ...prev };
-    delete next[key];
-    return next;
-  });
+  clearJob(key);
   try {
     await cancelContentPackInstall(collection, packId);
   } catch (e) {

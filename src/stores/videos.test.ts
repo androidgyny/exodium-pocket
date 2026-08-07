@@ -28,6 +28,24 @@ describe("video store", () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  /// The Linux freeze: without GStreamer's autoaudiosink, mounting a <video>
+  /// wedges the WebKit process. When the backend says no, the store must never
+  /// even start a fetch - and only an EXPLICIT no counts, so a missing command
+  /// (every other test's backend returns null) leaves previews on.
+  it("stands down entirely when the system cannot play video", async () => {
+    backend({
+      video_playback_supported: () => false,
+      start_game_video: () => READY,
+    });
+    const store = await import("./videos");
+
+    await store.requestVideo(1);
+
+    expect(calls("start_game_video").length).toBe(0);
+    expect(store.getVideoState(1)).toBeUndefined();
+    expect(store.videoPlaybackUnsupported()).toBe(true);
+  });
+
   it("does not re-request a video it already has", async () => {
     backend({ start_game_video: () => READY });
     const store = await import("./videos");

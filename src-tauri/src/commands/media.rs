@@ -272,7 +272,7 @@ pub async fn start_game_video(
 
     let jobs_arc = Arc::clone(&video_state.0);
     let marker = no_video_marker(&data_dir, &source, gamedata_idx);
-    let local_archive = PathBuf::from(&data_dir).join("eXoDOS").join(&file.path);
+    let local_archive = crate::commands::setup::game_root(&data_dir).join(&file.path);
     let archive_len = file.size;
     let archive_path = file.path.clone();
 
@@ -453,6 +453,106 @@ where
     Ok(Some(bytes))
 }
 
+/// Whether mounting a `<video>` element is SAFE on this system.
+///
+/// On Linux the webview plays media through GStreamer, and a missing
+/// `autoaudiosink` does not degrade gracefully: WebKit's pipeline setup hits a
+/// NULL instance ("GStreamer element autoaudiosink not found", then
+/// g_signal_connect_data assertion failures) and the WebKitWebProcess wedges -
+/// the whole app freezes the moment a preview starts. The frontend asks this
+/// once and simply never mounts a video when the answer is no; a fetched
+/// preview nobody can watch is wasted torrent traffic anyway.
+///
+/// The .deb/.rpm declare the GStreamer packages as dependencies, so this
+/// mainly guards the AppImage - which needs the OPPOSITE probe: linuxdeploy
+/// bundles the GStreamer core (a WebKit dependency), and plugins only load
+/// into the core they were built against, so the host's plugins are invisible
+/// to the app's WebKit no matter what gst-inspect says. Only plugins bundled
+/// next to that core (bundleMediaFramework) count there.
+#[tauri::command]
+pub async fn video_playback_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *SUPPORTED.get_or_init(|| {
+            // Two independent requirements, and each fails differently:
+            // no autoaudiosink wedges the WebKit process outright, no H.264
+            // decoder plays an eternally black rectangle. Both mean the
+            // preview feature should stand down and say why.
+            let (audio, h264) = if let Some(lib) = appimage_bundled_gst_lib() {
+                let plugins = lib.join("gstreamer-1.0");
+                (
+                    plugins.join("libgstautodetect.so").exists(),
+                    ["libgstlibav.so", "libgstopenh264.so"]
+                        .iter()
+                        .any(|f| plugins.join(f).exists()),
+                )
+            } else {
+                (
+                    gst_has_any(&["autoaudiosink"], &["libgstautodetect.so"]),
+                    gst_has_any(
+                        // Any one of these decodes our MP4s: ffmpeg's, Cisco's,
+                        // VA-API or NVIDIA's. gst-libav is the note's install
+                        // advice because it works without particular hardware.
+                        &["avdec_h264", "openh264dec", "vah264dec", "nvh264dec"],
+                        &["libgstlibav.so", "libgstopenh264.so"],
+                    ),
+                )
+            };
+            let ok = audio && h264;
+            if !ok {
+                log::warn!(
+                    "Preview videos disabled: GStreamer audio sink present: {}, H.264 decoder present: {}",
+                    audio,
+                    h264
+                );
+            }
+            ok
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
+}
+
+/// The lib dir of an AppImage that carries its own GStreamer core, when
+/// running inside one. APPDIR is exported by the AppRun hooks (also for an
+/// extracted tree); the core check guards the day bundling stops, at which
+/// point the host probe below becomes the right question again.
+#[cfg(target_os = "linux")]
+fn appimage_bundled_gst_lib() -> Option<std::path::PathBuf> {
+    let lib = std::path::PathBuf::from(std::env::var_os("APPDIR")?).join("usr/lib");
+    lib.join("libgstreamer-1.0.so.0").exists().then_some(lib)
+}
+
+/// Whether GStreamer offers any of the named elements, or - when gst-inspect
+/// is not installed - whether any of the named plugin files exists in the
+/// usual multiarch homes. Erring towards "no" is the safe direction: a
+/// skipped preview beats a frozen app or a black box.
+#[cfg(target_os = "linux")]
+fn gst_has_any(elements: &[&str], plugin_files: &[&str]) -> bool {
+    let mut inspect_ran = false;
+    for element in elements {
+        if let Ok(out) = std::process::Command::new("gst-inspect-1.0").arg(element).output() {
+            inspect_ran = true;
+            if out.status.success() {
+                return true;
+            }
+        }
+    }
+    if inspect_ran {
+        return false;
+    }
+    const PLUGIN_DIRS: [&str; 4] = [
+        "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
+        "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
+        "/usr/lib64/gstreamer-1.0",
+        "/usr/lib/gstreamer-1.0",
+    ];
+    PLUGIN_DIRS
+        .iter()
+        .any(|dir| plugin_files.iter().any(|f| Path::new(dir).join(f).exists()))
+}
+
 #[tauri::command]
 pub async fn get_video_status(
     video_state: State<'_, VideoState>,
@@ -553,4 +653,180 @@ mod tests {
         // cost no I/O: a job cancelled while queued should not read anything.
         assert_eq!(err, "cancelled");
     }
+}
+
+// ── Localhost media server (Linux) ───────────────────────────────────────────
+//
+// WebKitGTK's media player cannot pull media out of a custom URI scheme
+// handler: a <video> whose src is served through one ends with
+// MEDIA_ERR_SRC_NOT_SUPPORTED / networkState NO_SOURCE (measured on WebKitGTK
+// 2.52 with a minimal harness - the same file plays fine from file://).
+// Images are unaffected, so the asset protocol stays for those; only <video>
+// sources go through this 127.0.0.1 HTTP server, whose responses tower-http's
+// ServeFile answers with proper Range support (GStreamer seeks).
+//
+// URLs carry an opaque per-session token instead of a path: the HTTP side
+// never parses paths, an unknown token is a 404, and only files the backend
+// itself registered (after the same under-the-data-dir check the asset scope
+// enforces) are reachable. Bound to 127.0.0.1; other local processes can
+// fetch registered previews, which is the same exposure any local media
+// server has.
+
+/// Token -> file map plus the lazily-started server's port. The map sits
+/// behind its own Arc because the axum router holds a clone of it.
+pub struct MediaServerState {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    port: std::sync::Mutex<Option<u16>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    tokens: std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>,
+}
+
+impl MediaServerState {
+    pub fn new() -> Self {
+        Self {
+            port: std::sync::Mutex::new(None),
+            tokens: std::sync::Arc::default(),
+        }
+    }
+}
+
+impl Default for MediaServerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Translate an absolute media path into a playable URL, or None where the
+/// asset protocol already plays media fine (macOS/Windows) - the frontend
+/// falls back to convertFileSrc then.
+#[tauri::command]
+pub async fn media_url(
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] db_state: State<
+        '_,
+        crate::DbState,
+    >,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] server: State<
+        '_,
+        MediaServerState,
+    >,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] path: String,
+) -> Result<Option<String>, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(None)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let data_dir = {
+            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+            queries::get_config(&conn, "data_dir")
+                .map_err(|e| e.to_string())?
+                .ok_or("Data directory not configured")?
+        };
+        // Same containment rule as the asset-protocol scope: only files under
+        // the user's data dir are servable. Canonicalize both sides so a
+        // symlinked data dir still matches and `..` segments can't escape.
+        let canon_file = std::fs::canonicalize(&path).map_err(|e| format!("{path}: {e}"))?;
+        let canon_root =
+            std::fs::canonicalize(&data_dir).map_err(|e| format!("{data_dir}: {e}"))?;
+        if !canon_file.starts_with(&canon_root) {
+            return Err(format!("{} is outside the data directory", canon_file.display()));
+        }
+        if !canon_file.is_file() {
+            return Err(format!("{} is not a file", canon_file.display()));
+        }
+
+        let port = {
+            // Hold the port lock across server startup so two concurrent
+            // calls can't both bind a listener.
+            let mut port = server.port.lock().map_err(|e| e.to_string())?;
+            match *port {
+                Some(p) => p,
+                None => {
+                    let p = start_media_server(server.tokens.clone())?;
+                    *port = Some(p);
+                    p
+                }
+            }
+        };
+        let token = media_token(&canon_file);
+        server
+            .tokens
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(token.clone(), canon_file);
+        Ok(Some(format!("http://127.0.0.1:{port}/m/{token}")))
+    }
+}
+
+/// Opaque, non-guessable token: file path hashed with a per-process salt.
+#[cfg(target_os = "linux")]
+fn media_token(path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    use std::sync::OnceLock;
+    static SALT: OnceLock<u128> = OnceLock::new();
+    let salt = *SALT.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+            ^ (std::process::id() as u128) << 64
+    });
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    salt.hash(&mut h);
+    path.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+#[cfg(target_os = "linux")]
+fn start_media_server(
+    tokens: std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>,
+) -> Result<u16, String> {
+    use axum::body::Body;
+    use axum::extract::{Path as AxPath, State as AxState};
+    use axum::http::{Request, StatusCode};
+    use axum::response::Response;
+    use tower::ServiceExt;
+
+    async fn serve(
+        AxState(tokens): AxState<std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>>,
+        AxPath(token): AxPath<String>,
+        req: Request<Body>,
+    ) -> Result<Response, StatusCode> {
+        let file = tokens
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&token).cloned())
+            .ok_or(StatusCode::NOT_FOUND)?;
+        tower_http::services::ServeFile::new(file)
+            .oneshot(req)
+            .await
+            .map(|res| res.map(Body::new))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+
+    let router = axum::Router::new()
+        .route("/m/{token}", axum::routing::get(serve))
+        .with_state(tokens);
+
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(l) => l,
+            Err(e) => {
+                log::error!("media server: listener conversion failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = axum::serve(listener, router).await {
+            log::error!("media server exited: {e}");
+        }
+    });
+
+    log::info!("media server listening on 127.0.0.1:{port}");
+    Ok(port)
 }

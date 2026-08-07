@@ -4,25 +4,91 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { AutoProgress } from "./ProgressBar";
 import { Lightbox } from "./Lightbox";
 import { ManualViewer } from "./ManualViewer";
-import { GameSettingsDialog } from "./GameSettingsDialog";
-import { PlaylistMenu } from "./PlaylistMenu";
+import { GameActionsMenu } from "./GameActionsMenu";
+import { FieldIcon, IconSoundOn, IconSoundOff, IconZoom, type FieldIconName } from "./icons";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame, gamePrintingUnavailable } from "../api/tauri";
-import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
+import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xMultiplayerInfo, dismissWin9xNetworkPrompt, enableWin9xNetwork, getWin9xSupportStatus, mediaUrl } from "../api/tauri";
+import type { Win9xMultiplayerInfo, Win9xSupportStatus } from "../api/tauri";
+import { formatBytes, parseLangEntries, langBadgeClass, performUninstall, performReset } from "../util";
 import { showToast } from "../stores/toasts";
 import { bestThumbnailPath } from "../stores/thumbnails";
 import { downloads, startGameDownload, getDownloadState, cancelGameDownload, watchExtrasIfPending } from "../stores/downloads";
 import { loadGameMetadata } from "../stores/metadata";
 import { isOffline } from "../stores/network";
 import { loadVariants } from "../stores/variants";
-import { videos, requestVideo, releaseVideo, setForegroundVideo, getVideoState, PHASE_QUEUED, PHASE_PROBING } from "../stores/videos";
+import { toggleFavorite, updateGameFavorited } from "../stores/games";
+import { videos, requestVideo, releaseVideo, setForegroundVideo, getVideoState, videoPlaybackUnsupported, PHASE_QUEUED, PHASE_PROBING } from "../stores/videos";
+import { ensureDismissedNotesLoaded, isNoteDismissed, dismissedNotesLoaded, dismissNote } from "../stores/notes";
+import { packsByCollection, activeJobs, installedPacks, startContentPackInstall } from "../stores/contentPacks";
+import { ensurePreviewMutedLoaded, previewMuted, setPreviewMuted } from "../stores/playback";
 
 interface Props {
   game: Game | null;
   onClose: () => void;
   onDownloadStart?: (gameId: number) => void;
 }
+
+/** How long the cover keeps the hero to itself before the preview fades in. */
+const VIDEO_START_DELAY_MS = 2000;
+
+/** A note, plus the two things the UI needs to decide about it: a stable key
+ *  to remember a dismissal under, and whether it may be dismissed at all.
+ *  `blocking` notes describe a launch that cannot work; hiding those would
+ *  leave the Play button failing with no explanation on screen. */
+interface PanelNote {
+  key: string;
+  text: string;
+  blocking?: boolean;
+  /** Optional remedy rendered as a button in the note - a blocking note that
+   *  names a fix the app can perform (download the emulator pack) should
+   *  offer it right there instead of sending the user to Settings. */
+  action?: { label: string; onClick: () => void };
+}
+
+/** A credit line under the title: pictogram, then the value. The pictogram
+ *  replaces the label, so `title` carries it for anyone who needs it spelled
+ *  out (tooltip and screen readers both). */
+const Credit = (props: { icon: FieldIconName; value: string | number | null | undefined; title: string }) => (
+  <Show when={props.value != null && props.value !== ""}>
+    <div class="game-detail-credit" title={props.title}>
+      <FieldIcon name={props.icon} />
+      <span>{props.value}</span>
+    </div>
+  </Show>
+);
+
+/** A categorical fact as a tinted chip. `kind` picks the hue, so the same
+ *  category always reads the same colour across every game. */
+const Tag = (props: {
+  kind: "genre" | "platform" | "mode" | "emulator";
+  value: string | null | undefined;
+  title: string;
+}) => (
+  <Show when={props.value}>
+    <span class={`game-detail-tag is-${props.kind}`} title={props.title}>{props.value}</span>
+  </Show>
+);
+
+/** One metadata row: pictogram, label, value. Ten of these written out was
+ *  six lines each of identical markup, and adding a field meant remembering
+ *  the shape. Renders nothing when the value is absent, which is what every
+ *  caller's `<Show>` used to do. */
+const Field = (props: {
+  icon: FieldIconName;
+  label: string;
+  value: string | number | null | undefined;
+  valueClass?: string;
+}) => (
+  <Show when={props.value != null && props.value !== ""}>
+    <div class="game-detail-field">
+      <FieldIcon name={props.icon} />
+      <span class="game-detail-field-label">{props.label}</span>
+      <span class={props.valueClass}>{props.value}</span>
+    </div>
+  </Show>
+);
 
 const isWindows = typeof navigator !== "undefined"
   && /Win/i.test(navigator.platform || navigator.userAgent || "");
@@ -50,8 +116,6 @@ export function GameDetailPanel(props: Props) {
    *  index into the screenshot array has to be shifted to match. */
   const lightboxIndexOfImage = (imageIndex: number) => (videoSrc() ? imageIndex + 1 : imageIndex);
   const [manualOpen, setManualOpen] = createSignal(false);
-  const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [playlistMenu, setPlaylistMenu] = createSignal<{x: number, y: number} | null>(null);
   // Preview video. Fetching starts on open (see the effect below); this is only
   // the playback state - the video takes over the hero while it plays and hands
   // the cover back when it ends.
@@ -60,13 +124,251 @@ export function GameDetailPanel(props: Props) {
   // emulation yet, so those get a heads-up note. The backend owns the whole
   // answer (conf + engine selection), so no platform logic lives here.
   const [printingUnavailable, setPrintingUnavailable] = createSignal(false);
-  let heroVideoRef: HTMLVideoElement | undefined;
-  const openPlaylistMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    setPlaylistMenu({ x: rect.left, y: rect.bottom + 4 });
+  // Win9x games run in DOSBox-X/86Box, not Staging. The variant slugs only
+  // exist in the eXoWin9x catalogue, so they double as the collection test.
+  const isWin9x = (g: Game | null) => {
+    const v = g?.dosbox_variant;
+    return v === "x98" || v === "pcbox" || (v?.startsWith("86box") ?? false);
   };
+  const [win9xEngineMissing, setWin9xEngineMissing] = createSignal(false);
+  /** Shared Win9x support payload (OS images + eXo's emulators): null until
+   *  probed. Drives the download-progress note and the one-time-size hint. */
+  const [supportStatus, setSupportStatus] = createSignal<Win9xSupportStatus | null>(null);
+  /** Online-play state of the open game: drives both the panel note and the
+   *  question on Play. Null until probed, so nothing flashes. */
+  const [mpInfo, setMpInfo] = createSignal<Win9xMultiplayerInfo | null>(null);
+  /** Game id awaiting the multiplayer question, or null. */
+  const [netPromptFor, setNetPromptFor] = createSignal<number | null>(null);
+  /** Set by the dialog's confirm path, which starts its own launch - so the
+   *  close handler (which fires for both answers) does not start a second. */
+  let netPromptAccepted = false;
+  /** Which emulator will actually run the selected game, from its variant -
+   *  the same mapping the backend's engine dispatch uses. */
+  const emulatorName = () => {
+    const v = selected()?.dosbox_variant ?? props.game?.dosbox_variant;
+    if (v === "x98") { return "DOSBox-X"; }
+    if (v === "pcbox") { return "PCBox (not shipped)"; }
+    if (v?.startsWith("86box")) { return "86Box"; }
+    if (v?.startsWith("ece")) { return isWindows ? "DOSBox ECE" : "DOSBox Staging"; }
+    return "DOSBox Staging";
+  };
+  /** Blocking progress for the shared support payload; `withEmulators` says
+   *  whether the payload is also this platform's emulator source (Windows). */
+  const supportProgressNote = (s: Win9xSupportStatus, withEmulators: boolean): PanelNote => {
+    const what = withEmulators ? "OS images + emulators" : "OS images";
+    const pct = Math.round(s.progress * 100);
+    return {
+      key: "win9x-support-progress",
+      blocking: true,
+      text: pct >= 100
+        ? `Setting up the Windows 9x support files (${what})…`
+        : `Downloading the Windows 9x support files (${what})… ${pct}%`,
+    };
+  };
+  const supportFailedNote = (): PanelNote => ({
+    key: "win9x-support-failed",
+    blocking: true,
+    text: "Setting up the Windows 9x support files failed - make sure the library drive has "
+      + "enough free space, then restart Exodium to retry.",
+  });
+  /** The single note shown above the action bar, most actionable first:
+   *  a launch that cannot work, then a feature that is missing, then what
+   *  merely differs from a DOS game. Null when there is nothing to say. */
+  const rawNote = (): PanelNote | null => {
+    const v = selected()?.dosbox_variant ?? props.game?.dosbox_variant;
+    if (v === "pcbox") {
+      return {
+        key: "pcbox",
+        blocking: true,
+        text: "This game needs PCBox, a Windows-only emulator Exodium does not ship yet - "
+          + "launching it will fail for now.",
+      };
+    }
+    if (win9xEngineMissing()) {
+      // Same variant → pack mapping as the backend's emulator_pack_for_variant.
+      const packId = v?.startsWith("86box") ? "86box" : v === "pcbox" ? null : "dosbox-x";
+      const col = selected()?.torrent_source ?? props.game?.torrent_source ?? "eXoWin9x";
+      const pack = packId
+        ? (packsByCollection()[col] ?? []).find((p) => p.id === packId && p.available && !p.installed)
+        : undefined;
+      if (pack) {
+        const job = activeJobs()[`${col}:${pack.id}`];
+        if (job && !job.finished) {
+          const pct = job.total_bytes > 0
+            ? Math.round((job.downloaded_bytes / job.total_bytes) * 100)
+            : 0;
+          return {
+            key: "engine-missing",
+            blocking: true,
+            text: job.phase === "extracting"
+              ? `Installing ${pack.display_name}…`
+              : `Downloading ${pack.display_name}… ${pct}%`,
+          };
+        }
+        if (isOffline()) {
+          return {
+            key: "engine-missing",
+            blocking: true,
+            text: `This game needs ${emulatorName()}, which is not downloaded yet. `
+              + "Go online (Settings → Network) to download it.",
+          };
+        }
+        return {
+          key: "engine-missing",
+          blocking: true,
+          text: `This game needs ${emulatorName()}, which is not downloaded yet.`,
+          action: {
+            label: `Download emulator (${formatBytes(pack.size_bytes)})`,
+            onClick: () => {
+              startContentPackInstall(col, pack.id, pack.display_name).catch((e) => {
+                showToast(`Couldn't start the ${pack.display_name} download`, "error", {
+                  detail: String(e),
+                });
+              });
+            },
+          },
+        };
+      }
+      // No pack to offer. On Windows the engine comes out of the shared
+      // support payload, so report THAT state instead of a bare "not found"
+      // while the 2.5 GB is still on its way; elsewhere the advice below is
+      // actionable right now and outranks watching a download that cannot
+      // provide the emulator.
+      const support = supportStatus();
+      if (isWindows) {
+        if (!support) { return null; } // still probing - don't flash "not found"
+        if (support.phase === "failed") { return supportFailedNote(); }
+        if (support.phase === "downloading") { return supportProgressNote(support, true); }
+        if (support.phase === "missing" && !selectedInstalled()) {
+          return {
+            key: "win9x-support-size",
+            text: `${emulatorName()} and the shared Windows 9x OS images download automatically `
+              + `with this game${support.total_bytes ? ` (one-time ${formatBytes(support.total_bytes)})` : ""}.`,
+          };
+        }
+        // "ready" with the emulator gone, or "missing" for an installed
+        // game: a real fault, not a pending download.
+        return {
+          key: "engine-missing",
+          blocking: true,
+          text: "The emulator this game needs was not found in the Windows 9x support files "
+            + "(eXo\\emulators inside your library folder). Restore that folder, or delete it "
+            + "and download any Windows 9x game to fetch it again.",
+        };
+      }
+      return {
+        key: "engine-missing",
+        blocking: true,
+        text: v === "x98"
+          ? "The emulator this game needs was not found on this system. Install DOSBox-X via "
+            + "your package manager or Flatpak (com.dosbox_x.DOSBox-X)."
+          : "The emulator this game needs was not found on this system. Re-run the installer "
+            + "or place 86Box on your PATH.",
+      };
+    }
+    // Engine resolves, but the shared payload may still be on its way (the
+    // parent OS images are data every platform needs): without this, a game
+    // that installed before the 2.5 GB finished shows Play and fails bare.
+    const support = supportStatus();
+    if (support?.phase === "failed") { return supportFailedNote(); }
+    if (support?.phase === "downloading") { return supportProgressNote(support, false); }
+    // The download button quotes the game's own size, but the FIRST Win9x
+    // game also pulls the shared support payload - say so before the click,
+    // or 520 MB quietly becomes 3 GB.
+    if (support?.phase === "missing" && !selectedInstalled() && !selectedDownloading()) {
+      return {
+        key: "win9x-support-size",
+        text: "Downloading this game also fetches the shared Windows 9x support files"
+          + `${support.total_bytes ? ` (one-time ${formatBytes(support.total_bytes)})` : ""} - `
+          + "every Windows 9x game uses them.",
+      };
+    }
+    if (printingUnavailable()) {
+      return {
+        key: "printing",
+        text: "This game can print to a (virtual) printer, which the bundled DOSBox Staging "
+          + "does not support yet. The game runs, but its printing features are unavailable "
+          + "for now.",
+      };
+    }
+    const mp = mpInfo();
+    if (mp?.multiplayer && mp.state === "needs_wired") {
+      return {
+        key: "mp-wired",
+        text: "This game can play online, but that needs a wired network connection - a Wi-Fi "
+          + "link cannot carry the emulated network card's own hardware address, on any "
+          + "system. Single player works either way.",
+      };
+    }
+    if (mp?.multiplayer && mp.state === "needs_permission") {
+      return {
+        key: "mp-permission",
+        text: "This game can play online once you allow it in Settings → Network. Single "
+          + "player works either way.",
+      };
+    }
+    if (!isWindows && v?.startsWith("ece")) {
+      return {
+        key: "ece",
+        text: "This game is tuned for DOSBox ECE, which only exists on Windows. Exodium runs "
+          + "it with DOSBox Staging - the experience may vary slightly.",
+      };
+    }
+    if (v === "x98") {
+      return {
+        key: "x98-boot",
+        text: "This game boots Windows 98 inside DOSBox-X - the first start takes noticeably "
+          + "longer than a DOS game.",
+      };
+    }
+    if (v?.startsWith("86box")) {
+      return {
+        key: "86box-perf",
+        text: "This game runs under 86Box, a full PC hardware emulator - startup is slower and "
+          + "the system requirements are higher than for other games.",
+      };
+    }
+    // Last, because it is the least about THIS game: without a working
+    // GStreamer audio sink the webview freezes the moment a video mounts, so
+    // previews are disabled wholesale and this says why.
+    if (videoPlaybackUnsupported()) {
+      return {
+        key: "no-gstreamer",
+        text: "Preview videos are turned off: this system is missing GStreamer plugins. "
+          + "Install gstreamer1.0-plugins-good and gstreamer1.0-libav (names vary by "
+          + "distribution), then restart Exodium.",
+      };
+    }
+    return null;
+  };
+
+  /** The note actually rendered. Dismissal is remembered per note KIND, so
+   *  answering "tuned for ECE" once silences it on all ~2,000 ECE titles -
+   *  per game it would be busywork rather than a setting. */
+  const note = (): PanelNote | null => {
+    const n = rawNote();
+    if (!n || n.blocking) { return n; }
+    return dismissedNotesLoaded() && !isNoteDismissed(n.key) ? n : null;
+  };
+  let heroVideoRef: HTMLVideoElement | undefined;
+  /** Whether the overflow control has anything to offer. GameActionsMenu gates
+   *  every entry on the game's own state, so without this the button could
+   *  open an empty popup - which reads as broken. Mirrors that gating:
+   *  Settings and Reset need an install, Uninstall also accepts in_library,
+   *  and Playlist only needs an id. */
+  const hasMoreActions = () => selected()?.id != null;
+
+  const [moreMenu, setMoreMenu] = createSignal<{ x: number, y: number } | null>(null);
+  const openMoreMenu = (e: MouseEvent & { currentTarget: HTMLElement }) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    // Anchored to the RIGHT edge: the button sits at the end of the bar, and a
+    // left-anchored menu would hang off a narrow panel.
+    setMoreMenu({ x: rect.right, y: rect.bottom + 4 });
+  };
+
   const [launchingId, setLaunchingId] = createSignal<number | null>(null);
   const [uninstallingId, setUninstallingId] = createSignal<number | null>(null);
+  const [resettingId, setResettingId] = createSignal<number | null>(null);
   // The panel always describes exactly ONE row. Multi-language cards are a
   // merged group, so the user picks which language everything below the title
   // refers to - actions, description, manual, screenshots. Before this, the
@@ -192,6 +494,19 @@ export function GameDetailPanel(props: Props) {
         .then((p) => { if (props.game?.id === id) { setPrintingUnavailable(p); } })
         .catch(() => {});
     }
+    setWin9xEngineMissing(false);
+    setMpInfo(null);
+    if (isWin9x(g)) {
+      const id = g.id;
+      win9xEngineAvailable(g.dosbox_variant ?? null)
+        .then((ok) => { if (props.game?.id === id) { setWin9xEngineMissing(!ok); } })
+        .catch(() => {});
+      if (id != null) {
+        win9xMultiplayerInfo(id)
+          .then((info) => { if (props.game?.id === id) { setMpInfo(info); } })
+          .catch(() => {});
+      }
+    }
     // Force a metadata refetch: the cache key below would otherwise match the
     // previous visit to this same game and leave the panel with the null
     // metadata this reset just wrote (no screenshots, no manual).
@@ -205,6 +520,65 @@ export function GameDetailPanel(props: Props) {
         setSelectedId(defaultVariant(v)?.id ?? g.id ?? null);
       }).catch(() => {});
     }
+  });
+
+  // Re-probe the engine when a pack install lands (installedPacks changes):
+  // the "downloading emulator" note must clear itself without the panel being
+  // closed and reopened.
+  createEffect(() => {
+    installedPacks();
+    const g = props.game;
+    if (!isWin9x(g)) { return; }
+    const id = g?.id;
+    win9xEngineAvailable(g?.dosbox_variant ?? null)
+      .then((ok) => { if (props.game?.id === id) { setWin9xEngineMissing(!ok); } })
+      .catch(() => {});
+  });
+
+  // Watch the shared support payload for every open Win9x game: an
+  // uninstalled one shows what the one-time download costs, a fetching one
+  // shows live progress (on Windows the emulators ARE the support files).
+  // Deliberately NOT gated on win9xEngineMissing()/selectedInstalled() -
+  // the progress matters most when the game installed first and Play would
+  // otherwise fail bare, and reading selectedInstalled() here would couple
+  // the poller to the downloads store, which replaces its record every
+  // second during any download. Once "ready" arrives the engine is
+  // re-probed so a pending note clears without the panel being reopened;
+  // "failed" is terminal until a restart re-arms the watcher.
+  createEffect(() => {
+    const g = props.game;
+    if (!isWin9x(g) || isOffline()) { setSupportStatus(null); return; }
+    const variant = g?.dosbox_variant ?? null;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const probe = () => {
+      getWin9xSupportStatus(variant)
+        .then((s) => {
+          if (cancelled) { return; }
+          setSupportStatus(s);
+          if (s.phase === "failed") { return; }
+          if (s.phase === "ready") {
+            if (win9xEngineMissing()) {
+              const id = props.game?.id;
+              win9xEngineAvailable(variant)
+                .then((ok) => {
+                  if (!cancelled && props.game?.id === id) { setWin9xEngineMissing(!ok); }
+                })
+                .catch(() => {});
+            }
+            return;
+          }
+          // Active download wants a live bar; a steady "missing" only needs
+          // to notice a download started elsewhere eventually.
+          timer = setTimeout(probe, s.phase === "downloading" ? 3000 : 10000);
+        })
+        .catch(() => {});
+    };
+    probe();
+    onCleanup(() => {
+      cancelled = true;
+      if (timer != null) { clearTimeout(timer); }
+    });
   });
 
   // Metadata (screenshots + manual) belongs to the SELECTED variant, not to
@@ -259,17 +633,20 @@ export function GameDetailPanel(props: Props) {
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "Escape") { return; }
-    // A stacked overlay (lightbox, manual, settings) handles this Escape
-    // itself - closing the panel underneath in the same press would yank
-    // the user two levels at once.
-    if (lightboxOpen() || manualOpen() || settingsOpen()) { return; }
-    if (playlistMenu()) { setPlaylistMenu(null); return; }
+    // A stacked overlay handles this Escape itself - closing the panel
+    // underneath in the same press would yank the user two levels at once.
+    // The actions menu counts: it stays mounted while the dialogs it opened
+    // are up, so one signal covers menu, playlist and game settings.
+    if (lightboxOpen() || manualOpen()) { return; }
+    if (moreMenu()) { setMoreMenu(null); return; }
     props.onClose();
   };
 
   // Register once for the lifetime of the component - the handler reads props.onClose()
   // reactively through the Proxy so it always calls the current callback.
   onMount(() => {
+    ensureDismissedNotesLoaded();
+    ensurePreviewMutedLoaded();
     // Capture phase: the overlay-open guard must read the signals BEFORE
     // Ark's document-level handler closes the overlay in the same keypress.
     window.addEventListener("keydown", handleKeyDown, true);
@@ -308,22 +685,27 @@ export function GameDetailPanel(props: Props) {
   const videoQueued = () => videoState()?.phase === PHASE_QUEUED;
   const videoFailed = () => videoState()?.phase === "error";
 
-  // "No video" is shown briefly and then disappears - it is closure, not a
-  // permanent label on the game.
-  const [showNoVideo, setShowNoVideo] = createSignal(false);
+  // There is deliberately no "no video for this game" pill. Most DOS titles
+  // have no trailer, so the honest answer is also the useless one: it told the
+  // reader nothing they could act on and drew the eye to the absence of a
+  // feature. The progress states below still speak, because those describe
+  // work in flight the reader is waiting on.
+  // WebKitGTK cannot play media through the asset protocol (Linux answers a
+  // localhost HTTP URL from media_url; macOS/Windows answer null and keep
+  // convertFileSrc). Async, so the URL lives in a signal the effect fills.
+  const [videoSrc, setVideoSrc] = createSignal<string | null>(null);
   createEffect(() => {
-    if (videoState()?.phase !== "none") { return; }
-    // Offline reports "none" because nothing can be fetched, which is not the
-    // same statement as "this game has no video" - so say nothing at all.
-    if (isOffline()) { return; }
-    setShowNoVideo(true);
-    const timer = window.setTimeout(() => setShowNoVideo(false), 2600);
-    onCleanup(() => clearTimeout(timer));
-  });
-  const videoSrc = () => {
     const p = videoState()?.path;
-    return p ? convertFileSrc(p) : null;
-  };
+    if (!p) {
+      setVideoSrc(null);
+      return;
+    }
+    let stale = false;
+    mediaUrl(p)
+      .then((url) => { if (!stale) { setVideoSrc(url ?? convertFileSrc(p)); } })
+      .catch(() => { if (!stale) { setVideoSrc(convertFileSrc(p)); } });
+    onCleanup(() => { stale = true; });
+  });
 
   // Start the fetch a beat after the panel settles on a game. The delay is the
   // point: clicking through the grid would otherwise queue a torrent read per
@@ -341,40 +723,90 @@ export function GameDetailPanel(props: Props) {
     });
   });
 
-  // Autoplay as soon as it lands, muted - a preview that demands a click is
-  // barely better than no preview, and unmuted autoplay is a good way to make
-  // someone close the app.
+  // Autoplay as soon as it lands, with sound. Autoplay policies only grant
+  // that once the document has seen a user gesture, and opening this panel is
+  // one - but a preview is worth more than its audio, so a rejected unmuted
+  // play retries muted rather than leaving the cover sitting there.
   createEffect(() => {
     if (!videoReady()) { return; }
-    // Deferred: the <video> mounts from the same signal change, so the ref is
-    // not assigned yet while this effect body runs.
-    queueMicrotask(() => {
+    // Let the cover have the panel first. Opening a game and being met by a
+    // trailer mid-motion reads as an ad; two seconds is long enough to take in
+    // the box art, and the fade then belongs to the video rather than to the
+    // panel opening. Cleared on close and on switching games.
+    const timer = window.setTimeout(() => {
       const el = heroVideoRef;
       if (!el) { return; }
       try {
         el.currentTime = 0;
+        el.muted = previewMuted();
         const started = el.play();
         // Older WebKit returns undefined here instead of a promise. Calling
         // .then on that throws INSIDE the effect, and Solid propagates the
         // exception back to whoever set the signal - which made the video
         // store record a fetch error for a video that had arrived fine.
         if (started && typeof started.then === "function") {
-          started.then(() => setVideoPlaying(true)).catch(() => setVideoPlaying(false));
+          started.then(() => setVideoPlaying(true)).catch(() => {
+            // Autoplay with sound needs a user gesture the webview may not
+            // have seen. A silent preview beats no preview - but do NOT write
+            // that back to the preference: the user did not choose it.
+            el.muted = true;
+            const retry = el.play();
+            if (retry && typeof retry.then === "function") {
+              retry.then(() => setVideoPlaying(true)).catch(() => setVideoPlaying(false));
+            } else {
+              setVideoPlaying(true);
+            }
+          });
         } else {
           setVideoPlaying(true);
         }
       } catch {
         setVideoPlaying(false);
       }
-    });
+    }, VIDEO_START_DELAY_MS);
+    onCleanup(() => clearTimeout(timer));
+  });
+
+  /** Toggling mute mid-playback also un-mutes a fallback-muted video, since
+   *  the click is itself the gesture autoplay was missing. */
+  const toggleMute = () => {
+    const next = !previewMuted();
+    void setPreviewMuted(next);
+    if (heroVideoRef) {
+      heroVideoRef.muted = next;
+      if (!next && heroVideoRef.paused) { void heroVideoRef.play(); }
+    }
+  };
+
+  // The lightbox plays the same preview with its own controls, and both have
+  // sound now - so the hero has to step aside or the trailer runs twice over
+  // itself. Pausing also cross-fades the cover back in, which is what should
+  // be behind the lightbox anyway.
+  createEffect(() => {
+    if (lightboxOpen()) { heroVideoRef?.pause(); }
   });
 
   const handleManualClick = () => {
     if (metadata()?.manual_path) { setManualOpen(true); }
   };
 
+  /** Online-capable Win9x games ask once, on the first Play, whether to turn
+   *  multiplayer on - the backend answers false for every game and every
+   *  state where the question would be noise. */
   const handleLaunch = async (gameId: number) => {
     if (launchingId() != null) { return; }
+    try {
+      const info = await win9xMultiplayerInfo(gameId);
+      setMpInfo(info);
+      if (info.prompt) {
+        setNetPromptFor(gameId);
+        return;
+      }
+    } catch { /* older backend - just launch */ }
+    void startLaunch(gameId);
+  };
+
+  const startLaunch = async (gameId: number) => {
     setLaunchingId(gameId);
     setStatus("");
     const startedAt = Date.now();
@@ -422,6 +854,27 @@ export function GameDetailPanel(props: Props) {
     }
   };
 
+  // A pending "really?" must not carry over to another language variant -
+  // the action bar targets the selected row, so the second click would hit a
+  // game the user never armed.
+  createEffect(() => {
+    selected()?.id;
+  });
+
+  /** Only the in-bar "Resetting…" state lives here; the work and its toasts
+   *  are `performReset`, shared with the grid's context menu. */
+  const handleReset = async (gameId: number) => {
+    if (resettingId() != null) { return; }
+    const title = variants().find((v) => v.id === gameId)?.title ?? props.game?.title;
+    setResettingId(gameId);
+    try {
+      // The action row renders the progress itself, so swallow the status text.
+      await performReset(gameId, () => {}, title);
+    } finally {
+      setResettingId(null);
+    }
+  };
+
   const ratingStars = (rating: number | null) => {
     if (rating == null) { return null; }
     // eXoDOS ratings are 0–5 scale
@@ -436,6 +889,29 @@ export function GameDetailPanel(props: Props) {
   // ambiguity this panel is meant to remove. Unresolved = its GameData ZIP is
   // still downloading; clicking retries the lookup, so it self-heals.
   /** True once the file behind the catalogue's promise actually exists. */
+  /** Favourite state of the CARD's row, not the selected variant.
+   *
+   *  The panel is scoped to one variant everywhere else (§12), but favourites
+   *  are not: the grid stars `props.game`, and the Favorites shelf lists that
+   *  row. Starring the DE variant here would leave the card it was opened from
+   *  showing an empty star and put a second entry on the shelf. */
+  const [favorited, setFavorited] = createSignal(false);
+  createEffect(() => { setFavorited(props.game?.favorited ?? false); });
+
+  const handleToggleFavorite = async () => {
+    const id = props.game?.id;
+    if (id == null) { return; }
+    const next = !favorited();
+    setFavorited(next);
+    try {
+      await toggleFavorite(id);
+      updateGameFavorited(id, next);
+    } catch (e) {
+      setFavorited(!next);
+      showToast("Couldn't update favorites", "error", { detail: String(e) });
+    }
+  };
+
   const manualAvailable = () => !!metadata()?.manual_path;
 
   const ManualButton = () => (
@@ -487,7 +963,12 @@ export function GameDetailPanel(props: Props) {
     if (!raw) { return []; }
     return raw.split(";").map((p) => p.trim()).filter(Boolean);
   };
-  const primaryGenre = (): string | null => genreList()[0] ?? null;
+  /** Whether the "Information" block has anything to show. Without this the
+   *  heading and its rule would sit above nothing for the many DOS titles that
+   *  carry no series, region, player count or rating. */
+  const hasInformation = () =>
+    field("series") != null || field("region") != null
+    || field("max_players") != null || field("rating") != null;
   const allGenres = (): string | null => {
     const list = genreList();
     return list.length > 0 ? list.join(" · ") : null;
@@ -498,15 +979,17 @@ export function GameDetailPanel(props: Props) {
       <Portal>
         <div class="game-detail-backdrop" onClick={props.onClose} />
         <div class="game-detail-panel">
-          {/* Close button */}
-          <button class="game-detail-close" onClick={props.onClose} title="Close">✕</button>
-
-          {/* Hero: thumbnail + title */}
+          {/* Hero: thumbnail + title. The close button lives INSIDE it so the
+              hover that reveals it survives the pointer reaching the button -
+              as a sibling, moving onto it left the hero un-hovered and the
+              control faded out from under the cursor. */}
           <div class="game-detail-hero">
+            <button class="game-detail-close" onClick={props.onClose} title="Close">✕</button>
             <div class="game-detail-hero-art">
             <Show when={thumbSrc() && !imgError()}>
+              <img class="game-detail-thumb-backdrop" src={thumbSrc()!} alt="" aria-hidden="true" />
               <img
-                class={`game-detail-thumb${videoPlaying() ? " is-behind-video" : ""}`}
+                class="game-detail-thumb"
                 src={thumbSrc()!}
                 alt=""
                 onError={() => setImgError(true)}
@@ -524,7 +1007,6 @@ export function GameDetailPanel(props: Props) {
                 ref={heroVideoRef}
                 class={`game-detail-hero-video${videoPlaying() ? " is-visible" : ""}`}
                 src={videoSrc()!}
-                muted
                 playsinline
                 preload="auto"
                 onEnded={() => setVideoPlaying(false)}
@@ -548,11 +1030,6 @@ export function GameDetailPanel(props: Props) {
               </div>
             </Show>
 
-            {/* The negative answer, shown long enough to read and then gone. */}
-            <Show when={showNoVideo()}>
-              <div class="game-detail-video-status is-fading-out">No video for this game</div>
-            </Show>
-
             {/* A failed fetch must not look like "this game has no video" -
                 a stalled torrent read is worth retrying, a missing video is not. */}
             <Show when={videoFailed()}>
@@ -563,21 +1040,68 @@ export function GameDetailPanel(props: Props) {
               >↻ Video retry</button>
             </Show>
 
+            {/* Nothing about a cover says it can be opened larger. The hint
+                appears with the other hover controls and is inert - the click
+                belongs to the artwork underneath, which already opens the
+                lightbox, so this must not become a second target that swallows
+                it near the middle. */}
+            <Show when={thumbSrc() && !imgError()}>
+              <div class="game-detail-zoom-hint" aria-hidden="true"><IconZoom /></div>
+            </Show>
+
+            {/* Sound toggle, only while the preview is actually running. The
+                preference is global and persistent - per game it would mean
+                muting the same trailer over and over. */}
+            <Show when={videoPlaying()}>
+              <button
+                class="game-detail-video-sound"
+                title={previewMuted() ? "Unmute previews" : "Mute previews"}
+                aria-label={previewMuted() ? "Unmute previews" : "Mute previews"}
+                onClick={toggleMute}
+              >{previewMuted() ? <IconSoundOff /> : <IconSoundOn />}</button>
+            </Show>
+
             {/* Replay control once it has run its course. */}
             <Show when={videoReady() && !videoPlaying()}>
               <button
                 class="game-detail-video-replay"
                 title="Play the preview again"
-                onClick={() => heroVideoRef?.play()}
+                onClick={() => {
+                  // A click is the gesture autoplay may have lacked, so a
+                  // fallback-muted video gets its sound back here - but only
+                  // if the user has not asked for silence. Forcing muted=false
+                  // outright made Replay override the mute button.
+                  if (heroVideoRef) { heroVideoRef.muted = previewMuted(); }
+                  heroVideoRef?.play();
+                }}
               >▶</button>
             </Show>
             </div>
 
+            {/* Title, then who made it, then what kind of thing it is. The
+                three sit in that order because that is the order they answer
+                "what am I looking at" - and none of them competes with the
+                description for width any more. */}
             <div class="game-detail-hero-info">
               <div class="game-detail-title">{selected()?.title ?? props.game!.title}</div>
-              <div class="game-detail-chips">
-                {props.game!.year && <span class="badge">{props.game!.year}</span>}
-                {primaryGenre() && <span class="badge badge-genre">{primaryGenre()}</span>}
+
+              {/* Credits carry an icon instead of a label: with only three
+                  lines, and values that read as names and a year, uppercase
+                  labels were three columns of furniture for no gain. */}
+              <div class="game-detail-credits">
+                <Credit icon="developer" value={field("developer")} title="Developer" />
+                <Credit icon="publisher" value={field("publisher")} title="Publisher" />
+                <Credit icon="year" value={field("year")} title="Year" />
+              </div>
+
+              {/* The categorical facts - the ones a user filters or scans by.
+                  Tinted per category rather than per state, so the row reads
+                  as a legend instead of a status. */}
+              <div class="game-detail-tags">
+                <Tag kind="genre" value={allGenres()} title="Genre" />
+                <Tag kind="platform" value={field("platform")} title="System" />
+                <Tag kind="mode" value={field("play_mode")} title="Mode" />
+                <Tag kind="emulator" value={emulatorName()} title="Emulator" />
               </div>
             </div>
           </div>
@@ -588,28 +1112,33 @@ export function GameDetailPanel(props: Props) {
               <div class="game-detail-status">{currentStatus()}</div>
             </Show>
 
-            {/* Emulator note: ECE-tuned games run under DOSBox Staging on
-                non-Windows platforms (ECE ships Windows binaries only). */}
-            <Show when={!isWindows && props.game?.dosbox_variant?.startsWith("ece")}>
-              <div class="game-detail-note">
-                This game is tuned for DOSBox ECE, which only exists on
-                Windows. Exodium runs it with DOSBox Staging - the experience
-                may vary slightly.
-              </div>
-            </Show>
-
-            {/* Printer note: 13 eXoDOS titles print as their core feature.
-                DOSBox Staging has no printer emulation yet (it is in the
-                works upstream). The backend answers with launch_game's own
-                engine selection, so a Windows install with the ECE build on
-                disk gets no note - printing works there. */}
-            <Show when={printingUnavailable()}>
-              <div class="game-detail-note">
-                This game can print to a (virtual) printer, which the bundled
-                DOSBox Staging does not support yet. The game runs, but its
-                printing features are unavailable for now - printer support is
-                expected in a future DOSBox Staging update.
-              </div>
+            {/* Exactly one note. Three stacked boxes read as a wall of
+                warnings and buried the one that mattered, so they are ordered
+                by how much the reader can do about it. */}
+            <Show when={note()}>
+              {(n) => (
+                <div class={`game-detail-note${n().blocking ? " is-blocking" : ""}`}>
+                  <span class="game-detail-note-mark" aria-hidden="true">
+                    {n().blocking ? "!" : "i"}
+                  </span>
+                  <p class="game-detail-note-text">{n().text}</p>
+                  <Show when={n().action}>
+                    {(a) => (
+                      <Button variant="action" class="game-detail-note-action" onClick={() => a().onClick()}>
+                        {a().label}
+                      </Button>
+                    )}
+                  </Show>
+                  <Show when={!n().blocking}>
+                    <button
+                      class="game-detail-note-dismiss"
+                      title="Don't show this note again"
+                      aria-label="Don't show this note again"
+                      onClick={() => { void dismissNote(n().key); }}
+                    >✕</button>
+                  </Show>
+                </div>
+              )}
             </Show>
 
             {/* Language switcher: picking a chip re-points the whole panel -
@@ -672,11 +1201,6 @@ export function GameDetailPanel(props: Props) {
                     <Show when={selectedInstalled() && manualRow()}>
                       <ManualButton />
                     </Show>
-                    <Show when={selectedInstalled()}>
-                      <Button variant="action" class="btn-settings" title="Game settings" onClick={() => setSettingsOpen(true)}>
-                        ⚙
-                      </Button>
-                    </Show>
                     <Show when={!selectedInstalled() && selectedDownloading()}>
                       <div class="game-detail-btn btn-downloading">
                         <AutoProgress
@@ -706,25 +1230,43 @@ export function GameDetailPanel(props: Props) {
                         Not installed - offline mode
                       </div>
                     </Show>
-                    <Show when={!selectedDownloading() && (selectedInstalled() || sel().in_library) && sel().id != null}>
-                      <Button
-                        variant="action"
-                        class="btn-uninstall"
-                        disabled={launchingId() != null}
-                        onClick={() => handleUninstall(sel().id!)}
-                      >
-                        Uninstall
-                      </Button>
-                    </Show>
+                    {/* Frequent, reversible, and the one action that is not
+                        about launching - so it stays in the bar rather than
+                        moving into the menu with the destructive items. */}
                     <Show when={props.game!.id != null}>
                       <Button
                         variant="action"
-                        class="btn-playlist"
-                        title="Add to playlist"
-                        onClick={openPlaylistMenu}
+                        class={`btn-fav${favorited() ? " is-favorited" : ""}`}
+                        title={favorited() ? "Remove from favorites" : "Add to favorites"}
+                        aria-label={favorited() ? "Remove from favorites" : "Add to favorites"}
+                        onClick={() => { void handleToggleFavorite(); }}
                       >
-                        ＋ Playlist
+                        {favorited() ? "★" : "☆"}
                       </Button>
+                    </Show>
+
+                    {/* Everything else lives behind one control. The bar used
+                        to carry five, and the two that matter - the primary
+                        action for the current state, and the manual - had to
+                        compete with three that are rarely wanted and two of
+                        which destroy data. Reset still confirms in place, so
+                        the menu cannot turn a stray click into a wipe. */}
+                    <Show when={resettingId() !== sel().id} fallback={
+                      <div class="game-detail-btn btn-uninstalling">
+                        <span class="btn-spinner" /> Resetting…
+                      </div>
+                    }>
+                      <Show when={hasMoreActions()}>
+                        <Button
+                          variant="action"
+                          class="btn-more"
+                          title="More actions"
+                          aria-label="More actions"
+                          onClick={openMoreMenu}
+                        >
+                          ⋯
+                        </Button>
+                      </Show>
                     </Show>
                   </div>
                 </Show>
@@ -735,83 +1277,53 @@ export function GameDetailPanel(props: Props) {
                 narrow (flex-wrap, no breakpoint) - the pair is what keeps the
                 screenshots on screen without scrolling. */}
             <div class="game-detail-scroll">
-              <div class="game-detail-columns">
-                {/* Catalogue fields. Values come from the selected row where it
-                    has them and from the English row otherwise - LP rows carry
-                    little more than a title. */}
-                <div class="game-detail-fields">
-                  <Show when={field("developer")}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Developer</span>
-                      <span>{field("developer")}</span>
-                    </div>
-                  </Show>
-                  <Show when={field("publisher")}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Publisher</span>
-                      <span>{field("publisher")}</span>
-                    </div>
-                  </Show>
-                  <Show when={field("series")}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Series</span>
-                      <span>{field("series")}</span>
-                    </div>
-                  </Show>
-                  <Show when={allGenres()}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Genre</span>
-                      <span>{allGenres()}</span>
-                    </div>
-                  </Show>
-                  <Show when={field("play_mode")}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Mode</span>
-                      <span>{field("play_mode")}</span>
-                    </div>
-                  </Show>
-                  <Show when={field("region")}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Region</span>
-                      <span>{field("region")}</span>
-                    </div>
-                  </Show>
-                  <Show when={field("max_players") != null}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Players</span>
-                      <span>{field("max_players")}</span>
-                    </div>
-                  </Show>
-                  <Show when={field("rating") != null}>
-                    <div class="game-detail-field">
-                      <span class="game-detail-field-label">Rating</span>
-                      <span class="game-detail-stars">{ratingStars(field("rating") as number)}</span>
-                    </div>
-                  </Show>
-                </div>
-
-                <div class="game-detail-text">
-                  <Show when={descriptionSource()}>
-                    {(src) => (
-                      <>
-                        <Show when={src().fallbackFrom}>
-                          <div class="game-detail-fallback-note">
-                            English description - the catalogue has no{" "}
-                            {languageName(src().fallbackFrom)} text for this game.
-                          </div>
-                        </Show>
-                        <div class="game-detail-description">{src().text}</div>
-                        <Show when={src().notes}>
-                          <div class="game-detail-notes">{src().notes}</div>
-                        </Show>
-                      </>
-                    )}
-                  </Show>
-                  <Show when={metadataLoading()}>
-                    <div class="game-detail-loading">Loading media…</div>
-                  </Show>
-                </div>
+              {/* One column. Fields beside the description gave each of them
+                  half of a 560 px panel: the field table wrapped company names
+                  over three lines and the text ran at ~40 characters, half a
+                  comfortable measure. Neither needed the other's company - a
+                  reader takes them in sequence, not side by side. */}
+              <div class="game-detail-text">
+                <Show when={descriptionSource()}>
+                  {(src) => (
+                    <>
+                      <Show when={src().fallbackFrom}>
+                        <div class="game-detail-fallback-note">
+                          English description - the catalogue has no{" "}
+                          {languageName(src().fallbackFrom)} text for this game.
+                        </div>
+                      </Show>
+                      <div class="game-detail-description">{src().text}</div>
+                      <Show when={src().notes}>
+                        <div class="game-detail-notes">{src().notes}</div>
+                      </Show>
+                    </>
+                  )}
+                </Show>
+                <Show when={metadataLoading()}>
+                  <div class="game-detail-loading">Loading media…</div>
+                </Show>
               </div>
+
+              {/* The long tail: everything not already answered by the credits
+                  or the tag row. Full width, so two pairs fit per line and
+                  nothing wraps - and below the description, because these are
+                  looked up rather than read. */}
+              <Show when={hasInformation()}>
+                <div class="game-detail-info">
+                  <div class="game-detail-section-label">Information</div>
+                  <div class="game-detail-fields">
+                    <Field icon="series" label="Series" value={field("series")} />
+                    <Field icon="region" label="Region" value={field("region")} />
+                    <Field icon="players" label="Players" value={field("max_players")} />
+                    <Field
+                      icon="rating"
+                      label="Rating"
+                      value={field("rating") != null ? ratingStars(field("rating") as number) : null}
+                      valueClass="game-detail-stars"
+                    />
+                  </div>
+                </div>
+              </Show>
             </div>
 
             {/* Media: screenshots/art - only renders if the metadata content
@@ -876,18 +1388,56 @@ export function GameDetailPanel(props: Props) {
           open={manualOpen()}
           onClose={() => setManualOpen(false)}
         />
-        <GameSettingsDialog
-          gameId={selected()?.id ?? null}
-          gameTitle={selected()?.title ?? props.game?.title ?? ""}
-          open={settingsOpen()}
-          onClose={() => setSettingsOpen(false)}
+        {/* Asked on Play, not in Settings: this is the moment the online mode
+            would otherwise silently be missing. Either answer can be
+            remembered - a question that only goes quiet when accepted is not
+            a question. */}
+        <ConfirmDialog
+          open={netPromptFor() != null}
+          title="Play online?"
+          message="This game can play online against others who own the collection, over a community-run IPX gateway. That needs one-time permission from your system to bridge the emulated network card; you can also play on your own without it."
+          confirmLabel="Set up now…"
+          cancelLabel="Play offline"
+          rememberLabel="Don't ask again"
+          onConfirm={async (remember) => {
+            netPromptAccepted = true;
+            const gameId = netPromptFor();
+            if (remember) { void dismissWin9xNetworkPrompt(); }
+            try {
+              await enableWin9xNetwork();
+            } catch (e) {
+              const msg = String(e);
+              if (!msg.includes("cancelled")) {
+                showToast("Could not enable multiplayer", "error", { detail: msg });
+              }
+            }
+            // Launch either way: a dismissed system dialog means "not now",
+            // not "don't play".
+            if (gameId != null) { void startLaunch(gameId); }
+          }}
+          onClose={(remember) => {
+            const gameId = netPromptFor();
+            setNetPromptFor(null);
+            if (remember) { void dismissWin9xNetworkPrompt(); }
+            // onClose also fires after onConfirm, which launches on its own.
+            if (gameId != null && !netPromptAccepted) { void startLaunch(gameId); }
+            netPromptAccepted = false;
+          }}
         />
-        <Show when={playlistMenu() && props.game?.id != null}>
-          <PlaylistMenu
-            x={playlistMenu()!.x}
-            y={playlistMenu()!.y}
-            gameId={props.game!.id!}
-            onClose={() => setPlaylistMenu(null)}
+        {/* One component for both surfaces - see GameActionsMenu. It owns the
+            confirm steps and the dialogs it opens, so this only supplies the
+            anchor and clears it when everything has closed. */}
+        <Show when={moreMenu() && selected()}>
+          <GameActionsMenu
+            game={selected()!}
+            x={moreMenu()!.x}
+            y={moreMenu()!.y}
+            rightAnchored
+            abovePanel
+            downloading={selectedDownloading()}
+            onReset={handleReset}
+            onUninstall={handleUninstall}
+            onClose={() => setMoreMenu(null)}
           />
         </Show>
       </Portal>

@@ -182,28 +182,49 @@ fn adopt_packs_on_disk(
     let mut state = read_installed_packs(conn);
     let recorded = state.entry(collection.to_string()).or_default();
     let mut adopted = Vec::new();
+    let mut vanished = Vec::new();
     for (id, info) in &col.content_packs {
-        if recorded.contains_key(id) {
-            continue;
+        // A pack the current platform cannot see must not be adopted either,
+        // or a data dir moved from another OS would grow ledger rows for
+        // binaries this build can never use.
+        let Some(info) = info.for_current_platform() else { continue };
+        // install_path names the exact directory - it already carries the
+        // collection (`content/posters/eXoWin9x`). Appending it a second time
+        // meant metadata packs were never adopted at all.
+        let dir = Path::new(&data_dir).join(&info.install_path);
+        let present =
+            dir.is_dir() && !std::fs::read_dir(&dir).map(|mut d| d.next().is_none()).unwrap_or(true);
+        match (recorded.contains_key(id), present) {
+            (false, true) => {
+                recorded.insert(
+                    id.clone(),
+                    InstalledPack {
+                        version: info.version,
+                        size_bytes: info.size_bytes,
+                        installed_at: chrono_now(),
+                    },
+                );
+                adopted.push(id.clone());
+            }
+            // The ledger is not evidence, the disk is. A pack recorded as
+            // installed whose files are gone otherwise shows "Remove" forever
+            // and Settings offers no way back to a working state.
+            (true, false) => {
+                recorded.remove(id);
+                vanished.push(id.clone());
+            }
+            _ => {}
         }
-        let dir = Path::new(&data_dir).join(&info.install_path).join(collection);
-        if !dir.is_dir() || std::fs::read_dir(&dir).map(|mut d| d.next().is_none()).unwrap_or(true) {
-            continue;
-        }
-        recorded.insert(
-            id.clone(),
-            InstalledPack {
-                version: info.version,
-                size_bytes: info.size_bytes,
-                installed_at: chrono_now(),
-            },
-        );
-        adopted.push(id.clone());
     }
-    if adopted.is_empty() {
+    if adopted.is_empty() && vanished.is_empty() {
         return;
     }
-    log::info!("Adopting content packs found on disk for {}: {:?}", collection, adopted);
+    if !adopted.is_empty() {
+        log::info!("Adopting content packs found on disk for {}: {:?}", collection, adopted);
+    }
+    if !vanished.is_empty() {
+        log::info!("Content packs recorded but missing on disk for {}: {:?}", collection, vanished);
+    }
     if let Err(e) = write_installed_packs(conn, &state) {
         log::warn!("Could not record adopted packs: {}", e);
     }
@@ -228,9 +249,12 @@ pub async fn list_content_packs(
     let mut result: Vec<ContentPackStatus> = col
         .content_packs
         .iter()
-        .map(|(id, info)| {
+        .filter_map(|(id, info)| {
+            // Platform-mapped packs resolve to their per-OS source or vanish
+            // (the emulator packs exist on macOS/Linux only).
+            let info = info.for_current_platform()?;
             let inst = col_installed.and_then(|c| c.get(id));
-            ContentPackStatus {
+            Some(ContentPackStatus {
                 id: id.clone(),
                 display_name: info.display_name.clone(),
                 description: info.description.clone(),
@@ -241,7 +265,7 @@ pub async fn list_content_packs(
                     || (!info.url.is_empty() && !info.url.starts_with("TODO")),
                 installed: inst.is_some(),
                 installed_version: inst.map(|i| i.version),
-            }
+            })
         })
         .collect();
     result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -253,11 +277,54 @@ pub async fn list_content_packs(
 #[tauri::command]
 pub async fn install_content_pack(
     app: AppHandle,
-    db_state: State<'_, DbState>,
-    pack_state: State<'_, ContentPackState>,
     collection: String,
     pack_id: String,
 ) -> Result<(), String> {
+    start_pack_install(&app, &collection, &pack_id).await
+}
+
+/// The platform-resolved manifest entry for a pack, but only when it can
+/// actually be installed right now (a real source, this platform). Backend
+/// auto-triggers gate on this so a TODO-URL manifest entry stays inert.
+pub(crate) fn installable_pack(collection: &str, pack_id: &str) -> Option<ContentPackInfo> {
+    let manifest = load_manifest().ok()?;
+    let info = manifest
+        .collections
+        .get(collection)?
+        .content_packs
+        .get(pack_id)?
+        .for_current_platform()?;
+    let has_http_source = !info.url.is_empty()
+        && !info.url.starts_with("TODO")
+        && !info.sha256.starts_with("TODO");
+    (info.torrent_file_path.is_some() || has_http_source).then_some(info)
+}
+
+/// Payload of the "content-pack-install-started" event. Emitted for EVERY
+/// job, because the backend can start one itself (the Win9x emulator
+/// auto-queue) and the frontend's progress badge only polls jobs it knows
+/// about.
+#[derive(Clone, Serialize)]
+struct PackInstallStarted {
+    collection: String,
+    pack_id: String,
+    display_name: String,
+}
+
+/// Start a pack install job. Shared by the `install_content_pack` command
+/// and backend triggers; returns once the job is registered (the download
+/// runs in a spawned task, polled via `get_content_pack_progress`).
+pub(crate) async fn start_pack_install(
+    app: &AppHandle,
+    collection: &str,
+    pack_id: &str,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let db_state: State<'_, DbState> = app.state();
+    let pack_state: State<'_, ContentPackState> = app.state();
+    let collection = collection.to_string();
+    let pack_id = pack_id.to_string();
+
     // Resolve pack info from the manifest (fast, in-memory).
     let manifest = load_manifest()?;
     let col = manifest
@@ -268,7 +335,10 @@ pub async fn install_content_pack(
         .content_packs
         .get(&pack_id)
         .ok_or_else(|| format!("Unknown pack '{}' in '{}'", pack_id, collection))?
-        .clone();
+        .for_current_platform()
+        .ok_or_else(|| {
+            format!("'{}' is not available on this platform.", pack_id)
+        })?;
     let col_packs = col.content_packs.clone();
 
     // Guard: reject packs without a real source. Torrent-sourced packs (via
@@ -324,6 +394,18 @@ pub async fn install_content_pack(
         );
     }
 
+    {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "content-pack-install-started",
+            PackInstallStarted {
+                collection: collection.clone(),
+                pack_id: pack_id.clone(),
+                display_name: pack_info.display_name.clone(),
+            },
+        );
+    }
+
     // Clone handles for the spawned task - return immediately so the UI stays responsive.
     let jobs_arc = pack_state.0.clone();
     let collection_clone = collection.clone();
@@ -375,6 +457,74 @@ pub async fn install_content_pack(
         }
     });
 
+    Ok(())
+}
+
+/// The directory whose CONTENTS should become `install_dir`.
+///
+/// `install_path` names the exact target (`content/posters/eXoWin9x`), but the
+/// archives disagree about whether they carry that last segment themselves:
+/// `posters-eXoDOS-v5` and `posters-eXoWin3x-v1` wrap everything in a
+/// `<collection>/` directory, `posters-eXoWin9x-v1` was packed from inside it
+/// and is flat. Unwrapping makes both shapes land in the same place, so a
+/// mis-packed archive is a non-event instead of a republish.
+///
+/// The wrapper must be the ONLY entry and must repeat the target's own name -
+/// "one top-level directory" alone would swallow a pack whose real payload
+/// happens to be a single `Images/`.
+///
+/// OS metadata does not count towards "only". All three tarballs were rolled
+/// on a Mac and carry an AppleDouble sidecar per entry, INCLUDING one for the
+/// wrapper itself (`._eXoDOS`, the archive's very first member). `tar tzf`
+/// hides those - bsdtar folds them back into xattrs - but the `tar` crate
+/// writes them as ordinary files, so staging held two entries and the wrapper
+/// went unrecognised: `content/posters/eXoDOS/eXoDOS/`, and every cover 404'd.
+fn unwrapped_source(staging_dir: &Path, install_dir: &Path) -> PathBuf {
+    let Some(target_name) = install_dir.file_name() else {
+        return staging_dir.to_path_buf();
+    };
+    let Ok(entries) = std::fs::read_dir(staging_dir) else {
+        return staging_dir.to_path_buf();
+    };
+    let mut only: Option<PathBuf> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if crate::commands::setup::is_os_metadata(&path) {
+            continue;
+        }
+        if only.is_some() {
+            return staging_dir.to_path_buf();
+        }
+        only = Some(path);
+    }
+    match only {
+        Some(p) if p.is_dir() && p.file_name() == Some(target_name) => p,
+        _ => staging_dir.to_path_buf(),
+    }
+}
+
+/// Move a finished staging tree into its install dir.
+///
+/// Shared by both install routes (HTTP tarball and torrent zip), which had a
+/// byte-identical copy of this until the AppleDouble fix had to be made twice
+/// - the second copy is exactly the one a future fix forgets.
+fn commit_staging(staging_dir: &Path, install_dir: &Path) -> Result<(), String> {
+    if let Some(parent) = install_dir.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create install parent dir: {}", e))?;
+    }
+    // Whatever a previous version left there goes: packs are replaced whole.
+    if install_dir.exists() {
+        std::fs::remove_dir_all(install_dir)
+            .map_err(|e| format!("Cannot remove old install: {}", e))?;
+    }
+    let source_dir = unwrapped_source(staging_dir, install_dir);
+    // Atomic rename; fall back to copy on EXDEV (staging and install can sit
+    // on different filesystems).
+    if std::fs::rename(&source_dir, install_dir).is_err() {
+        copy_dir_recursive(&source_dir, install_dir)?;
+    }
+    let _ = std::fs::remove_dir_all(staging_dir);
     Ok(())
 }
 
@@ -593,18 +743,7 @@ async fn do_install_torrent(
         }
     }
 
-    if let Some(parent) = install_dir.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create install parent dir: {}", e))?;
-    }
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)
-            .map_err(|e| format!("Cannot remove old install: {}", e))?;
-    }
-    if std::fs::rename(&staging_dir, &install_dir).is_err() {
-        copy_dir_recursive(&staging_dir, &install_dir)?;
-        let _ = std::fs::remove_dir_all(&staging_dir);
-    }
+    commit_staging(&staging_dir, &install_dir)?;
 
     log::info!(
         "Content pack installed (torrent): {} → {}",
@@ -780,24 +919,7 @@ async fn do_install(
         }
     }
 
-    // Ensure parent exists.
-    if let Some(parent) = install_dir.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create install parent dir: {}", e))?;
-    }
-
-    // Remove any existing install dir (e.g. from a previous version).
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)
-            .map_err(|e| format!("Cannot remove old install: {}", e))?;
-    }
-
-    // Atomic rename; fall back to copy+remove on EXDEV.
-    if std::fs::rename(&staging_dir, &install_dir).is_err() {
-        // Cross-filesystem: copy then remove.
-        copy_dir_recursive(&staging_dir, &install_dir)?;
-        let _ = std::fs::remove_dir_all(&staging_dir);
-    }
+    commit_staging(&staging_dir, &install_dir)?;
 
     // Clean up temp tarball.
     let _ = std::fs::remove_file(&tmp_file);
@@ -811,6 +933,10 @@ async fn do_install(
 }
 
 /// Recursively copy a directory tree (fallback for cross-filesystem rename).
+///
+/// Symlinks are recreated, not followed: the emulator packs carry .app
+/// bundles whose Frameworks are symlink-heavy, and a materialized copy both
+/// bloats the install and breaks the bundle's code-signature seal.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dst).map_err(|e| format!("mkdir {}: {}", dst.display(), e))?;
     for entry in
@@ -819,7 +945,20 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| e.to_string())?;
         let ft = entry.file_type().map_err(|e| e.to_string())?;
         let dest = dst.join(entry.file_name());
-        if ft.is_dir() {
+        if ft.is_symlink() {
+            let target = std::fs::read_link(entry.path())
+                .map_err(|e| format!("readlink {}: {}", entry.path().display(), e))?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dest)
+                .map_err(|e| format!("symlink {}: {}", dest.display(), e))?;
+            #[cfg(not(unix))]
+            {
+                // Windows pack payloads contain no symlinks; if one ever
+                // appears, copying the target is the useful degradation.
+                let _ = target;
+                std::fs::copy(entry.path(), &dest).map_err(|e| format!("copy: {}", e))?;
+            }
+        } else if ft.is_dir() {
             copy_dir_recursive(&entry.path(), &dest)?;
         } else {
             std::fs::copy(entry.path(), &dest)
@@ -1037,6 +1176,33 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+#[cfg(all(test, unix))]
+mod copy_tests {
+    use super::*;
+
+    /// The EXDEV fallback must recreate symlinks: 86Box.app's Frameworks are
+    /// symlink-heavy, and a materialized copy breaks the codesign seal.
+    #[test]
+    fn copy_dir_recursive_recreates_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("Frameworks")).unwrap();
+        std::fs::write(src.join("Frameworks/lib.dylib"), b"x").unwrap();
+        std::os::unix::fs::symlink("lib.dylib", src.join("Frameworks/lib.1.dylib")).unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        let link = dst.join("Frameworks/lib.1.dylib");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink(), "symlink was materialized");
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            std::path::PathBuf::from("lib.dylib")
+        );
+    }
+}
+
 #[cfg(test)]
 mod adopt_tests {
     use super::*;
@@ -1054,7 +1220,38 @@ mod adopt_tests {
             install_path: install_path.into(),
             supersedes: Vec::new(),
             min_compatible_version: 0,
+            platforms: None,
         }
+    }
+
+    /// A data dir moved from another OS must not grow ledger rows for
+    /// binaries this build can never run - adoption skips packs the current
+    /// platform cannot see.
+    #[test]
+    fn does_not_adopt_a_pack_for_another_platform() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
+
+        let dir = tmp.path().join("content/emulators/dosbox-x");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("DOSBox-X.AppImage"), b"x").unwrap();
+
+        let mut p = pack("content/emulators/dosbox-x");
+        // A platforms map with no entry for any real platform: invisible everywhere.
+        p.platforms = Some(HashMap::new());
+        let mut content_packs = HashMap::new();
+        content_packs.insert("dosbox-x".to_string(), p);
+        let col = CollectionManifest {
+            torrent_infohash: String::new(),
+            game_count: 0,
+            content_packs,
+        };
+
+        adopt_packs_on_disk(&conn, "eXoWin9x", &col);
+
+        assert!(read_installed_packs(&conn).get("eXoWin9x").is_none_or(|c| c.is_empty()));
     }
 
     fn manifest(install_path: &str) -> CollectionManifest {
@@ -1081,7 +1278,7 @@ mod adopt_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("abc.jpg"), b"x").unwrap();
 
-        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters"));
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters/eXoDOS"));
 
         let state = read_installed_packs(&conn);
         let entry = state.get("eXoDOS").and_then(|c| c.get("posters")).expect("adopted");
@@ -1110,7 +1307,7 @@ mod adopt_tests {
         std::fs::write(dir.join("abc.jpg"), b"x").unwrap();
         mark_pack_installed(&conn, "eXoDOS", "posters", installed_version, 1).unwrap();
 
-        let mut col = manifest("content/posters");
+        let mut col = manifest("content/posters/eXoDOS");
         let p = col.content_packs.get_mut("posters").unwrap();
         p.version = 5;
         p.min_compatible_version = floor;
@@ -1147,8 +1344,77 @@ mod adopt_tests {
         crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
         std::fs::create_dir_all(tmp.path().join("content/posters/eXoDOS")).unwrap();
 
-        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters"));
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters/eXoDOS"));
 
         assert!(read_installed_packs(&conn).get("eXoDOS").is_none_or(|c| c.is_empty()));
+    }
+
+    /// Every poster pack used to unpack over the shared `content/posters`,
+    /// so installing one deleted the others' art while the ledger kept
+    /// claiming all three were installed - "Remove" with nothing to remove.
+    #[test]
+    fn forgets_a_pack_whose_directory_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
+        mark_pack_installed(&conn, "eXoDOS", "posters", 5, 1).unwrap();
+
+        adopt_packs_on_disk(&conn, "eXoDOS", &manifest("content/posters/eXoDOS"));
+
+        let recorded = read_installed_packs(&conn);
+        assert!(
+            recorded.get("eXoDOS").is_none_or(|c| !c.contains_key("posters")),
+            "a pack with no files on disk must read as not installed"
+        );
+    }
+
+    fn staging_with(entries: &[(&str, bool)]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, is_dir) in entries {
+            let p = tmp.path().join(name);
+            if *is_dir {
+                std::fs::create_dir_all(&p).unwrap();
+            } else {
+                std::fs::write(&p, b"x").unwrap();
+            }
+        }
+        tmp
+    }
+
+    #[test]
+    fn unwraps_an_archive_that_repeats_the_target_directory() {
+        let staging = staging_with(&[("eXoDOS", true)]);
+        let install = Path::new("/data/content/posters/eXoDOS");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path().join("eXoDOS"));
+    }
+
+    /// The real tarballs open with `._eXoDOS`, the AppleDouble sidecar for the
+    /// wrapper directory. `tar tzf` never shows it; the `tar` crate writes it.
+    /// Counting it as content hid the wrapper and double-nested every pack.
+    #[test]
+    fn unwraps_past_the_appledouble_sidecar_of_the_wrapper() {
+        let staging = staging_with(&[("._eXoDOS", false), ("eXoDOS", true), (".DS_Store", false)]);
+        let install = Path::new("/data/content/posters/eXoDOS");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path().join("eXoDOS"));
+    }
+
+    /// posters-eXoWin9x-v1 was tarred from inside its own directory, so its
+    /// entries are `./<hash>.jpg`. That has to install just as cleanly.
+    #[test]
+    fn leaves_a_flat_archive_alone() {
+        let staging = staging_with(&[("a.jpg", false), ("b.jpg", false)]);
+        let install = Path::new("/data/content/posters/eXoWin9x");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path());
+    }
+
+    /// A lone directory is only a wrapper if it repeats the target's name -
+    /// otherwise it is the payload, and unwrapping would discard its siblings'
+    /// structure (a metadata pack that ships only `Images/`).
+    #[test]
+    fn keeps_a_lone_directory_that_is_not_the_wrapper() {
+        let staging = staging_with(&[("Images", true)]);
+        let install = Path::new("/data/content/metadata/eXoWin9x");
+        assert_eq!(unwrapped_source(staging.path(), install), staging.path());
     }
 }

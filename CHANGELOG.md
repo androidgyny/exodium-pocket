@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.12.0 - 2026-08-07
+
+### Added
+
+- **New collection: eXoWin9x (Vol. 1, 1994-1996).** 662 Windows 95/98 games as
+  the sixth collection. These boot a real Windows 9x from virtual hard-disk
+  images: DOSBox-X runs most of the catalogue, 86Box covers the hardware-picky
+  rest. On Windows both emulators come out of eXo's own support files; on
+  macOS and Linux they install themselves as content packs alongside the first
+  Win9x download (the Linux DOSBox-X is our own build - upstream publishes
+  none). The shared OS images (~2.5 GB) also download automatically with the
+  first Win9x game. Note: the median game is ~316 MB and boots a whole
+  operating system - expect real downloads and slower first starts than DOS
+  games. A handful of PCBox-tuned games stay unlaunchable for now.
+- **Windows 9x online play.** The 67 titles that dial eXo's community IPX
+  gateway can now do so on macOS and Linux: Exodium bridges the emulated
+  network card once you grant packet access, offered on the first Play of such
+  a game or in Settings → Network (and removable in the same place). This
+  needs a **wired** connection on every system, Windows included: a Wi-Fi link
+  cannot carry the emulated card's own hardware address (DOSBox-X documents the
+  same limit for its pcap backend). Affected games now say so up front instead
+  of failing with a Windows dial-up error. Single player is unaffected.
+- **One folder for all collections.** Windows 3.x and 9x games used to land in
+  their own folders next to eXoDOS; they now share the single tree eXo's own
+  setup produces (`eXo/eXoDOS`, `eXo/eXoWin3x`, `eXo/eXoWin9x` side by side).
+  Existing installs are asked once whether to move their files there - it is a
+  move, not a copy, and nothing is downloaded again. Importing an existing eXo
+  installation also stops missing the Windows packs, which previously looked
+  uninstalled and invited a second download of the same games.
+- **Moving the game folder now just works.** Exodium re-checks what is on
+  disk at every start (and right after you point it at a different folder,
+  reporting how many games it found), so install states follow the files
+  instead of pointing at the old path until you find the button in Settings.
+  It refuses to run that check against a folder holding no collection at all -
+  an unmounted external drive can no longer make the whole library look gone.
+  Repeated scans also stopped returning different numbers each time.
+- **Rescan finds every collection.** "Rescan installed games" now walks each
+  collection's own tree (it was hardcoded to eXoDOS's and missed eXoWin3x
+  installs), and in-app manuals/screenshots from Win3x/Win9x game folders are
+  no longer blocked by the asset-protocol scope.
+
 ## 0.11.0 - 2026-08-03
 
 ### Added
@@ -34,6 +75,13 @@
 
 ### Fixed
 
+- Opening a Windows 9x game on Windows no longer flashes two console windows
+  (the emulator probe now runs windowless).
+- The Windows 9x detail panel no longer claims "emulator not found" while the
+  shared support files are still on their way: it shows the download's live
+  progress, names the one-time ~2.5 GB payload next to the game's own size
+  before the first download, and reports an extraction failure instead of
+  showing progress forever.
 - The Manual button no longer looks clickable while a game's media is still
   being scanned (it shows a spinner), and a temporary scan failure no longer
   leaves it dead until the next app start.

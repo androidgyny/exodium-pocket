@@ -103,7 +103,88 @@ eXoWin3x is its own). Pairing on the shortcode alone merges the two into a
 single card and drops one game from the catalogue - there is a regression test
 (`same_shortcode_in_another_pack_is_not_a_variant`).
 
-### 2. Each torrent collection gets its own data subdirectory
+### 2. ONE root for every collection (eXo's merged layout)
+
+All packs share a single directory inside the data dir - the same shape eXo's
+own `Setup`/`eXoMerge` bats produce:
+
+```
+<data_dir>/<root_folder>/     ← "eXoDOS" by default; the imported folder's own
+                                 name after an import
+  eXo/eXoDOS/…                ← eXoDOS + the three language packs (overlay)
+  eXo/eXoWin3x/…
+  eXo/eXoWin9x/…  eXo/emulators/…  eXo/util/…
+  Content/
+```
+
+`setup::game_root(data_dir)` is the single source of truth (`root_folder`
+config key, cached in a `RwLock` and loaded by `get_setup_status` /
+`init_download_manager`); `DownloadManager::torrent_root()` returns it too, so
+librqbit writes every torrent into the same tree. Do NOT reintroduce
+`<data>/<torrent name>/` roots: that was librqbit's naming leaking into the
+layout, it made an imported eXo installation look half-empty (only the DOS
+pack was found, inviting a second 282 GB download), and it is not a layout any
+eXo tool creates.
+
+**librqbit's session persistence pins the output folder, so it has to be
+policed on every start.** `session.json` stores each torrent's
+`output_folder` from when it was ADDED, and a restored torrent keeps it - our
+`add_torrent` then returns `AlreadyManaged` and the option is ignored.
+`evict_mismatched_session_torrents` therefore drops every persisted torrent
+whose folder is not EXACTLY `game_root` (an "is it under the data dir?" check
+is not enough - `<data>/eXoWin9x` passes that one) and lets the normal add
+recreate it. Eviction also removes the `.bitv`, which is correct: the
+bitfield described a tree at the old path. For the same reason `migrate_layout`
+clears the managers BEFORE it moves anything - librqbit's init opens, and
+therefore creates, every selected file, so a live session re-materialized the
+whole old tree one second after the merge emptied it.
+
+**A pre-single-root install has its games AT the data dir**, not in a folder
+inside it: the main eXoDOS torrent used to write straight into `<data>/eXo/…` +
+`<data>/Content/…`. `<data>/<root_folder>` can never name that, so those users
+would get `<data>/eXoDOS/` as their root and a 282 GB re-download beside the
+games they own (measured on a dev machine: 8.7 GB of a second eXoDOS tree
+inside the first). `repair_legacy_root` therefore writes the `root_folder`
+sentinel `"."` - `game_root` then returns the data dir itself. It runs from
+`load_root_folder`, the one function every entry point calls before deriving a
+path, and keys on `root_folder` being unset, which is true only for those
+installs. The data dir is deliberately NOT moved up a level instead: content
+packs and the video/gallery caches hang off it, and it would drop Exodium's
+`content/` into the user's parent folder. Two consequences to keep in mind:
+`factory_reset` must delete `eXo/` and `Content/` rather than the root when the
+two are the same directory (never remove the folder the user picked), and
+`stray_roots` may then also look BESIDE the data dir - that is where the old
+per-torrent folders sit in this shape, and it is gated on it so a normal
+install never has its parent swept.
+
+Installs made before this keep their old folders until the user agrees to move
+them: `pending_layout_migration` finds strays, `migrate_layout` renames them
+into the root. Declining writes `layout_migration = skip`, which only silences
+the STARTUP prompt - the command still reports the folders (`prompt: false`)
+so Settings → Library can offer the merge later. Hence no "don't ask again"
+checkbox: with the merge reachable from Settings, "Not now" can simply mean
+"not now, ask me nowhere else".
+
+Declining is not free, and the dialog says so: paths come from the single root
+only, so an unmerged folder is invisible - its games read as uninstalled and
+re-downloading one puts a SECOND copy in the real root while the first keeps
+the disk space. Reading from both roots was deliberately not reintroduced;
+that is the multi-root complexity this change removed, and it would let the
+split grow instead of ending it.
+
+The migration must LEAVE NOTHING BEHIND, because the prompt keys on "does a
+stray root still exist" - a merge that stops at the first name clash asks
+again at every start with nothing left to do (seen in testing). So on a
+conflict the **larger file wins** and the other is deleted: the loser is a
+zero-byte placeholder (librqbit allocates one per file in the collection) or a
+half-finished download, the winner the real archive. Emptied directories are
+removed - including OS junk (`.DS_Store`, `Thumbs.db`, `desktop.ini`,
+AppleDouble `._*`), which `is_os_metadata` skips on the way over and deletes on
+the way out; without that, two Finder files survived a 48 GB merge, the folder
+stayed, and the prompt came back at every start. A folder still holding a real
+file Exodium did not place there is kept and logged. Test: `merging_keeps_the_larger_copy_and_clears_the_old_folder`.
+
+### 2b. History: per-collection subdirectories
 All four eXoDOS torrents have the same internal name `eXoDOS`, which causes librqbit file-path collisions when run against a shared directory. The layout is:
 
 ```
@@ -128,6 +209,25 @@ This lets the "My Games" view show a download progress card immediately when the
 
 ### 5. Save backup via atomic rename (not file-diff)
 On uninstall, the entire game directory is moved to `!save/<shortcode>/` (EN) or `<lang_dir>/!save/<shortcode>/` (LP variants - language-scoped since 0.8.4 so variants can't clobber each other's backup) via `std::fs::rename`. On reinstall, `extract_game_zip` restores it, probing the lang-scoped location first, then the legacy shared one. Simple, preserves every user modification, no `zip --dif` gymnastics.
+
+Because that restore is unconditional, **uninstall + reinstall cannot produce a
+clean slate** - `reset_game_data` (detail panel, "↺ Reset", two-click confirm)
+is the operation that can: it deletes the game dir AND the `!save/` backup, then
+unpacks the ZIP again. It validates the ZIP BEFORE deleting anything, since
+`zip.exists()` is true for almost every uninstalled game (see §16) and a
+placeholder must not cost the user their install.
+
+It matters beyond savegames for eXoWin9x, where the game's own VHD is D: and
+holds the guest filesystem. Windows clears that volume's FAT "clean shutdown"
+bit on the first write and only restores it on a proper shutdown, so a session
+ended by closing the emulator window leaves it dirty and the next boot runs
+ScanDisk - self-perpetuating, since the repaired volume is dirtied again on the
+next unclean exit. Measured on a dev machine: 2 of 11 installed Win9x games sat
+at `FAT[1] = 0x07ffffff` between sessions. Do NOT "fix" that by clearing the bit
+directly - that skips the filesystem check after a hard abort, turning a
+detected inconsistency into silent save corruption. Reset restores the pristine
+VHD from the ZIP instead; the durable answer is shutting Windows down from the
+Start menu.
 
 ### 6. LP games auto-download shared EN GameData
 Videos and animations for LP games live in the main eXoDOS torrent's GameData folder. `download_game` in `games.rs` auto-fetches the matching EN GameData entry when installing an LP variant. `get_game_variants` dynamically subtracts the EN GameData size from the displayed download size if it's already on disk.
@@ -267,6 +367,39 @@ part that has to exist first. See issue #18.
 - The uploaded file must be the exact one whose SHA-256 is in the manifest -
   re-running `tar` changes mtimes and therefore the hash, and the installer
   verifies it.
+- **`install_path` names the EXACT directory and must be UNIQUE per pack**
+  (`content/posters/eXoWin9x`, `content/metadata/eXoWin9x`,
+  `content/emulators/dosbox-x`). The installer `remove_dir_all`s that path
+  before renaming staging onto it, so a path shared between packs deletes its
+  siblings' content on every install. All three poster packs used to point at
+  a bare `content/posters`, and installing the Win9x pack duly wiped eXoDOS's
+  396 MB and eXoWin3x's 66 MB while the ledger went on reporting them
+  installed. The uniqueness is now a test
+  (`manifest_install_paths_are_unique`); the wrapper dir inside a tarball must
+  repeat the path's LAST segment (`dosbox-x/`, not the collection) for
+  `unwrapped_source`'s name check.
+- **Platform-specific packs** carry a `platforms` map
+  (`{"darwin-aarch64": {url, sha256, size_bytes}, "linux-x86_64": …}` - same
+  tokens as gen_latest_json.py) and placeholder top-level url/sha/size.
+  `ContentPackInfo::for_current_platform` substitutes the running platform's
+  source at the three boundaries (`list_content_packs`,
+  `install_content_pack`, `adopt_packs_on_disk`); a platform without an entry
+  never sees the pack, which is how Windows never sees the emulator packs. A
+  pack WITHOUT the map behaves exactly as before.
+- Archive shape is normalized, not enforced: `unwrapped_source` strips a lone
+  top-level directory **iff it repeats the target's own name**, so
+  `posters-eXoDOS-v5` (wraps everything in `eXoDOS/`) and
+  `posters-eXoWin9x-v1` (tarred from inside, entries are `./<hash>.jpg`) both
+  land correctly. Prefer the wrapped shape for new packs; a mis-packed one is
+  no longer worth a republish. Two details are load-bearing: the NAME check
+  (plain "one top-level directory" would swallow a metadata pack whose payload
+  is just `Images/`), and skipping `is_os_metadata` entries. Every tarball was
+  rolled on a Mac and its FIRST member is `._<collection>`, the AppleDouble
+  sidecar for the wrapper itself - `tar tzf` hides it (bsdtar folds it back
+  into xattrs) but the `tar` crate writes it as a file, so staging holds two
+  entries and the wrapper goes unrecognised. That shipped once and installed
+  every pack to `content/posters/<col>/<col>/`, where `get_poster_dir` finds a
+  directory, reports Tier 1, and every cover 404s back to the blurry preview.
 
 **Updating a pack whose content grew** (`version` up, `min_compatible_version`
 left alone): installs stay put and Settings offers an "Update" button. Only
@@ -276,7 +409,10 @@ start, which is what the v0.2 shortcode-keyed posters needed and nothing since.
 Torrent-sourced packs (`torrent_file_path`) are incremental, so this only really
 bites the HTTP-hosted poster packs, which are whole-file downloads.
 
-`list_content_packs` also **adopts packs it finds on disk**: `factory_reset`
+`list_content_packs` reconciles the ledger with the disk in BOTH directions:
+a pack whose directory is gone is dropped from the ledger, or Settings shows
+"Remove" for files that do not exist and offers no way back to a working
+install. It also **adopts packs it finds on disk**: `factory_reset`
 clears the whole config table - including the `content_packs` ledger - while
 keeping `content/` unless the user asked for their game data to go. Without
 adoption those kept packs came back as "not installed" and Settings offered a
@@ -465,6 +601,19 @@ cold torrent takes a minute; the panel starts one on open, keeps it running
 when it closes, and caps concurrency at three (each stream has its own 32 MB
 lookahead and they compete for peers).
 
+**Linux playback runs through WebKit's GStreamer, and WHICH GStreamer differs
+by package.** The .deb/.rpm use the distro's WebKit, so the distro's plugins
+apply and the packages declare them as dependencies. The AppImage bundles
+WebKit, and linuxdeploy walks the GStreamer CORE in as its dependency - a core
+that only loads plugins built against it (measured on Arch: bundled 1.20 core,
+host 1.28 plugins, symbol gap in both directions - videos fetch fine and play
+nothing, silently). `bundleMediaFramework` therefore bundles the build
+runner's plugins next to that core (CI installs them), and
+`video_playback_supported` answers from the bundle when APPDIR carries a core,
+from the host otherwise. Don't strip `libgst*` from the AppImage instead: the
+host's core needs the host's glib, and the bundle's older glib shadows it
+(measured: `g_once_init_leave_pointer` unresolved, app aborts at startup).
+
 ### 15. eXoWin3x is the first non-DOS collection
 
 1,138 Windows 3.x games, 345.8 GB. Structurally the same pack shape as eXoDOS -
@@ -571,6 +720,257 @@ torrent manager for collection"; only the second and nothing is visible at all.
 Note what this implies: the pack's torrent joins the session for everyone on
 upgrade. There is no per-collection opt-in UI (`Intro.tsx` is still dead code),
 so this follows the existing all-collections-enabled model.
+
+### 16. eXoWin9x boots a real Windows - VHDs, DOSBox-X and 86Box
+
+662 Windows 95/98 games (Vol. 1: 1994-1996), 282 GB torrent, infohash
+`dd8a867f62a6c9cc939d51c742143de2ac98c9f2`. Unlike every other pack these
+games boot an actual Windows 9x inside an emulator; DOSBox Staging cannot do
+that, so this collection has its own launch pipeline (`commands/win9x.rs`).
+
+**Layout differs from Win3x in two load-bearing ways:**
+
+- **Year subdirectories**: games live at `eXo/eXoWin9x/<year>/<Title (Year)>.zip`
+  and their launch files at `eXo/eXoWin9x/!win9x/<year>/<Title (Year)>/`
+  (`play.conf` for DOSBox-X games, `play.cfg`/`Host.cfg`/`Join.cfg` for 86Box,
+  plus the per-game bat and `install.bat`). `CollectionDef.year_subdirs` is the
+  flag every path derivation keys off - never the id string. Torrent-index
+  matching needs nothing: `find_game_files` is path-anchored on
+  `/<Title (Year)>.zip` and year dirs don't disturb the suffix.
+- **No shortcodes**: the title directory IS the shortcode
+  (`Connect4 (1995)`). `extract_shortcode` skips a 4-digit segment only when
+  another directory follows it, so eXoDOS's real shortcode `1939` survives
+  (tests: `extract_shortcode_win9x_year_dir_skipped`,
+  `extract_shortcode_four_digit_code_without_subdir_is_kept`). Save backups
+  land at `<year>/!save/<Title (Year)>/` - the game dir's SIBLING, which is
+  exactly where `extract_game_zip`'s existing restore probe already looks.
+
+**The emulation model** (from the pack's manual + its bats, read verbatim):
+C: is a DISPOSABLE differencing child of a shared parent Win9x OS image;
+saves live on the game's own dynamic VHD mounted as D: (inside the game zip,
+next to the original install media). So uninstall-by-rename keeps saves, and
+a fresh C: per boot is by design, not waste.
+
+- **x98 games (~most of the pack)**: DOSBox-X. All VHD work happens inside
+  `play.conf`'s autoexec - the conf runs VERBATIM (§10a applies doubly: no
+  `patch_dosbox_conf`, no translation), layered as
+  `[x98 base conf when not eXo's own exe] play.conf → options9x.conf →
+  user-override frag`, cwd `<torrent_root>/eXo`.
+- **86box / 86boxME / 86boxNetHost / 86boxNetJoin games**: Exodium recreates
+  the child VHD each launch (`vhd::create_differencing`, a Rust port of eXo's
+  Windows-only makevhd.exe), copies the per-game cfg over
+  `emulators/86Box98/play.cfg` and runs `86box -c <cfg> -P <86Box98 dir>`.
+  Child/parent/cfg per variant live in `e86box_variant_files`. The VHD
+  writer sets **parent timestamp 0 exactly like makevhd** - extraction
+  rewrites mtimes, a real timestamp would make emulators reject the chain.
+- **pcbox games**: PCBox is a Windows-only 86Box fork we don't ship;
+  launching errors with a clear message and the panel shows a note.
+
+**Engine resolution** (`resolve_dosbox_x` / `resolve_86box`): **the installer
+bundles NEITHER emulator on ANY platform.** On Windows eXo's EXTWin9x.zip
+carries builds of both next to the parent VHDs, and `win9x_support_ready`
+refuses to launch without those VHDs - a bundled Windows build could never be
+the reason a launch succeeds, and cost 68 MB of installer to never run
+(measured: setup.exe 55 -> 123 MB). On macOS/Linux the emulators are CONTENT
+PACKS under eXoWin9x (`dosbox-x`, `86box` - the bundled copies were 344 MB of
+the macOS .app, 292 MB of that 86Box serving 29 of 662 games), installed to
+`content/emulators/<pack>/` and probed by `pack_candidate` as a filesystem
+check, never the ledger (factory-reset-keep-data wipes the ledger but keeps
+`content/`; launching must survive until adoption re-records it). Resolution
+order: Windows extracted-tree → PATH; macOS pack → old bundled resource
+(transition) → PATH; Linux dosbox-x PATH-with-CAP_NET_RAW → pack → PATH →
+Flatpak (`com.dosbox_x.DOSBox-X`), 86box pack → PATH. The panel's "emulator
+missing" note asks the backend (`win9x_engine_available`), which answers with
+the launcher's own resolver, and doubles as a "Download emulator" button; the
+pack also auto-queues with the first Win9x game download (`download_game` →
+`start_pack_install`, resolver-gated so a system install never pays it, and
+announced to the frontend via the `content-pack-install-started` event -
+frontend polling only watches jobs it knows about).
+
+**Linux DOSBox-X is OUR OWN AppImage** - upstream publishes no Linux binaries
+at all. `content-packs.yml` (manual dispatch, run only on pin bumps) compiles
+the pinned tag from source in pkgforge's Arch container and packages it with
+quick-sharun/uruntime (recipe adapted from pkgforge-dev/DOSBox-X-AppImage,
+self-updater deliberately stripped - an emulator updating itself under the
+pinned confs defeats the pin). The workflow hard-fails if libslirp/libpcap
+are missing from the AppDir (67 network-parent games boot through slirp) and
+gates every tarball on: stable binary path present + executable, zero
+AppleDouble `._*` entries, `.app` symlinks intact. Both emulators are GPLv2 -
+the source tarballs and the recipe go onto the same content release.
+
+**The pcap/multiplayer capability stays on a SYSTEM dosbox-x, never the
+pack.** A file capability puts the loader into secure-execution mode, which
+ignores the `LD_LIBRARY_PATH` a sharun bundle needs - setcap on the pack's
+AppImage bricks it, and a pack update would drop the grant anyway. Hence the
+Linux resolver's PATH-with-cap preference (the granted binary is the one that
+launches), `resolved_dosbox_x_path` is PATH-only with an explicit refusal
+message, and `win9x_network_status` on Linux asks `getcap` about that binary
+instead of probing AF_PACKET from Exodium's own process - the process probe
+answered false even after a successful setcap, because the capability sits on
+the emulator's file, not on us.
+
+Do not re-add the Windows builds "for users without support files": that state
+cannot launch a Win9x game for want of a parent VHD, so the bundle only ever
+adds download size. `scripts/get-emulators.sh` is now DEV-ONLY: it fills
+`src-tauri/resources/`, which release builds no longer bundle and only the
+debug-build probe in `resource_candidate` (CARGO_MANIFEST_DIR fallback) still
+reads.
+
+**Support files**: parent OS VHDs + both emulators sit in the torrent's
+`eXo/util/utilWin9x.zip` (2.5 GB, inner `EXTWin9x.zip` - same matryoshka as
+eXoDOS's util.zip). `win9x.rs` queues it with the first Win9x game download
+(disk preflight +8 GB), a watcher extracts `emulators/dosbox/` +
+`emulators/86Box98/` (NOT PCBox/audio) with staging + atomic renames, and
+`init_download_manager` re-arms the watcher after restarts. Readiness =
+`eXo/emulators/dosbox/x98/parent` (x98) / `eXo/emulators/86Box98/parent`
+(86box*) exists; `get_win9x_support_status` feeds the panel.
+
+**Assets**: `scripts/gen_win9x_assets.py` builds `metadata/Win9x.xml.gz`,
+`Win9x_configs.zip` (`.conf/.bat/.cfg` stripped from the 8.4 GB
+`!Win9Xmetadata.zip`, 16.7 MB) and `metadata/dosbox9x.txt`, whose "variant"
+is really WHICH `9xlaunch*.bat` the per-game bat calls (found: **x98 635,
+86box 28, 86boxME 1** - no game's primary launcher is pcbox or NetHost/Join),
+encoded `<title>:<slug>\dosbox.exe` so generate_db's parser is unchanged.
+Variant matching keys on the launcher BAT STEM from application_path first,
+title second - title-only left 88 Win9x games unmatched. NOTE: the metadata
+zip has NO finished `Windows 9x.xml`; it ships per-volume body fragments
+(`xml/all/*.9x`) that the script wraps in the LaunchBox root itself, exactly
+like eXo's merge_9xall.bat. `init-dev.sh --win9x` fetches both Content zips
+(~13 GB).
+
+**Validated 2026-08-04** (Connect4 (1995), macOS arm64, OFFICIAL DOSBox-X
+2025.02.01 build): Windows 98 boots from the parent image and the game runs.
+Key finding: the per-launch C: differencing child is created by DOSBox-X's
+OWN `vhdmake -f -l` inside play.conf's autoexec (plus `IMGMOUNT c/d`,
+`MOUNT e <game zip>`, `BOOT -l c`) - x98 games are fully self-contained and
+`vhd.rs` is needed ONLY for the 29 86Box games, whose bats call the external
+makevhd.exe. Catalogue gate: 664 rows (2 multi-entry titles beyond the 662
+count), 0 NULL shortcodes, 664/664 torrent indices, 664/664 variants,
+662/662 covers + Tier-0 previews.
+
+**`MOUNT` DOES reach a booted guest - via `convertdrivefat`.** 132 of 664
+confs put the game's executable in a host ZIP (`MOUNT e "…CC32.zip"`) and
+then `BOOT -l c`. That looks impossible - a DOSBox drive is a DOS-level
+construct - but DOSBox-X's `convertdrivefat` defaults to TRUE and converts
+every mounted host drive into an emulated FAT disk at boot. Measured in the
+launch log: `Converting drive E: to FAT... → HDD image mounted to drive no. 4
+(IDE Secondary Master)`, which Windows then lettered E: behind C: and D:.
+Do not "fix" this by rewriting the mounts.
+
+What DOES break is a zip that wraps its files in a directory: the guest then
+has `E:\CC32\CCHECK11.EXE` while the desktop shortcut (baked into the game
+VHD) points at `E:\CCHECK11.EXE`, and Windows answers "drive or network
+connection is unavailable". eXo's convention is files at the zip ROOT
+(verified against MpgDec20.zip); Chinese Checkers is a repackaging slip - the
+stale ISO beside it still holds the v1.0 exe at the root. `extract_zip_mounts` therefore
+extracts EVERY mounted zip once, next to itself, and mounts the directory
+(its inner one when the zip wraps everything in a single folder, so the
+layout matches the shortcut again).
+
+Extracting all of them, not just the wrapped ones, is the fix for a second
+bug: **a zip mount crashes DOSBox-X on exit.** The FAT conversion's teardown
+reaches into PhysFS after it is gone - `PHYSFS_close <- physfsFile::Close <-
+fatFromDOSDrive::~fatFromDOSDrive <- FreeBIOSDiskList`, SIGSEGV, in three of
+three macOS crash reports. That aborts the teardown loop, so disks later in
+the list - the game's own save VHD among them - never close cleanly. A
+directory mount has no PhysFS layer (test:
+`zip_mounts_become_directory_mounts`).
+
+**Remote multiplayer needs raw packet capture, and that is the one real OS
+difference.** 67 Win9x confs boot a network-enabled parent image
+(`W98-C-Net` 59, `W98-C-Net2` 8); those guests dial a PPTP tunnel to a
+community-run IPX gateway (an `ipxbox` instance: IPX server plus a PPTP
+endpoint for Win9x clients) on startup - not eXo-operated infrastructure. PPTP rides on GRE, so
+user-mode NAT (`slirp`) cannot carry it - only DOSBox-X's `pcap` backend,
+which bridges the guest NIC onto a real interface, can. Windows gets that for
+free (the pack's setup installs npcap); macOS needs Wireshark's ChmodBPF
+helper for `/dev/bpf*`, Linux needs CAP_NET_RAW. `ne2000_override` therefore
+probes at launch and picks `pcap` with the default route's interface as
+`realnic` (eXo's conf names a Windows adapter, which means nothing here).
+
+**Wi-Fi cannot be bridged on ANY platform** - DOSBox-X's own wiki says the
+pcap backend "needs very low level access to your real network adapter, which
+can be problematic with wireless adapters" and points at slirp instead, so
+Windows/npcap is no exception. `on_wireless_link` therefore runs everywhere
+(Unix via the interface check, Windows via `Get-NetAdapter`), and the detail
+panel's note is about the medium, not the OS.
+
+**The obvious Wi-Fi fix is a trap.** A station is
+associated under one address and 3-address frames have no field for a second,
+so a guest with its own MAC gets nothing through. Cloning the host's MAC fixes
+that layer - and then the DHCP server, which keys leases on the MAC, hands the
+guest THE HOST'S OWN IP; both stacks answer for one address and the host's
+kernel resets every connection the guest opens. Captured on macOS Wi-Fi during
+a PPTP dial: guest SYN from 10.200.1.217 → server SYN-ACK → `Flags [R]` from
+the host. The remaining fix (a static guest IP outside the DHCP pool) lives in
+eXo's Win9x image, not here, so Wi-Fi stays on `slirp` and the UI says a wired
+connection is needed. Do not re-attempt MAC cloning without solving the lease
+collision first.
+
+The offer is made where the feature is missed: pressing Play on one of those
+67 titles asks once (`win9x_needs_network_prompt` gates on network parent +
+missing permission + no stored answer), with a "Don't ask again" that sticks
+for BOTH answers. Declining still launches - single player is the normal case.
+Settings → Network carries the same switch for later
+(`enable_win9x_network`), always through the OS's own consent dialog - macOS installs a ChmodBPF-style
+LaunchDaemon via `osascript … with administrator privileges`, Linux runs
+`pkexec setcap cap_net_raw+ep` on the resolved DOSBox-X binary. Two
+deliberate choices: the daemon **chowns** `/dev/bpf*` to the current user
+rather than opening them to a shared `access_bpf` group (narrower, and it
+applies without a re-login - a fresh group membership would leave the button
+looking broken), and the row states plainly that the grant lets any of the
+user's programs read network traffic. Never widen this silently; the
+permission is system-wide, not app-scoped. Flatpak DOSBox-X cannot be granted
+capabilities at all and says so instead of failing at launch.
+
+**Window scaling is fixed-size.** DOSBox-X 2025.02.01 renders the guest at a
+fixed size and CROPS when the window is dragged smaller - reproduced on macOS
+with `opengl`, `openglpp` and `surface` (upstream issue #3661). `surface` at
+least centres the whole screen instead of cropping. We therefore ship the
+menu (no `-nomenu`, unlike eXo's bats) so users can reach Video → output /
+fullscreen at runtime, and default to `windowresolution = 1024x768`, which
+fits every common display.
+
+**Verified end to end on macOS** (dev build and .app): x98 games incl. the
+Net, Japanese and Win95DX8 parents; 86Box (Boso View Express) and 86boxME
+(Wing Commander IV, the only one); download → support-file fetch → install →
+launch → save → uninstall → reinstall through Exodium itself; the wrapped-zip
+and zip-mount fixes; rescan and the folder-layout migration.
+
+`posters-eXoWin9x-v1.tar.gz` (39.5 MB, 664 covers for 663 distinct thumbnail
+keys - the two multi-entry titles share one) went up as **content-v5** on
+2026-08-06, `--latest=false`, hash round-trip verified against the manifest.
+All three poster tarballs carry macOS AppleDouble `._*` entries (one per image,
+invisible to `tar tzf` but not to Python/GNU tar) and `install_content_pack`'s
+blanket `.unpack()` writes them to disk. Harmless - the lookup is exact on
+`<key>.jpg` - and content-v4 shipped the same, so rebuilding one pack alone
+would only change its hash. Fix all three with `COPYFILE_DISABLE=1` at the next
+pack bump that re-downloads anyway.
+
+**`zip.exists()` is not "the game is downloaded".** librqbit allocates a 0-byte
+placeholder per torrent file and a neighbouring download leaves piece-sized
+fragments behind - measured on this pack: of 664 zips on disk, 620 were
+placeholders and 29 fragments. So the launch-time auto-extract's "files not
+found" arm is nearly unreachable and an undownloaded game arrives as a zip that
+won't open; both launch paths therefore map an EOCD/invalid-archive error to
+"incomplete or corrupted (torrent placeholder)" and clear `installed`, or the
+user hits the same failure on every click. The DOS path had this from the
+start; `win9x.rs` did not until 2026-08-06.
+
+**Still open**: Nothing on Linux or
+Windows has been run at all (the self-built DOSBox-X AppImage on a real
+distro, the 86Box AppImage, the PATH-with-cap preference, `pkexec setcap`,
+the parent-VHD case aliases, npcap, the PowerShell Wi-Fi probe). The
+emulator-pack pipeline has not produced artifacts yet: `content-packs.yml`
+needs its first dispatch (budget one iteration - the 2025.02.01 tag on Arch's
+current GCC may want a flag), then `content-v6` published `--latest=false`
+BEFORE the app release, then manifest.json's TODO URLs/hashes filled from its
+`manifest-snippet.json`; until then the packs read "coming soon" and the
+resolvers behave as before. Remote multiplayer is unverified end to end - it
+needs a wired connection nobody had. The catalogue upgrade for an existing
+0.11 install (CATALOG_VERSION 6 + `enable_new_collections`) has only been
+exercised by resetting the stamp by hand. NetHost/NetJoin multiplayer menus
+stay out of scope (solo play.cfg only).
 
 ## Conventions
 

@@ -1,21 +1,19 @@
 import { createSignal, createEffect, on, onCleanup, onMount, Show, For } from "solid-js";
-import { Portal } from "solid-js/web";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { CircularProgress } from "./ProgressBar";
 import type { Game } from "../api/tauri";
 import { loadVariants } from "../stores/variants";
-import { formatBytes, parseLangEntries, langBadgeClass, performUninstall } from "../util";
+import { formatBytes, parseLangEntries, langBadgeClass } from "../util";
 import { thumbnailCandidates } from "../stores/thumbnails";
 import { observeNearViewport, unobserveNearViewport } from "../nearViewport";
 import { downloads, cancelGameDownload } from "../stores/downloads";
 import { isOffline } from "../stores/network";
 import { toggleFavorite } from "../stores/games";
-import { PlaylistMenu } from "./PlaylistMenu";
+import { GameActionsMenu } from "./GameActionsMenu";
 
 interface GameCardProps {
   game: Game;
   onFavoriteChanged?: (id: number, favorited: boolean) => void;
-  showFavoriteBtn?: boolean;
   onDetail: (game: Game) => void;
 }
 
@@ -29,8 +27,6 @@ export function GameCard(props: GameCardProps) {
   const [favorited, setFavorited] = createSignal(props.game.favorited);
   const [variants, setVariants] = createSignal<Game[]>([]);
   const [contextMenu, setContextMenu] = createSignal<{x: number, y: number} | null>(null);
-  const [playlistMenu, setPlaylistMenu] = createSignal<{x: number, y: number} | null>(null);
-  const [confirmUninstall, setConfirmUninstall] = createSignal(false);
   const [favAnimating, setFavAnimating] = createSignal(false);
   let favAnimTimeout: number | undefined;
   onCleanup(() => { if (favAnimTimeout) { clearTimeout(favAnimTimeout); } });
@@ -39,9 +35,6 @@ export function GameCard(props: GameCardProps) {
   // key change). Do NOT run on favorited-flag-only changes - that would race with the
   // optimistic update in handleToggleFavorite and cause a visible flicker.
   createEffect(on(() => props.game.id, () => { setFavorited(props.game.favorited); }, { defer: true }));
-
-  // Reset thumbnail state when the card is reused for a different game (For-loop key change).
-  createEffect(on(() => props.game.id, () => { setImgError(false); setThumbIdx(0); }, { defer: true }));
 
   // Pre-load variant IDs for multi-lang games so download state is visible on main card.
   // createEffect re-runs when props.game.shortcode changes, handling component reuse in For loops.
@@ -64,12 +57,77 @@ export function GameCard(props: GameCardProps) {
   onCleanup(() => { if (cardRef) { unobserveNearViewport(cardRef); } });
 
   const thumbCandidates = () => thumbnailCandidates(props.game.torrent_source, props.game.thumbnail_key);
+
+  // Reset thumbnail state when the card is reused for a different game
+  // (For-loop key change) or when the tier list itself changes. Removing a
+  // poster pack shortens that list, and a card that had already fallen through
+  // to index 1 then pointed past its end - every tile went blank.
+  createEffect(on(
+    () => `${props.game.id}|${thumbCandidates().join("|")}`,
+    () => { setImgError(false); setThumbIdx(0); },
+    { defer: true },
+  ));
+
   const thumbSrc = () => {
     if (!nearViewport()) { return null; }
-    const path = thumbCandidates()[thumbIdx()];
+    const c = thumbCandidates();
+    // Clamp rather than trust the index: the reset effect lands a frame later,
+    // and for that frame an out-of-range index would unmount the <img>, drop
+    // the card to the no-cover aspect-ratio rule and jolt the whole grid.
+    const path = c[thumbIdx()] ?? c[c.length - 1];
     if (!path) { return null; }
     return convertFileSrc(path);
   };
+
+  /** The cover this card is currently showing, kept mounted underneath while a
+   *  REPLACEMENT decodes. Non-null only during that hand-over, which is the
+   *  only moment a cross-fade is wanted: installing a poster pack swaps a
+   *  blurry preview for a sharp one under the user's eyes. A card painting its
+   *  first cover has nothing to dissolve from and must not fade in - that put
+   *  a 350 ms ramp on every tile of every scroll. */
+  const [underSrc, setUnderSrc] = createSignal<string | null>(null);
+  const [topLoaded, setTopLoaded] = createSignal(true);
+  const crossfading = () => underSrc() !== null;
+
+  // Compare the VALUE, not the dependencies: thumbSrc re-runs whenever any
+  // collection's tier dirs change, so `on(thumbSrc, ...)` fired for every card
+  // in the grid when one pack was installed. Cards whose own cover had not
+  // changed were flagged as loading, faded to 0 - and never came back, because
+  // an unchanged src fires no second load event. That is the "Win9x posters go
+  // blurry when I install DOS, until I reload the library" report.
+  /** Reveal the new cover, but never in the same frame the fade begins.
+   *
+   *  The `<img>` element survives the swap - only its src changes - so adding
+   *  `is-fading-in` sets opacity 0 and `is-loaded` sets it back to 1. A local
+   *  asset can fire `load` before the browser has painted a single frame at 0,
+   *  and a transition whose start value was never rendered simply does not
+   *  run: the poster appeared instantly, exactly as before the cross-fade
+   *  existed. Two frames is the reliable minimum for "has been painted". */
+  const markTopLoaded = () => {
+    if (!crossfading() || typeof requestAnimationFrame !== "function") {
+      setTopLoaded(true);
+      return;
+    }
+    requestAnimationFrame(() => requestAnimationFrame(() => setTopLoaded(true)));
+  };
+
+  let paintedSrc: string | null = null;
+  createEffect(() => {
+    const next = thumbSrc();
+    if (next === paintedSrc) { return; }
+    const previous = paintedSrc;
+    paintedSrc = next;
+    // Only dissolve from a cover that was actually on screen. After a 404 the
+    // outgoing image painted nothing, so holding it underneath would show the
+    // empty tile through the fade.
+    if (previous && next && topLoaded()) {
+      setUnderSrc(previous);
+      setTopLoaded(false);
+    } else {
+      setUnderSrc(null);
+      setTopLoaded(true);
+    }
+  });
 
   const handleImgError = () => {
     // Advance to next candidate (e.g. poster URL 404'd → try bundled preview).
@@ -103,19 +161,7 @@ export function GameCard(props: GameCardProps) {
   const handleContextMenu = (e: MouseEvent) => {
     if (props.game.id == null) { return; }
     e.preventDefault();
-    setConfirmUninstall(false);
     setContextMenu({ x: e.clientX, y: e.clientY });
-  };
-
-  // Uninstall stays hidden while a download is in flight - performUninstall
-  // would cancel it first, but exposing both actions side-by-side is confusing.
-  const canUninstall = () =>
-    (props.game.installed || props.game.in_library) && !isDownloading();
-
-  const handleContextUninstall = async () => {
-    setContextMenu(null);
-    if (props.game.id == null) { return; }
-    await performUninstall(props.game.id, setStatus, undefined, props.game.title);
   };
 
   const handleClick = (e: MouseEvent) => {
@@ -150,12 +196,22 @@ export function GameCard(props: GameCardProps) {
 
   return (
     <div ref={cardRef} class={`game-card ${props.game.installed || props.game.in_library ? "installed" : ""}`} onContextMenu={handleContextMenu} data-game-id={props.game.id != null ? String(props.game.id) : undefined}>
-      <div onClick={handleClick}>
+      <div class="game-card-art" onClick={handleClick}>
         <Show when={thumbSrc() && !imgError()}>
+          <Show when={underSrc()}>
+            <img class="game-card-thumb-base" src={underSrc()!} alt="" aria-hidden="true" />
+          </Show>
           <img
-            class="game-card-thumb"
+            class={`game-card-thumb${crossfading() ? " is-fading-in" : ""}${topLoaded() ? " is-loaded" : ""}`}
             src={thumbSrc()!}
             alt=""
+            onLoad={markTopLoaded}
+            // ONLY the reveal ends the hand-over. The class sets opacity 0 and
+            // the transition in one go, so the element first fades 1 -> 0 and
+            // that transitionend arrives after 350 ms whether or not the new
+            // cover has decoded - clearing the understudy there left a blank
+            // tile and a hard cut for anything slower than the fade.
+            onTransitionEnd={() => { if (topLoaded()) { setUnderSrc(null); } }}
             onError={handleImgError}
           />
         </Show>
@@ -214,7 +270,7 @@ export function GameCard(props: GameCardProps) {
         </div>
       </div>
 
-      <Show when={props.game.id != null && props.showFavoriteBtn !== false}>
+      <Show when={props.game.id != null}>
         <button
           class={`favorite-btn${favorited() ? " is-favorited" : ""}${favAnimating() ? " animating" : ""}`}
           onClick={handleToggleFavorite}
@@ -232,40 +288,21 @@ export function GameCard(props: GameCardProps) {
         </button>
       </Show>
 
+      {/* One component for both surfaces - see GameActionsMenu. It stays
+          mounted until whatever it opened is finished, so `contextMenu` is
+          cleared by its onClose, not by the item that was clicked. */}
       <Show when={contextMenu()}>
-        <Portal>
-          <div class="context-backdrop" onMouseDown={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }} />
-          <div class="context-menu" style={{ left: `${contextMenu()!.x}px`, top: `${contextMenu()!.y}px` }}>
-            <button class="context-menu-item" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
-              const pos = contextMenu()!;
-              setContextMenu(null);
-              setPlaylistMenu(pos);
-            }}>
-              Add to playlist…
-            </button>
-            <Show when={canUninstall()}>
-              <button class="context-menu-item danger" onMouseDown={(e) => e.stopPropagation()} onClick={() => {
-                if (confirmUninstall()) {
-                  handleContextUninstall();
-                } else {
-                  setConfirmUninstall(true);
-                }
-              }}>
-                {confirmUninstall() ? "Confirm uninstall?" : "Uninstall"}
-              </button>
-            </Show>
-          </div>
-        </Portal>
-      </Show>
-
-      <Show when={playlistMenu()}>
-        <PlaylistMenu
-          x={playlistMenu()!.x}
-          y={playlistMenu()!.y}
-          gameId={props.game.id!}
-          onClose={() => setPlaylistMenu(null)}
+        <GameActionsMenu
+          game={props.game}
+          x={contextMenu()!.x}
+          y={contextMenu()!.y}
+          downloading={isDownloading()}
+          setStatus={setStatus}
+          onDetail={props.onDetail}
+          onClose={() => setContextMenu(null)}
         />
       </Show>
+
     </div>
   );
 }

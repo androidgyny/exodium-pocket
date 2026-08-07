@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { startGameVideo, getVideoStatus, cancelGameVideo, type VideoStatus } from "../api/tauri";
+import { startGameVideo, getVideoStatus, cancelGameVideo, videoPlaybackSupported, type VideoStatus } from "../api/tauri";
 
 /** Preview-video state per game.
  *
@@ -124,7 +124,29 @@ async function beginFetch(gameId: number) {
 
 /** Ask for a game's video. Runs now if a slot is free (or if this is the game
  *  on screen), waits otherwise. */
+/** null until the one-time probe answers; the panel uses this to explain WHY
+ *  there is no preview rather than silently showing none. */
+const [playbackUnsupported, setPlaybackUnsupported] = createSignal(false);
+export { playbackUnsupported as videoPlaybackUnsupported };
+
+let supportKnown: Promise<boolean> | null = null;
+function ensurePlaybackSupportKnown(): Promise<boolean> {
+  // An unreachable probe must not disable previews on the platforms that have
+  // no problem - only an explicit "no" does.
+  // Only an explicit "no" disables the feature. A missing command, an odd
+  // payload or a failed invoke must not switch previews off on the platforms
+  // that have no problem.
+  supportKnown ??= videoPlaybackSupported()
+    .then((ok) => { const unsupported = ok === false; setPlaybackUnsupported(unsupported); return !unsupported; })
+    .catch(() => true);
+  return supportKnown;
+}
+
 export async function requestVideo(gameId: number) {
+  // Fetching would be wasted torrent traffic for a video that must never be
+  // mounted - on an affected system the <video> element itself is what
+  // freezes the app, so the whole feature stands down.
+  if (!(await ensurePlaybackSupportKnown())) { return; }
   const known = videos()[gameId];
   if (known && known.phase !== "error" && known.phase !== PHASE_QUEUED) { return; }
   if (intervals[gameId] || active.includes(gameId)) { return; }

@@ -151,6 +151,9 @@ export function ContentPackSettings() {
                   if (j.error) { return j.error; }
                   const pct = Math.round((j.progress ?? 0) * 100);
                   switch (j.phase) {
+                    // Written optimistically on click, before the backend has
+                    // even been asked - see startContentPackInstall.
+                    case "starting": return "Starting…";
                     case "downloading": return `Downloading… ${pct}%`;
                     case "verifying": return "Verifying checksum…";
                     case "extracting": return "Extracting…";

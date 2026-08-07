@@ -12,6 +12,7 @@ import { WelcomeModal } from "./components/WelcomeModal";
 import { SeedingConsentDialog } from "./components/SeedingConsentDialog";
 import { ActivityBadge } from "./components/ActivityBadge";
 import { needsSeedingConsent, seedingOn, applySeeding, loadSeeding } from "./stores/seeding";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ContentPackSettings } from "./components/ContentPackSettings";
 import { WindowFrame } from "./components/WindowFrame";
 import { ToastContainer } from "./components/ToastContainer";
@@ -23,13 +24,22 @@ import {
   setConfig,
   setRateLimits,
   scanInstalledGames,
+  dataDirIsEmpty,
   openLogFolder,
+  pendingLayoutMigration,
+  migrateLayout,
+  skipLayoutMigration,
+  type LayoutMigration,
+  win9xNetworkStatus,
+  enableWin9xNetwork,
+  disableWin9xNetwork,
+  type Win9xNetworkStatus,
 } from "./api/tauri";
 import { updateState, checkForAppUpdate, startUpdate, restartToUpdate } from "./stores/updater";
 import { fetchGames } from "./stores/games";
 import { applyNetworkMode, isOffline, loadNetworkMode } from "./stores/network";
 import { loadThumbnailDir } from "./stores/thumbnails";
-import { refreshInstalledPacks } from "./stores/contentPacks";
+import { refreshInstalledPacks, initContentPackEvents } from "./stores/contentPacks";
 import { showToast } from "./stores/toasts";
 import { startTransferPolling } from "./stores/transfer";
 import "./styles/main.css";
@@ -44,6 +54,44 @@ function App() {
   const [showWelcomeModal, setShowWelcomeModal] = createSignal(false);
   const [showSeedingConsent, setShowSeedingConsent] = createSignal(false);
   const [dataDir, setDataDir] = createSignal("");
+  const [rootFolder, setRootFolder] = createSignal("eXoDOS");
+  /** Old per-collection folders waiting to be merged into the single root. */
+  const [layoutMigration, setLayoutMigration] = createSignal<LayoutMigration | null>(null);
+  const [migrating, setMigrating] = createSignal(false);
+  /** Set once the user declined, so Settings can still offer the merge. */
+  const [layoutSkipped, setLayoutSkipped] = createSignal(false);
+
+  /** Move the old folders, then rebuild everything derived from them.
+   *
+   *  Blocking on purpose (see the overlay below): it renames thousands of
+   *  entries and re-checks the library afterwards, and a launcher that looks
+   *  idle while doing that invites a second click. */
+  const [migrateStep, setMigrateStep] = createSignal("");
+  const runLayoutMigration = async () => {
+    setMigrating(true);
+    try {
+      setMigrateStep("Moving files…");
+      const tally = await migrateLayout();
+      setMigrateStep("Reconnecting downloads…");
+      await initDownloadManager();
+      setMigrateStep("Checking your library…");
+      const installed = await scanInstalledGames().catch(() => 0);
+      fetchGames();
+      setLayoutMigration(null);
+      setLayoutSkipped(false);
+      const parts = [`${tally.moved} moved`];
+      if (tally.deduped) { parts.push(`${tally.deduped} duplicates removed`); }
+      if (tally.skipped) { parts.push(`${tally.skipped} left alone`); }
+      showToast(parts.join(", "), "success", {
+        detail: `${installed} game${installed !== 1 ? "s" : ""} available.`,
+      });
+    } catch (e) {
+      showToast("Could not move the games", "error", { detail: String(e) });
+    } finally {
+      setMigrating(false);
+      setMigrateStep("");
+    }
+  };
   const [resetError, setResetError] = createSignal("");
   const [logOpenError, setLogOpenError] = createSignal("");
   const [resetting, setResetting] = createSignal(false);
@@ -52,8 +100,11 @@ function App() {
   const gameFolderPath = () => {
     const dir = dataDir();
     if (!dir) return "";
+    // "." means the data dir IS the game root (a pre-single-root install
+    // whose folder was adopted as the root at startup).
+    if (rootFolder() === ".") { return dir; }
     const sep = dir.includes("\\") ? "\\" : "/";
-    return dir.replace(/[/\\]$/, "") + sep + "eXoDOS";
+    return dir.replace(/[/\\]$/, "") + sep + rootFolder();
   };
 
   onMount(() => {
@@ -74,6 +125,15 @@ function App() {
   });
 
   onMount(async () => {
+    // Linux always runs WebKit's fallback renderer (lib.rs disables the
+    // DMA-BUF path, which aborts on NVIDIA/Wayland). Backdrop blur is a
+    // per-frame CPU repaint there - main.css drops it under this class.
+    if (navigator.userAgent.includes("Linux")) {
+      document.documentElement.classList.add("soft-render");
+    }
+    // Before anything else: the backend can start pack installs on its own
+    // (Win9x emulator auto-queue), and only this listener makes them visible.
+    initContentPackEvents().catch(() => {});
     try {
       const status = await getSetupStatus();
       if (status.ready) {
@@ -90,6 +150,11 @@ function App() {
         setShowSeedingConsent(await needsSeedingConsent());
         const dir = await getConfig("data_dir");
         if (dir) { setDataDir(dir); }
+        // Read, never assumed: an imported eXo tree keeps whatever name the
+        // user gave it, and a legacy install has its own folder adopted as the
+        // root at startup.
+        const root = await getConfig("root_folder");
+        if (root) { setRootFolder(root); }
         loadThumbnailDir();
         refreshInstalledPacks();
         // No onCleanup: this runs after an await, where Solid has no owner to
@@ -97,6 +162,18 @@ function App() {
         // long as the app does.
         startTransferPolling();
         loadSeeding();
+        // Re-check what is actually on disk. Install flags are stored per
+        // game, so anything that moved, was deleted or was added behind the
+        // app's back (a folder moved to another drive, a manual copy) would
+        // otherwise stay wrong until the user found the button in Settings.
+        // The backend refuses to run when the data dir holds no collection at
+        // all, so an unmounted drive cannot wipe the library.
+        scanInstalledGames().then(() => fetchGames()).catch(() => {});
+        // Installs made before the single-root layout keep their games in
+        // per-collection folders. Ask before touching them - it moves files.
+        pendingLayoutMigration()
+          .then((m) => { setLayoutMigration(m); if (m) { setLayoutSkipped(!m.prompt); } })
+          .catch(() => {});
         // Update checks are network calls; offline mode means none are made.
         if (!isOffline()) {
           checkForAppUpdate();
@@ -137,12 +214,48 @@ function App() {
     }
   };
 
+  /** Point the app at a different game folder. */
+  /** Folder the user picked but has not confirmed yet, or null. */
+  const [pendingDataDir, setPendingDataDir] = createSignal<string | null>(null);
+
   const handleChangeDataDir = async () => {
     const selected = await open({ title: "Select new data directory", directory: true });
     if (!selected) return;
+    // An EMPTY target is the signature of the misreading this setting invites:
+    // Change points Exodium at a folder, it never moves anything into one. Ask
+    // before leaving someone with an empty library and their games still on
+    // the old disk. Only worth asking if they HAVE anything to leave behind -
+    // a user with nothing downloaded is just choosing where to start.
+    const [targetEmpty, currentEmpty] = await Promise.all([
+      dataDirIsEmpty(selected).catch(() => false),
+      dataDir() ? dataDirIsEmpty(dataDir()).catch(() => true) : Promise.resolve(true),
+    ]);
+    if (targetEmpty && !currentEmpty) {
+      setPendingDataDir(selected);
+      return;
+    }
+    await applyDataDir(selected);
+  };
+
+  /** Everything derived from the old location has to be rebuilt, and the
+   *  install flags most of all: they are per-game rows in the database, so
+   *  after a change every game still claims to live at the old path and Play
+   *  fails with "not installed" until something re-checks the disk. Doing that
+   *  here (and reporting the count) also answers the question the user
+   *  actually has at this moment - did it find my games? */
+  const applyDataDir = async (selected: string) => {
     await setConfig("data_dir", selected);
     setDataDir(selected);
     await initDownloadManager();
+    loadThumbnailDir();
+    refreshInstalledPacks();
+    try {
+      const count = await scanInstalledGames();
+      showToast(`${count} game${count !== 1 ? "s" : ""} found in the new folder`, "success");
+    } catch (e) {
+      showToast("No games found in that folder", "error", { detail: String(e) });
+    }
+    fetchGames();
   };
 
   const [scanning, setScanning] = createSignal(false);
@@ -172,6 +285,34 @@ function App() {
   // before loadGameDefaults resolves.
   const [crtAuto, setCrtAuto] = createSignal(true);
   const [defaultFullscreen, setDefaultFullscreen] = createSignal(false);
+
+  // Windows 9x multiplayer needs packet-capture rights the OS withholds by
+  // default. Null until the first probe answers, so the row can stay quiet
+  // rather than flash a wrong state.
+  const [netStatus, setNetStatus] = createSignal<Win9xNetworkStatus | null>(null);
+  const [enablingNet, setEnablingNet] = createSignal(false);
+  const loadWin9xNetwork = async () => {
+    try { setNetStatus(await win9xNetworkStatus()); } catch { /* older backend */ }
+  };
+  const toggleWin9xNetwork = async (enable: boolean) => {
+    setEnablingNet(true);
+    try {
+      setNetStatus(enable ? await enableWin9xNetwork() : await disableWin9xNetwork());
+      showToast(
+        enable ? "Windows 9x multiplayer enabled" : "Windows 9x multiplayer disabled",
+        "success",
+      );
+    } catch (e) {
+      const msg = String(e);
+      // "cancelled" is the user dismissing the OS dialog - not a failure.
+      if (!msg.includes("cancelled")) {
+        showToast(enable ? "Could not enable multiplayer" : "Could not disable multiplayer",
+          "error", { detail: msg });
+      }
+    } finally {
+      setEnablingNet(false);
+    }
+  };
 
   // Kept as strings: an empty field means unlimited, which no number can say.
   const [limitDown, setLimitDown] = createSignal("");
@@ -203,6 +344,12 @@ function App() {
   const openSettings = () => {
     loadGameDefaults();
     loadNetworkMode();
+    loadWin9xNetwork();
+    // Reports the folders even after a "not now", so the row below can offer
+    // the merge later.
+    pendingLayoutMigration()
+      .then((m) => setLayoutSkipped(m != null))
+      .catch(() => {});
     setLogOpenError("");
     setModeError("");
     setSettingsTab("general");
@@ -434,10 +581,18 @@ function App() {
                     <div class="settings-body">
                       <section class="settings-section">
                         <h3 class="settings-section-title">Library</h3>
+                        {/* "Change" is a POINTER, not a move - and nothing on
+                            the row said so, which invites the reading that it
+                            relocates a 282 GB library. */}
                         <div class="setting-row">
                           <span class="setting-label">Game folder</span>
                           <span class="setting-value">{gameFolderPath() || "Not set"}</span>
-                          <Button variant="small" onClick={handleChangeDataDir}>Change</Button>
+                          <Button variant="small" onClick={handleChangeDataDir}>Change…</Button>
+                        </div>
+                        <div class="setting-row setting-row-note">
+                          <span class="setting-hint">
+                            Points Exodium at an existing folder - your downloaded games are not moved.
+                          </span>
                         </div>
                         <div class="setting-row">
                           <span class="setting-label">Installed games</span>
@@ -448,6 +603,24 @@ function App() {
                         </div>
                         <Show when={scanResult()}>
                           <div class="setting-hint" style="margin-top:4px">{scanResult()}</div>
+                        </Show>
+                        {/* The way back after declining the merge at startup -
+                            without it, "not now" would mean "never". */}
+                        <Show when={layoutSkipped()}>
+                          <div class="setting-row">
+                            <span class="setting-label">Folder layout</span>
+                            <span class="setting-hint">
+                              Windows games sit outside the folder Exodium reads
+                            </span>
+                            <Button
+                              variant="small"
+                              loading={migrating()}
+                              loadingLabel="Moving…"
+                              onClick={() => void runLayoutMigration()}
+                            >
+                              Merge
+                            </Button>
+                          </div>
                         </Show>
                       </section>
 
@@ -498,6 +671,34 @@ function App() {
                             ? "Nothing is shared while offline. Your choice is kept for when you switch back."
                             : "Uploads parts of the games you have to other users while Exodium runs. Keeps the collection alive - but distributing game files carries legal risk in some countries. Off caps upload at 1 KB/s."}
                         />
+
+                        {/* Windows 9x multiplayer. Separate from the torrent
+                            settings above: this is about the emulated PC's
+                            network card, and the grant is a system-wide one,
+                            so the row says what it costs before asking. */}
+                        <Show when={netStatus()}>
+                          {(st) => (
+                            <div class="setting-card">
+                              <div class="setting-card-info">
+                                <span class="setting-toggle-label">Windows 9x multiplayer</span>
+                                <span class="setting-toggle-hint">{st().detail}</span>
+                              </div>
+                              <Show when={st().can_enable || st().enabled}>
+                                <Button
+                                  variant="small"
+                                  loading={enablingNet()}
+                                  loadingLabel="Waiting…"
+                                  onClick={() => toggleWin9xNetwork(!st().enabled)}
+                                >
+                                  {st().enabled ? "Remove…" : "Enable…"}
+                                </Button>
+                              </Show>
+                              <Show when={st().manual_hint}>
+                                <code class="setting-code">{st().manual_hint}</code>
+                              </Show>
+                            </div>
+                          )}
+                        </Show>
 
                         {/* Caps apply to the whole session, both directions.
                             Empty means unlimited, which is what a torrent
@@ -634,6 +835,61 @@ function App() {
           onClose={() => setShowWelcomeModal(false)}
         />
 
+        {/* No cancel and no backdrop dismiss: half a move is the one state
+            worth avoiding, so the app stays busy until it is done. */}
+        <Show when={migrating()}>
+          <Portal>
+            <div class="ark-dialog-backdrop" />
+            <div class="ark-dialog-positioner">
+              <div class="ark-dialog-content playlist-dialog">
+                <h2 class="ark-dialog-title">Migrating your games</h2>
+                <p class="ark-dialog-desc">
+                  Files are moved, not copied - this should only take a moment.
+                </p>
+                <div class="dialog-progress">
+                  <span class="btn-spinner" />
+                  <span>{migrateStep()}</span>
+                </div>
+              </div>
+            </div>
+          </Portal>
+        </Show>
+
+        {/* Layout merge: eXo ships one folder per pack but expects them
+            merged, and Exodium now writes that same single tree. Older
+            installs are asked once, because this moves their game files. */}
+        <ConfirmDialog
+          open={layoutMigration()?.prompt === true}
+          title="Migrate your Windows games?"
+          message="Exodium used to put your Windows games beside the DOS folder. eXoDOS has one root folder for all collections, which is now Exodium's default as well. Moving your games is instant, nothing is lost. Move now or do it later in Settings → Library."
+          confirmLabel={migrating() ? "Moving…" : "Move now"}
+          cancelLabel="Not now"
+          onConfirm={() => void runLayoutMigration()}
+          onClose={(declined) => {
+            setLayoutMigration(null);
+            // Declining is remembered rather than asked again at every start:
+            // the merge stays available under Settings → Library, so nothing
+            // is lost by taking the offer away here.
+            if (declined) { void skipLayoutMigration().then(() => setLayoutSkipped(true)); }
+          }}
+        />
+        {/* Change points at a folder, it never moves one - so the case worth
+            catching is an empty target chosen by someone who meant to
+            relocate. Naming the old path is the point: it says where the games
+            actually stay. */}
+        <ConfirmDialog
+          open={pendingDataDir() !== null}
+          title="That folder is empty"
+          message={`Exodium will look for games in ${pendingDataDir() ?? ""}, but it does not move anything there. Your downloaded games stay in ${dataDir()} and keep using that space. Use the empty folder anyway?`}
+          confirmLabel="Use it anyway"
+          cancelLabel="Cancel"
+          onConfirm={() => {
+            const dir = pendingDataDir();
+            setPendingDataDir(null);
+            if (dir) { void applyDataDir(dir); }
+          }}
+          onClose={() => setPendingDataDir(null)}
+        />
         <SeedingConsentDialog
           open={showSeedingConsent()}
           onDecide={handleSeedingConsent}

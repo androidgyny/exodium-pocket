@@ -33,13 +33,6 @@ pub fn collection_data_dir(data_dir: &str, _source: &str) -> PathBuf {
     std::path::Path::new(data_dir).to_path_buf()
 }
 
-/// Get the inner folder name for a collection (the folder the torrent creates).
-fn collection_inner_folder(source: &str) -> &'static str {
-    crate::commands::setup::collection_def(source)
-        .map(|c| c.inner_folder)
-        .unwrap_or("eXoDOS")
-}
-
 /// Get the game directory prefix for a collection (path from inner_folder to game dirs).
 fn collection_game_prefix(source: &str) -> &'static str {
     crate::commands::setup::collection_def(source)
@@ -50,6 +43,49 @@ fn collection_game_prefix(source: &str) -> &'static str {
 /// Get the language subdirectory for an LP collection, if any.
 fn collection_lang_dir(source: &str) -> Option<&'static str> {
     crate::commands::setup::collection_def(source).and_then(|c| c.lang_dir)
+}
+
+/// The year directory a `year_subdirs` collection nests its games under,
+/// read from the application_path (`eXo\eXoWin9x\!win9x\<year>\<TitleDir>\…`).
+/// None for every other collection - and for a malformed path, in which case
+/// callers fall back to the flat `<game_prefix>/<shortcode>` layout.
+fn collection_year_dir(source: &str, app_path: Option<&str>) -> Option<String> {
+    let def = crate::commands::setup::collection_def(source)?;
+    if !def.year_subdirs {
+        return None;
+    }
+    let normalized = app_path?.replace('\\', "/");
+    let needle = format!("/{}/", def.shortcode_segment);
+    let idx = normalized.find(&needle)?;
+    let year = normalized[idx + needle.len()..].split('/').next()?;
+    (year.len() == 4 && year.bytes().all(|b| b.is_ascii_digit())).then(|| year.to_string())
+}
+
+/// Torrent-relative directory holding a game's installed files.
+/// Standard: <game_prefix>[/<lang_dir>]/<shortcode>
+/// year_subdirs (eXoWin9x): <game_prefix>/<year>/<shortcode> - the shortcode
+/// IS the title directory there ("Connect4 (1995)").
+pub(crate) fn collection_rel_game_dir(source: &str, shortcode: &str, app_path: Option<&str>) -> String {
+    let prefix = collection_game_prefix(source);
+    if let Some(year) = collection_year_dir(source, app_path) {
+        return format!("{}/{}/{}", prefix, year, shortcode);
+    }
+    match collection_lang_dir(source) {
+        Some(ld) => format!("{}/{}/{}", prefix, ld, shortcode),
+        None => format!("{}/{}", prefix, shortcode),
+    }
+}
+
+/// Torrent-relative path of a game's ZIP (same year/lang nesting as the dir).
+pub(crate) fn collection_rel_zip(source: &str, game_name: &str, app_path: Option<&str>) -> String {
+    let prefix = collection_game_prefix(source);
+    if let Some(year) = collection_year_dir(source, app_path) {
+        return format!("{}/{}/{}.zip", prefix, year, game_name);
+    }
+    match collection_lang_dir(source) {
+        Some(ld) => format!("{}/{}/{}.zip", prefix, ld, game_name),
+        None => format!("{}/{}.zip", prefix, game_name),
+    }
 }
 
 /// Language subdirectories used in the eXoDOS file structure.
@@ -334,6 +370,7 @@ pub async fn get_transfer_stats(torrent_state: State<'_, TorrentState>) -> Resul
 /// Queue a game for download via torrent.
 #[tauri::command]
 pub async fn download_game(
+    app: AppHandle,
     db_state: State<'_, DbState>,
     torrent_state: State<'_, TorrentState>,
     id: i64,
@@ -378,27 +415,73 @@ pub async fn download_game(
         (manager, main_mgr)
     };
 
+    let is_win9x_collection = crate::commands::setup::collection_def(source)
+        .is_some_and(|c| c.year_subdirs);
+
+    // Win9x games need the shared support payload (parent OS VHDs +
+    // emulators) from utilWin9x.zip before they can launch; queued further
+    // down with the first Win9x game download, but the disk preflight has to
+    // budget it here (2.5 GB zip + 2.5 GB inner temp + ~2.5 GB extracted).
+    let win9x_support_missing = is_win9x_collection
+        && !crate::commands::win9x::win9x_support_ready(
+            &manager.torrent_root(),
+            game.dosbox_variant.as_deref(),
+        );
+
+    let data_dir = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        queries::get_config(&conn, "data_dir").ok().flatten()
+    };
+
+    // On macOS/Linux the emulator itself is a content pack; queue it with
+    // the download the same way the support files are. Resolver-gated, so a
+    // PATH/Flatpak/system install (or an already-installed pack) never pays
+    // for it - and Windows never needs it (eXo's EXTWin9x.zip carries both
+    // builds). None also when the manifest has no installable source yet.
+    let win9x_emulator_pack = if is_win9x_collection && !cfg!(windows) {
+        let dd = data_dir.clone().unwrap_or_default();
+        crate::commands::win9x::emulator_pack_for_variant(game.dosbox_variant.as_deref())
+            .filter(|_| {
+                !crate::commands::win9x::win9x_engine_resolvable(
+                    &app,
+                    &manager.torrent_root(),
+                    &dd,
+                    game.dosbox_variant.as_deref(),
+                )
+            })
+            .and_then(|pack_id| {
+                crate::commands::content_packs::installable_pack(source, pack_id)
+                    .map(|info| (pack_id, info))
+            })
+    } else {
+        None
+    };
+
     // Disk-space preflight: refusing upfront beats a multi-GB torrent (plus
     // ~equal-sized extraction) failing halfway with a partial install. Runs
     // BEFORE set_in_library so a refusal doesn't leave a phantom "My Games"
     // entry. Downloaded bytes on disk are credited ONCE (they only reduce
     // the remaining download; the extraction target still needs full size).
     if let Some(size) = game.download_size {
-        let data_dir = {
-            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-            queries::get_config(&conn, "data_dir").ok().flatten()
-        };
-        if let Some(dir) = data_dir {
+        if let Some(dir) = data_dir.as_deref() {
             let on_disk = manager
                 .file_output_path(game_idx)
                 .and_then(|p| std::fs::metadata(p).ok())
                 .map(|m| m.len())
                 .unwrap_or(0);
-            let needed = (size as u64)
+            let mut needed = (size as u64)
                 .saturating_mul(2)
                 .saturating_sub(on_disk)
                 + 500 * 1024 * 1024;
-            if let Ok(free) = fs4::available_space(std::path::Path::new(&dir)) {
+            if win9x_support_missing {
+                needed += 8 * 1024 * 1024 * 1024;
+            }
+            if let Some((_, info)) = &win9x_emulator_pack {
+                // Same 2.2x factor as the pack installer's own preflight
+                // (archive + extracted copy).
+                needed += (info.size_bytes as f64 * 2.2) as u64;
+            }
+            if let Ok(free) = fs4::available_space(std::path::Path::new(dir)) {
                 if free < needed {
                     let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
                     return Err(format!(
@@ -416,6 +499,22 @@ pub async fn download_game(
     let mut files = vec![game_idx];
     if let Some(gd_idx) = game.gamedata_torrent_index {
         files.push(gd_idx as usize);
+    }
+
+    // Queue the Win9x support payload with the first Win9x game download and
+    // arm the extraction watcher (budgeted in the preflight above).
+    if win9x_support_missing {
+        crate::commands::win9x::ensure_win9x_support_queued(&manager).await;
+    }
+
+    // Queue the emulator pack alongside (see win9x_emulator_pack above).
+    // "Install already in progress" is the normal second-download case.
+    if let Some((pack_id, _)) = &win9x_emulator_pack {
+        if let Err(e) =
+            crate::commands::content_packs::start_pack_install(&app, source, pack_id).await
+        {
+            log::info!("Win9x emulator pack '{pack_id}' not queued: {e}");
+        }
     }
 
     if let Some(ref main_mgr) = main_mgr_opt {
@@ -922,9 +1021,7 @@ pub async fn uninstall_game(
         .to_string();
 
     let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
-    let inner_folder = collection_inner_folder(source);
-    let game_prefix = collection_game_prefix(source);
-    let torrent_root = collection_data_dir(&data_dir, source).join(inner_folder);
+    let torrent_root = crate::commands::setup::game_root(&data_dir);
 
     // Get game name from bat filename for ZIP deletion
     let game_name = game.application_path.as_deref()
@@ -933,15 +1030,21 @@ pub async fn uninstall_game(
 
     // Determine THIS variant's game directory:
     // EN: <game_prefix>/<shortcode>/   LP: <game_prefix>/<lang_dir>/<shortcode>/
+    // eXoWin9x: <game_prefix>/<year>/<title dir>/
     // Never probe other languages' dirs - the old first-existing probe over
     // all lang dirs made "uninstall the DE variant" back up and delete the
     // EN install when both were on disk.
-    let lang_dir = collection_lang_dir(source);
-    let game_dir_candidate = match lang_dir {
-        Some(ld) => torrent_root.join(format!("{}/{}/{}", game_prefix, ld, shortcode)),
-        None => torrent_root.join(format!("{}/{}", game_prefix, shortcode)),
+    let rel_game_dir =
+        collection_rel_game_dir(source, &shortcode, game.application_path.as_deref());
+    // Save backup lives NEXT TO the game dir (`.../!save/<shortcode>`), which
+    // keeps it lang-scoped for LP variants and year-scoped for eXoWin9x -
+    // exactly where extract_game_zip's restore probe looks.
+    let rel_save_dir = match rel_game_dir.rsplit_once('/') {
+        Some((parent, _)) => format!("{}/!save/{}", parent, shortcode),
+        None => format!("!save/{}", shortcode),
     };
-    let game_dir: Option<PathBuf> = Some(game_dir_candidate).filter(|d| d.exists());
+    let game_dir: Option<PathBuf> = Some(torrent_root.join(&rel_game_dir)).filter(|d| d.exists());
+    let rel_zip = collection_rel_zip(source, &game_name, game.application_path.as_deref());
 
     let db_path = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -956,11 +1059,9 @@ pub async fn uninstall_game(
                 // etc.). LP backups live under the language dir so uninstalling
                 // one variant can't clobber another's backup; extract_game_zip's
                 // restore probes both the lang-scoped and the legacy shared
-                // location.
-                let save_dir = match lang_dir {
-                    Some(ld) => torrent_root.join(format!("{}/{}/!save/{}", game_prefix, ld, shortcode)),
-                    None => torrent_root.join(format!("{}/!save/{}", game_prefix, shortcode)),
-                };
+                // location. For eXoWin9x the whole dir includes the game's own
+                // VHD, which is where its saves live.
+                let save_dir = torrent_root.join(&rel_save_dir);
                 if save_dir.exists() {
                     let _ = std::fs::remove_dir_all(&save_dir);
                 }
@@ -986,10 +1087,7 @@ pub async fn uninstall_game(
         // the caller can reset piece bookkeeping in exactly the torrents
         // that tracked them. Only THIS variant's ZIP - the old all-languages
         // sweep deleted neighbor variants' downloads too.
-        let zip_rels = vec![match lang_dir {
-            Some(ld) => format!("{}/{}/{}.zip", game_prefix, ld, game_name),
-            None => format!("{}/{}.zip", game_prefix, game_name),
-        }];
+        let zip_rels = vec![rel_zip];
         let mut deleted_rels: Vec<String> = Vec::new();
         for rel in &zip_rels {
             let zip = torrent_root.join(rel);
@@ -1092,6 +1190,118 @@ pub async fn uninstall_game(
     Ok(format!("Uninstalled: {}", game.title))
 }
 
+/// Put a game back into the state it had right after installing: drop the
+/// extracted directory AND its save backup, then unpack the ZIP again.
+///
+/// Uninstall deliberately KEEPS user data (§5) - it renames the game dir to
+/// `!save/<shortcode>` and `extract_game_zip` restores it on the next
+/// install - so "uninstall, then reinstall" cannot produce a clean slate.
+/// This is the operation that can.
+///
+/// It matters beyond savegames for eXoWin9x, where the game's own VHD is
+/// mounted as D: and holds the guest's filesystem: Windows clears that
+/// volume's FAT "clean shutdown" bit on the first write and only restores it
+/// on a proper shutdown, so a session ended by closing the emulator window
+/// leaves it dirty and the next boot runs ScanDisk. Replacing the VHD with
+/// the one from the ZIP is the only way back to a pristine volume.
+///
+/// The ZIP is validated BEFORE anything is deleted - a torrent placeholder
+/// or a half-downloaded archive must not cost the user their install.
+#[tauri::command]
+pub async fn reset_game_data(db_state: State<'_, DbState>, id: i64) -> Result<String, String> {
+    let (game, data_dir) = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let game = queries::fetch_game_by_id(&conn, id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Game {} not found", id))?;
+        let data_dir = queries::get_config(&conn, "data_dir")
+            .map_err(|e| e.to_string())?
+            .ok_or("Data directory not configured")?;
+        (game, data_dir)
+    };
+
+    if running_games()
+        .lock()
+        .map(|s| s.contains(&running_game_key(&game)))
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "'{}' is currently running - quit the emulator before resetting it.",
+            game.title
+        ));
+    }
+
+    let op_lock = game_op_lock(id);
+    let _op_guard = op_lock.lock().await;
+
+    let shortcode = game.shortcode.as_deref().ok_or("Game has no shortcode")?.to_string();
+    let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
+    let torrent_root = crate::commands::setup::game_root(&data_dir);
+    let game_name = game
+        .application_path
+        .as_deref()
+        .and_then(crate::commands::setup::game_name_from_app_path)
+        .unwrap_or_else(|| game.title.clone());
+
+    let rel_game_dir =
+        collection_rel_game_dir(source, &shortcode, game.application_path.as_deref());
+    let rel_save_dir = match rel_game_dir.rsplit_once('/') {
+        Some((parent, _)) => format!("{}/!save/{}", parent, shortcode),
+        None => format!("!save/{}", shortcode),
+    };
+    let zip = torrent_root.join(collection_rel_zip(
+        source,
+        &game_name,
+        game.application_path.as_deref(),
+    ));
+    let game_dir = torrent_root.join(&rel_game_dir);
+    let save_dir = torrent_root.join(&rel_save_dir);
+    let title = game.title.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        // Validate first: opening the archive reads its central directory,
+        // which is exactly what distinguishes a real ZIP from librqbit's
+        // 0-byte placeholder or a piece-sized fragment.
+        let file = std::fs::File::open(&zip).map_err(|_| {
+            format!(
+                "The ZIP for '{}' is not on disk, so there is nothing to restore from. \
+                 Re-download the game instead.",
+                title
+            )
+        })?;
+        zip::ZipArchive::new(file).map_err(|_| {
+            format!(
+                "The ZIP for '{}' is incomplete or corrupted (torrent placeholder), \
+                 so there is nothing to restore from. Re-download the game instead.",
+                title
+            )
+        })?;
+
+        if game_dir.exists() {
+            std::fs::remove_dir_all(&game_dir)
+                .map_err(|e| format!("Failed to remove {}: {e}", game_dir.display()))?;
+        }
+        // Must go too, or extract_game_zip restores the very data this is
+        // meant to discard.
+        if save_dir.exists() {
+            let _ = std::fs::remove_dir_all(&save_dir);
+        }
+
+        let dest = game_dir.parent().map(PathBuf::from).unwrap_or_else(|| torrent_root.clone());
+        extract_game_zip(&zip, &dest)
+    })
+    .await
+    .map_err(|e| format!("reset task failed: {e}"))??;
+
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let _ = queries::set_game_installed(&conn, id, true);
+    }
+
+    log::info!("Reset game data: {}", game.title);
+    Ok(format!("Reset {} to its original state", game.title))
+}
+
 /// In-flight + failure-backoff guard for the !DOSmetadata.zip extraction.
 /// Without it, every 1 Hz progress poll during the (long) extraction spawned
 /// another overlapping full extraction - and a corrupt ZIP retried forever.
@@ -1146,7 +1356,7 @@ fn running_game_key(game: &Game) -> String {
 /// mid-launch-extraction became clickable - and would rename the game dir
 /// out from under the extractor, polluting the !save backup. Real locks
 /// replace the accidental ones.
-fn game_op_lock(id: i64) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn game_op_lock(id: i64) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     > = std::sync::OnceLock::new();
@@ -1211,8 +1421,8 @@ fn resolve_game_conf(
     // Normalize Windows backslashes - DB paths mix separators.
     let rel = dosbox_conf.replace('\\', "/");
     let main_root =
-        collection_data_dir(data_dir, "eXoDOS").join(collection_inner_folder("eXoDOS"));
-    let torrent_root = collection_data_dir(data_dir, source).join(collection_inner_folder(source));
+        crate::commands::setup::game_root(data_dir);
+    let torrent_root = main_root.clone();
 
     let direct = torrent_root.join(&rel);
     if direct.exists() {
@@ -1312,7 +1522,7 @@ pub async fn game_printing_unavailable(
         return Ok(false);
     }
     let main_root =
-        collection_data_dir(&data_dir, "eXoDOS").join(collection_inner_folder("eXoDOS"));
+        crate::commands::setup::game_root(&data_dir);
     Ok(resolve_ece_binary(dosbox_variant.as_deref(), &main_root).is_none())
 }
 
@@ -1725,7 +1935,7 @@ fn lp_autoexec_compatible(
 /// 1,122 of 1,138 eXoWin3x games died at Program Manager. Every host path in
 /// both packs is `.\`-relative (2,149 + 9,691, no exceptions), so this is also
 /// complete.
-fn rewrite_host_paths(text: &str, resolve: &dyn Fn(&str) -> String) -> String {
+pub(crate) fn rewrite_host_paths(text: &str, resolve: &dyn Fn(&str) -> String) -> String {
     let mut out = String::with_capacity(text.len() + 64);
     let mut rest = text;
     while let Some(idx) = rest.find(".\\") {
@@ -1766,7 +1976,26 @@ fn patch_dosbox_conf(
     // and it keeps the substituted host path free of backslashes that a later
     // reader could mistake for guest-side DOS text.
     let abs_prefix = format!("{}/", working_dir.to_string_lossy()).replace('\\', "/");
-    let to_working_dir = |body: &str| format!("{}{}", abs_prefix, body.replace('\\', "/"));
+    // A `.\` token is only a host path when the target actually exists - eXo
+    // also writes `.\` GUEST paths resolved on the mounted drive (11th Hour:
+    // `imgmount d ".\cd\11HDISK1.cue"` after `c:` means C:\cd\..., the game
+    // dir's own cd folder; there is no eXo/cd on the host). Rewriting those
+    // produced dead absolute paths, the imgmounts failed silently, and the
+    // game booted without its CDs.
+    let to_working_dir = |body: &str| {
+        // Bare `.\` is guest text for "current directory" (OxydGold passes it
+        // as a program argument) - it would resolve to the working dir, which
+        // always exists, so the existence gate alone can't catch it.
+        if body.is_empty() {
+            return ".\\".to_string();
+        }
+        let resolved = format!("{}{}", abs_prefix, body.replace('\\', "/"));
+        if std::path::Path::new(&resolved).exists() {
+            resolved
+        } else {
+            format!(".\\{}", body)
+        }
+    };
 
     let patched = if let Some((shortcode, lang_dir, game_folder, game_dir)) = lp_info {
         // Strategy 1: overlay mount. The EN autoexec is ground truth authored
@@ -1797,10 +2026,13 @@ fn patch_dosbox_conf(
             // Route eXoDOS-root references through the overlay, everything else
             // to the real working dir. Both only touch `.\`-relative host paths.
             let mut result = rewrite_host_paths(&content, &|body| {
-                match body.replace('\\', "/").strip_prefix(game_folder) {
-                    Some(tail) => format!("{}{}", staging_fwd, tail),
-                    None => to_working_dir(body),
+                if let Some(tail) = body.replace('\\', "/").strip_prefix(game_folder) {
+                    let staged = format!("{}{}", staging_fwd, tail);
+                    if std::path::Path::new(&staged).exists() {
+                        return staged;
+                    }
                 }
+                to_working_dir(body)
             });
 
             // If autoexec has no actual launch command (e.g., all commented out with #),
@@ -2360,7 +2592,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
 }
 
 /// Extract a game ZIP in place, then restore saves from !save/ if available.
-fn extract_game_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+pub(crate) fn extract_game_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
     let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
@@ -2622,7 +2854,7 @@ pub async fn get_recently_played(state: State<'_, DbState>, limit: Option<usize>
 /// one report) with nothing ever cleaning them up. They are derived from
 /// settings and rewritten on every launch, so the app's own directory is the
 /// right home - and `sweep_legacy_launch_confs` removes the old ones.
-fn launch_conf_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn launch_conf_dir(app: &AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
     let dir = app
         .path()
@@ -2711,6 +2943,35 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         return Err(format!("{} is not installed. Download it first.", game.title));
     }
 
+    // Refuse a second launch while the game is still running. Two emulator
+    // instances on the same VHDs corrupt them (86Box recreates the shared
+    // child mid-flight, DOSBox-X double-mounts the save drive) - and for the
+    // rest of the catalogue a double launch is never what the user meant.
+    if running_games()
+        .lock()
+        .map(|s| s.contains(&running_game_key(&game)))
+        .unwrap_or(false)
+    {
+        return Err(format!("'{}' is already running.", game.title));
+    }
+
+    // Win9x games boot Windows 95/98 from VHDs inside DOSBox-X or 86Box -
+    // they have their own engine pipeline and none of the Staging conf
+    // machinery below applies (their confs run verbatim, §10a).
+    if crate::commands::setup::collection_def(game.torrent_source.as_deref().unwrap_or("eXoDOS"))
+        .is_some_and(|c| c.year_subdirs)
+    {
+        return crate::commands::win9x::launch_win9x_game(
+            &app,
+            game,
+            id,
+            &data_dir,
+            fullscreen_enabled,
+            &per_game_config,
+        )
+        .await;
+    }
+
     let dosbox_conf = game
         .dosbox_conf
         .as_deref()
@@ -2721,15 +2982,12 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
             msg
         })?;
 
-    // Each collection has its own subdirectory (except eXoDOS which is at the root).
-    // Layout:  <data_dir>/<inner_folder>/           - for eXoDOS
-    //          <data_dir>/<col_id>/<inner_folder>/  - for sub-collections
+    // Every collection lives in ONE root (eXo's own merged layout), so the
+    // main tree and this game's tree are the same directory.
     let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
-    let main_inner = collection_inner_folder("eXoDOS");
-    let src_inner = collection_inner_folder(source);
     let src_game_prefix = collection_game_prefix(source);
-    let main_torrent_root = collection_data_dir(&data_dir, "eXoDOS").join(main_inner);
-    let torrent_root = collection_data_dir(&data_dir, source).join(src_inner);
+    let main_torrent_root = crate::commands::setup::game_root(&data_dir);
+    let torrent_root = main_torrent_root.clone();
     // working_dir is the first path component of game_prefix (e.g. "eXo")
     let working_dir_name = src_game_prefix.split('/').next().unwrap_or("eXo");
     let options_conf = main_torrent_root.join("eXo/emulators/dosbox/options.conf");
@@ -2757,22 +3015,23 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     // This mirrors LaunchBox's on-demand extraction behavior and handles games that were
     // imported from an existing installation where ZIPs haven't been extracted.
     if !shortcode.is_empty() {
-        let game_dir = if let Some(ld) = collection_lang_dir(source) {
-            torrent_root.join(format!("{}/{}/{}", src_game_prefix, ld, shortcode))
-        } else {
-            torrent_root.join(format!("{}/{}", src_game_prefix, shortcode))
-        };
+        let game_dir = torrent_root.join(collection_rel_game_dir(
+            source,
+            shortcode,
+            game.application_path.as_deref(),
+        ));
         if !game_dir.exists() {
             let game_name = game.application_path.as_deref()
                 .and_then(crate::commands::setup::game_name_from_app_path)
                 .unwrap_or_else(|| game.title.clone());
             // LP ZIPs live under the collection's language dir
-            // ("eXo/eXoDOS/<lang>/<name>.zip"); EN under the prefix root.
-            let mut zip_candidates: Vec<PathBuf> = Vec::new();
-            if let Some(ld) = collection_lang_dir(source) {
-                zip_candidates
-                    .push(torrent_root.join(format!("{}/{}/{}.zip", src_game_prefix, ld, game_name)));
-            }
+            // ("eXo/eXoDOS/<lang>/<name>.zip"), eXoWin9x's under the year dir;
+            // EN under the prefix root as a fallback.
+            let mut zip_candidates: Vec<PathBuf> = vec![torrent_root.join(collection_rel_zip(
+                source,
+                &game_name,
+                game.application_path.as_deref(),
+            ))];
             zip_candidates.push(torrent_root.join(format!("{}/{}.zip", src_game_prefix, game_name)));
 
             if let Some(zip_path) = zip_candidates.iter().find(|z| z.exists()) {
@@ -2956,6 +3215,22 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         }
     }
 
+    spawn_emulator_and_track(cmd, &dosbox_bin, &game, id)
+}
+
+/// Platform-correct stdio setup, spawn and child-reaping for an emulator
+/// process. Shared by the Staging/ECE path above and the Win9x engines
+/// (DOSBox-X / 86Box) - the macOS EBADF workarounds and the per-game log
+/// capture must not fork per engine.
+pub(crate) fn spawn_emulator_and_track(
+    mut cmd: Command,
+    emulator_bin: &Path,
+    game: &Game,
+    id: i64,
+) -> Result<String, String> {
+    // id names the per-game emulator log file; macOS nulls stdio instead.
+    #[cfg(target_os = "macos")]
+    let _ = id;
     // macOS dev builds: the binary extracted from the .app DMG has a bundle-anchored
     // code signature that becomes invalid without the surrounding bundle. Re-sign
     // ad-hoc if the signature is broken so macOS doesn't SIGKILL the process.
@@ -2963,19 +3238,19 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
     {
         let _ = std::process::Command::new("xattr")
             .args(["-d", "com.apple.quarantine"])
-            .arg(&dosbox_bin)
+            .arg(emulator_bin)
             .output();
         let sig_ok = std::process::Command::new("codesign")
             .arg("-v")
-            .arg(&dosbox_bin)
+            .arg(emulator_bin)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !sig_ok {
-            log::warn!("DOSBox binary has invalid signature, re-signing ad-hoc: {}", dosbox_bin.display());
+            log::warn!("Emulator binary has invalid signature, re-signing ad-hoc: {}", emulator_bin.display());
             let _ = std::process::Command::new("codesign")
                 .args(["--force", "--sign", "-"])
-                .arg(&dosbox_bin)
+                .arg(emulator_bin)
                 .output();
         }
     }
@@ -3037,26 +3312,26 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
         unsafe { cmd.pre_exec(|| Ok(())); }
     }
 
-    log::info!("Spawning DOSBox: {}", dosbox_bin.display());
+    log::info!("Spawning emulator: {}", emulator_bin.display());
     let mut child = cmd.spawn().map_err(|e| {
-        log::error!("DOSBox spawn failed for {}: {} (raw_os_error={:?})",
-            dosbox_bin.display(), e, e.raw_os_error());
+        log::error!("Emulator spawn failed for {}: {} (raw_os_error={:?})",
+            emulator_bin.display(), e, e.raw_os_error());
         format!(
-            "Failed to launch DOSBox Staging ({}): {}",
-            dosbox_bin.display(), e
+            "Failed to launch emulator ({}): {}",
+            emulator_bin.display(), e
         )
     })?;
 
     // Reap the child (dropped Child handles become zombies on Unix) and track
-    // the running game so uninstall can refuse while DOSBox holds its files
-    // open - deleting/renaming a live game dir on Windows fails per-file and
-    // used to silently lose saves through the copy fallback.
-    let run_key = running_game_key(&game);
+    // the running game so uninstall can refuse while the emulator holds its
+    // files open - deleting/renaming a live game dir on Windows fails
+    // per-file and used to silently lose saves through the copy fallback.
+    let run_key = running_game_key(game);
     running_games().lock().map(|mut s| s.insert(run_key.clone())).ok();
     tauri::async_runtime::spawn_blocking(move || {
         match child.wait() {
-            Ok(status) => log::info!("DOSBox exited ({}) for {}", status, run_key),
-            Err(e) => log::warn!("DOSBox wait failed for {}: {}", run_key, e),
+            Ok(status) => log::info!("Emulator exited ({}) for {}", status, run_key),
+            Err(e) => log::warn!("Emulator wait failed for {}: {}", run_key, e),
         }
         running_games().lock().map(|mut s| s.remove(&run_key)).ok();
     });
@@ -3088,6 +3363,41 @@ mod tests {
         assert!(dir.join("notes.txt").exists());
         assert_eq!(super::remove_conf_files(&dir, None), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rel_paths_nest_win9x_games_under_their_year_dir() {
+        let app = Some(r"eXo\eXoWin9x\!win9x\1995\Connect4 (1995)\Connect4 (1995).bat");
+        assert_eq!(
+            super::collection_rel_game_dir("eXoWin9x", "Connect4 (1995)", app),
+            "eXo/eXoWin9x/1995/Connect4 (1995)"
+        );
+        assert_eq!(
+            super::collection_rel_zip("eXoWin9x", "Connect4 (1995)", app),
+            "eXo/eXoWin9x/1995/Connect4 (1995).zip"
+        );
+        // A malformed path falls back to the flat layout instead of panicking.
+        assert_eq!(
+            super::collection_rel_game_dir("eXoWin9x", "Connect4 (1995)", None),
+            "eXo/eXoWin9x/Connect4 (1995)"
+        );
+    }
+
+    #[test]
+    fn rel_paths_keep_flat_and_lang_layouts_for_other_packs() {
+        let app = Some(r"eXo\eXoDOS\!dos\SQ5\Space Quest V.bat");
+        assert_eq!(
+            super::collection_rel_game_dir("eXoDOS", "SQ5", app),
+            "eXo/eXoDOS/SQ5"
+        );
+        assert_eq!(
+            super::collection_rel_game_dir("eXoDOS_GLP", "SQ5", app),
+            "eXo/eXoDOS/!german/SQ5"
+        );
+        assert_eq!(
+            super::collection_rel_zip("eXoDOS_GLP", "Space Quest V", app),
+            "eXo/eXoDOS/!german/Space Quest V.zip"
+        );
     }
 
     use super::*;
@@ -3184,6 +3494,9 @@ mod tests {
     fn patch_dosbox_conf_keeps_guest_dos_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let working_dir = tmp.path();
+        let game_dir = working_dir.join("eXoWin3x/20k3x/cd");
+        fs::create_dir_all(&game_dir).unwrap();
+        fs::write(game_dir.join("cd.cue"), b"").unwrap();
 
         let conf_content = "[autoexec]\nmount c .\\eXoWin3x\\20k3x\n\
              imgmount d .\\eXoWin3x\\20k3x\\cd\\cd.cue -t cdrom\nc:\n\
@@ -3208,6 +3521,42 @@ mod tests {
         assert!(
             patched.contains(&format!("{}eXoWin3x/20k3x/cd/cd.cue -t cdrom", abs)),
             "imgmount must be absolute: {}", patched
+        );
+    }
+
+    /// 11th Hour (DE) shape: eXo's imgmount lines can be GUEST paths - after
+    /// `c:`, `imgmount d ".\cd\11HDISK1.cue"` means C:\cd\... on the mounted
+    /// drive, and no eXo/cd exists on the host. Rewriting them to absolute
+    /// host paths made every imgmount fail and the game booted without CDs.
+    #[test]
+    fn patch_dosbox_conf_keeps_guest_imgmount_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let working_dir = tmp.path();
+        let cd_dir = working_dir.join("eXoDOS/11thHour/cd");
+        fs::create_dir_all(&cd_dir).unwrap();
+        fs::write(cd_dir.join("11HDISK1.cue"), b"").unwrap();
+
+        let conf_content = "[autoexec]\necho off\nmount c .\\eXoDOS\\11thHour\nc:\n\
+             imgmount d \".\\cd\\11HDISK1.cue\" -t iso\ngame.exe /9 .\\ .\\\n@call run\nexit\n";
+        let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);
+
+        let patched_path = patch_dosbox_conf(&conf_path, working_dir, None, true).unwrap();
+        let patched = fs::read_to_string(&patched_path).unwrap();
+
+        let abs = format!("{}/", working_dir.to_string_lossy()).replace('\\', "/");
+        assert!(
+            patched.contains(&format!("mount c {}eXoDOS/11thHour", abs)),
+            "existing mount target still becomes absolute: {}", patched
+        );
+        assert!(
+            patched.contains("imgmount d \".\\cd\\11HDISK1.cue\" -t iso"),
+            "guest-relative imgmount must stay as authored: {}", patched
+        );
+        // Bare `.\` is a guest argument (OxydGold) - the working dir itself
+        // always exists, so it must be excluded from the existence gate.
+        assert!(
+            patched.contains("game.exe /9 .\\ .\\"),
+            "bare .\\ arguments must stay as authored: {}", patched
         );
     }
 
@@ -3283,45 +3632,37 @@ mod tests {
     /// share: own collection root, main eXoDOS root, lang-scoped alternates -
     /// in that order. eXoWin3x is the collection whose root actually differs
     /// from the main one (inner_folder "eXoWin3x"); the eXoDOS-family packs
-    /// all share the data_dir/eXoDOS tree.
+    /// Every collection resolves inside the SINGLE root - eXo's merged
+    /// layout, where `eXo/eXoDOS`, `eXo/eXoWin3x` and `eXo/eXoWin9x` are
+    /// siblings. The old per-torrent roots (and the cross-root fallback that
+    /// went with them) are gone.
     #[test]
     fn resolve_game_conf_probe_order() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().to_string_lossy().into_owned();
         let rel = "eXo/eXoWin3x/!win3x/GeoGeo/dosbox.conf";
-        let main_root = tmp.path().join("eXoDOS");
-        let win3x_root = tmp.path().join("eXoWin3x");
+        let root = tmp.path().join(crate::commands::setup::DEFAULT_ROOT_FOLDER);
 
         // Nothing on disk: no result.
         assert!(resolve_game_conf(&data_dir, "eXoWin3x", rel).is_none());
 
-        // Conf only in the main tree: found via the fallback, but the returned
-        // root stays the game's own collection root so mounts resolve there.
-        let main_conf = main_root.join(rel);
-        fs::create_dir_all(main_conf.parent().unwrap()).unwrap();
-        fs::write(&main_conf, "[autoexec]\n").unwrap();
-        let (conf, root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
-        assert_eq!(conf, main_conf);
-        assert_eq!(root, win3x_root);
+        // A Win3x conf is found in the one root, not in a tree of its own.
+        let conf_path = root.join(rel);
+        fs::create_dir_all(conf_path.parent().unwrap()).unwrap();
+        fs::write(&conf_path, "[autoexec]\n").unwrap();
+        let (conf, found_root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
+        assert_eq!(conf, conf_path);
+        assert_eq!(found_root, root);
 
-        // Own-collection conf wins once it exists.
-        let own_conf = win3x_root.join(rel);
-        fs::create_dir_all(own_conf.parent().unwrap()).unwrap();
-        fs::write(&own_conf, "[autoexec]\n").unwrap();
-        let (conf, root) = resolve_game_conf(&data_dir, "eXoWin3x", rel).unwrap();
-        assert_eq!(conf, own_conf);
-        assert_eq!(root, win3x_root);
-
-        // Lang-scoped alternate (LP rows): conf only under a language subdir
-        // of the shared eXoDOS tree.
-        let lang_conf = main_root.join("eXo/eXoDOS/!dos/!german/DasAmt/dosbox.conf");
+        // Lang-scoped alternate (LP rows): conf only under a language subdir.
+        let lang_conf = root.join("eXo/eXoDOS/!dos/!german/DasAmt/dosbox.conf");
         fs::create_dir_all(lang_conf.parent().unwrap()).unwrap();
         fs::write(&lang_conf, "[autoexec]\n").unwrap();
-        let (conf, root) =
+        let (conf, found_root) =
             resolve_game_conf(&data_dir, "eXoDOS_GLP", "eXo/eXoDOS/!dos/DasAmt/dosbox.conf")
                 .unwrap();
         assert_eq!(conf, lang_conf);
-        assert_eq!(root, main_root);
+        assert_eq!(found_root, root);
     }
 
     // ── conf_requests_printer ───────────────────────────────────────────────
@@ -3343,6 +3684,7 @@ mod tests {
     fn patch_dosbox_conf_converts_windows_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let working_dir = tmp.path();
+        fs::create_dir_all(working_dir.join("eXoDOS/SQ5")).unwrap();
 
         let conf_content = "[sdl]\nfullscreen=false\n[autoexec]\n@mount c .\\eXoDOS\\SQ5\nc:\nSQ5.bat\nexit\n";
         let conf_path = write_conf(working_dir, "dosbox.conf", conf_content);

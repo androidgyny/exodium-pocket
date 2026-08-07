@@ -13,6 +13,7 @@ export interface Game {
   series: string | null;
   play_mode: string | null;
   rating: number | null;
+  rating_votes: number | null;
   description: string | null;
   notes: string | null;
   source: string | null;
@@ -178,6 +179,93 @@ export async function gamePrintingUnavailable(id: number): Promise<boolean> {
   return invoke("game_printing_unavailable", { id });
 }
 
+/** Whether the emulator a Win9x game needs (DOSBox-X / 86Box) is resolvable
+ *  on this machine. Backend answers with the launcher's own resolver, so the
+ *  panel note can never disagree with an actual launch. */
+export async function win9xEngineAvailable(variant: string | null): Promise<boolean> {
+  return invoke("win9x_engine_available", { variant });
+}
+
+export interface LayoutMigration {
+  /** Folder names still holding games, relative to the data dir. */
+  folders: string[];
+  bytes: number;
+  /** False once declined - Settings still offers the merge. */
+  prompt: boolean;
+}
+
+/** Old per-collection folders that should be merged into the single root. */
+export async function pendingLayoutMigration(): Promise<LayoutMigration | null> {
+  return invoke("pending_layout_migration");
+}
+
+export interface MergeTally {
+  moved: number;
+  deduped: number;
+  skipped: number;
+}
+
+/** Moves them into the single root; reports what it did. */
+export async function migrateLayout(): Promise<MergeTally> {
+  return invoke("migrate_layout");
+}
+
+/** Remembers that the user declined the merge. */
+export async function skipLayoutMigration(): Promise<void> {
+  return invoke("skip_layout_migration");
+}
+
+export interface Win9xNetworkStatus {
+  enabled: boolean;
+  can_enable: boolean;
+  detail: string;
+  manual_hint: string | null;
+}
+
+/** Whether eXo's remote-multiplayer titles can reach their IPX gateway. */
+export async function win9xNetworkStatus(): Promise<Win9xNetworkStatus> {
+  return invoke("win9x_network_status");
+}
+
+export interface Win9xMultiplayerInfo {
+  multiplayer: boolean;
+  state: "ready" | "needs_permission" | "needs_wired" | "unsupported";
+  prompt: boolean;
+}
+
+/** What online play looks like for this game on this machine. */
+export async function win9xMultiplayerInfo(id: number): Promise<Win9xMultiplayerInfo> {
+  return invoke("win9x_multiplayer_info", { id });
+}
+
+/** Remembers that the multiplayer question should not be asked again. */
+export async function dismissWin9xNetworkPrompt(): Promise<void> {
+  return invoke("dismiss_win9x_network_prompt");
+}
+
+/** Asks the OS for packet-capture permission via its own auth dialog. */
+export async function enableWin9xNetwork(): Promise<Win9xNetworkStatus> {
+  return invoke("enable_win9x_network");
+}
+
+/** Hands the permission back - same dialog, opposite direction. */
+export async function disableWin9xNetwork(): Promise<Win9xNetworkStatus> {
+  return invoke("disable_win9x_network");
+}
+
+export interface Win9xSupportStatus {
+  phase: "ready" | "downloading" | "missing" | "failed";
+  progress: number;
+  /** Size of utilWin9x.zip; 0 when the torrent index is unavailable. */
+  total_bytes: number;
+}
+
+/** State of the shared Win9x support files (OS parent images + emulators),
+ *  scoped to the tree the given variant boots from when one is passed. */
+export async function getWin9xSupportStatus(variant?: string | null): Promise<Win9xSupportStatus> {
+  return invoke("get_win9x_support_status", { variant });
+}
+
 export async function getConfig(key: string): Promise<string | null> {
   return invoke("get_config", { key });
 }
@@ -257,6 +345,12 @@ export async function getDefaultDataDir(): Promise<string> {
   return invoke("get_default_data_dir");
 }
 
+/** True when a folder holds nothing Exodium would recognise as game data.
+ *  Used to catch the "I meant to move my library" misreading of Change. */
+export async function dataDirIsEmpty(path: string): Promise<boolean> {
+  return invoke("data_dir_is_empty", { path });
+}
+
 export async function getTorrentInfo(): Promise<TorrentInfo> {
   return invoke("get_torrent_info");
 }
@@ -296,6 +390,11 @@ export async function factoryReset(deleteGameData: boolean): Promise<void> {
 
 export async function uninstallGame(id: number): Promise<string> {
   return invoke("uninstall_game", { id });
+}
+
+/** Discard saves and every in-game change, then unpack the ZIP again. */
+export async function resetGameData(id: number): Promise<string> {
+  return invoke("reset_game_data", { id });
 }
 
 export async function downloadGame(id: number): Promise<string> {
@@ -415,6 +514,12 @@ export interface VideoStatus {
 /** Start (or join) the fetch of a game's preview video. Returns immediately -
  *  the video is streamed out of the GameData archive, which can take a minute
  *  on a cold torrent. Poll getVideoStatus. */
+/** False on a Linux system whose GStreamer cannot build an audio pipeline -
+ *  mounting a <video> there wedges the WebKit process and freezes the app. */
+export async function videoPlaybackSupported(): Promise<boolean> {
+  return invoke("video_playback_supported");
+}
+
 export async function startGameVideo(id: number): Promise<VideoStatus> {
   return invoke("start_game_video", { id });
 }
@@ -425,6 +530,13 @@ export async function getVideoStatus(id: number): Promise<VideoStatus | null> {
 
 export async function cancelGameVideo(id: number): Promise<void> {
   return invoke("cancel_game_video", { id });
+}
+
+/** Playable URL for a media file. Linux answers with a localhost HTTP URL
+ *  (WebKitGTK cannot play media through the asset protocol); macOS/Windows
+ *  answer null - use convertFileSrc there. */
+export async function mediaUrl(path: string): Promise<string | null> {
+  return invoke("media_url", { path });
 }
 
 export async function getGameMetadata(

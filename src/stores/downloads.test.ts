@@ -201,6 +201,39 @@ describe("downloads state machine", () => {
     expect(state?.status).toContain("Download incomplete");
   });
 
+  // Cancelling a stalled download used to leave the card stuck at its last
+  // percentage: the poll was already awaiting get_download_progress, and its
+  // resolution wrote the entry back after the cancel had deleted it.
+  it("stays cancelled when a poll was in flight at the moment of the cancel", async () => {
+    let releasePoll: ((v: unknown) => void) | null = null;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "download_game") { return Promise.resolve("Downloading: Stalled Game"); }
+      if (cmd === "get_download_progress") {
+        // First poll never resolves until the test lets it - that is the
+        // in-flight window the cancel has to survive.
+        if (!releasePoll) {
+          return new Promise((resolve) => {
+            releasePoll = () => resolve(makeProgress({ progress: 0.01 }));
+          });
+        }
+        return Promise.resolve(makeProgress({ progress: 0.01 }));
+      }
+      if (cmd === "cancel_download") { return Promise.resolve("Cancelled"); }
+      return Promise.resolve(null);
+    });
+
+    const { startGameDownload, cancelGameDownload, getDownloadState } = await import("./downloads");
+    startGameDownload(130);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(releasePoll, "a poll should be in flight").not.toBeNull();
+
+    await cancelGameDownload(130);
+    releasePoll!(null);
+    await vi.advanceTimersByTimeAsync(2200);
+
+    expect(getDownloadState(130)).toBeUndefined();
+  });
+
   it("sets error status when downloadGame rejects", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "download_game") return Promise.reject(new Error("not initialized"));

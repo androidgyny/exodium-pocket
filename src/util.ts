@@ -1,4 +1,4 @@
-import { uninstallGame } from "./api/tauri";
+import { uninstallGame, resetGameData } from "./api/tauri";
 import { refreshLoadedGames, notifyGameLibraryChanged } from "./stores/games";
 import { getDownloadState, cancelGameDownload, stopGameDownloadTracking } from "./stores/downloads";
 import { showToast } from "./stores/toasts";
@@ -31,6 +31,31 @@ export async function performUninstall(
     console.error("Uninstall failed:", e);
     setStatus("");
     showToast(title ? `Couldn't uninstall ${title}` : "Uninstall failed", "error", { detail: String(e) });
+  }
+}
+
+/**
+ * Discard a game's saves and every in-game change, then unpack it again.
+ *
+ * The sibling of `performUninstall`, and here for the same reason: both the
+ * grid's context menu and the detail panel offer it, and a second copy of the
+ * flow drifts in its toast wording and its error handling. The backend returns
+ * the success message, so callers only supply the title for the failure case.
+ */
+export async function performReset(
+  gameId: number,
+  setStatus: (s: string) => void,
+  title?: string,
+): Promise<void> {
+  setStatus("Resetting…");
+  try {
+    const msg = await resetGameData(gameId);
+    showToast(msg, "success");
+  } catch (e) {
+    console.error("Reset failed:", e);
+    showToast(title ? `Couldn't reset ${title}` : "Reset failed", "error", { detail: String(e) });
+  } finally {
+    setStatus("");
   }
 }
 

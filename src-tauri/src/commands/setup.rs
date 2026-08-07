@@ -71,6 +71,424 @@ pub struct CollectionDef {
     /// (`Images/<platform>/`, `Manuals/<platform>/`) and matches the XML's
     /// `<Platform>` value.
     pub platform: &'static str,
+    /// Games live under a 4-digit year subdirectory and are keyed by their
+    /// title directory instead of an 8-char shortcode:
+    /// `<game_prefix>/<year>/<Title (Year)>/` (eXoWin9x layout). All path
+    /// derivation keys off this flag, never off the collection id.
+    pub year_subdirs: bool,
+}
+
+/// Name of the ONE folder inside the data dir that holds every collection.
+///
+/// eXo ships each pack as its own torrent but expects them merged: their
+/// Setup/eXoMerge bats copy `Content\` and `eXo\` of every pack into a single
+/// folder, giving one `eXo/` tree with `eXoDOS/`, `eXoWin3x/`, `eXoWin9x/`
+/// side by side. Exodium writes the same layout, so an installation made by
+/// eXo's own setup can be imported as-is - and nothing is downloaded twice
+/// because we looked in a folder eXo never creates.
+///
+/// Cached rather than read per call: every path derivation needs it, and the
+/// three places that can change it (fresh setup, import, data-dir change) all
+/// set it explicitly.
+static ROOT_FOLDER: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Default when nothing was stored - what fresh installs have always used.
+pub const DEFAULT_ROOT_FOLDER: &str = "eXoDOS";
+
+/// `root_folder` value meaning "the data dir IS the root" - see
+/// `repair_legacy_root`. A name can never express that, since
+/// `<data>/<name>` is always one level down.
+pub const ROOT_IS_DATA_DIR: &str = ".";
+
+/// Remember the root folder name for this session (and this session only -
+/// the value itself lives in the `root_folder` config key).
+pub fn set_root_folder(name: &str) {
+    if let Ok(mut guard) = ROOT_FOLDER.write() {
+        *guard = Some(name.to_string());
+    }
+}
+
+/// Point an install made before the single-root layout at the tree it already
+/// has, instead of nesting a second one inside it.
+///
+/// Until the single root, the main eXoDOS torrent wrote STRAIGHT INTO the data
+/// dir, so a legacy install looks like `<data>/eXo/…` + `<data>/Content/…`.
+/// `game_root` is `<data>/<root_folder>`, which can never equal `<data>` - so
+/// those users would get `<data>/eXoDOS/` as their root and re-download 282 GB
+/// next to the games they already own. Seen in testing: 8.7 GB of a second
+/// eXoDOS tree inside the first one.
+///
+/// The repair is a re-labelling, not a move: `root_folder` becomes the `.`
+/// sentinel, so `game_root` resolves to the data dir itself - exactly where the
+/// games already are. The data dir stays put deliberately; moving it up a level
+/// would work for the games but strand everything else keyed to it (content
+/// packs, the video and gallery caches) and drop Exodium's `content/` into the
+/// user's parent folder.
+///
+/// Keyed on `root_folder` being unset - true only for installs predating the
+/// change. Once written, the user's value is trusted.
+fn repair_legacy_root(conn: &rusqlite::Connection) {
+    let has_root = queries::get_config(conn, "root_folder")
+        .ok()
+        .flatten()
+        .is_some_and(|v| !v.trim().is_empty());
+    if has_root {
+        return;
+    }
+    let Ok(Some(data_dir)) = queries::get_config(conn, "data_dir") else {
+        return;
+    };
+    let dir = PathBuf::from(&data_dir);
+    // `eXo/` at the data-dir level IS the legacy layout - no other setup
+    // produces it, and a fresh install's data dir never has one.
+    if !dir.join("eXo").is_dir() {
+        return;
+    }
+    log::warn!(
+        "Legacy layout: {} holds the games itself - adopting it as the game root",
+        data_dir
+    );
+    let _ = queries::set_config(conn, "root_folder", ROOT_IS_DATA_DIR);
+}
+
+/// Load the root folder name from config into the cache.
+///
+/// Repairs the pre-single-root layout on the way: every caller reads `data_dir`
+/// right after this, so it is the one place where the fix reliably lands
+/// before a path is derived from either value.
+pub fn load_root_folder(conn: &rusqlite::Connection) {
+    repair_legacy_root(conn);
+    let name = queries::get_config(conn, "root_folder")
+        .ok()
+        .flatten()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_ROOT_FOLDER.to_string());
+    set_root_folder(&name);
+}
+
+/// The single directory holding every collection's files.
+///
+/// Replaces the old per-collection roots (`<data>/eXoWin9x/…`), which were an
+/// artefact of librqbit naming a torrent's output folder after the torrent -
+/// not a layout eXo or anyone else expects.
+pub fn game_root(data_dir: &str) -> PathBuf {
+    let name = ROOT_FOLDER
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| DEFAULT_ROOT_FOLDER.to_string());
+    if name == ROOT_IS_DATA_DIR {
+        return PathBuf::from(data_dir);
+    }
+    PathBuf::from(data_dir).join(name)
+}
+
+/// Old per-torrent roots still sitting next to the real one.
+///
+/// Exodium used to give each pack the folder librqbit names after the torrent
+/// (`<data>/eXoWin3x/`, `<data>/eXoWin9x/`), which is not a layout eXo
+/// produces. Everything lives in one root now, so an install made before that
+/// has to be merged - with the user's consent, since it moves their files.
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutMigration {
+    /// Folder names still holding games, relative to the data dir.
+    pub folders: Vec<String>,
+    /// Rough size, so the dialog can say what is about to be moved.
+    pub bytes: u64,
+    /// Whether to raise the question on startup. False once declined - the
+    /// merge itself stays reachable from Settings, which is why the folders
+    /// are still reported rather than hidden.
+    pub prompt: bool,
+}
+
+/// Folders that look like a torrent root of their own (they contain `eXo/`)
+/// and are not the configured root.
+fn stray_roots(data_dir: &str) -> Vec<PathBuf> {
+    let root = game_root(data_dir);
+    COLLECTION_MAP
+        .iter()
+        .map(|c| c.inner_folder)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        // Three places a per-torrent root can sit. Two are inside the data
+        // dir: beside the game root, and inside it once the data dir IS the
+        // root. The third is BESIDE the data dir - only reachable when the
+        // data dir is the root, because that is the legacy shape whose folders
+        // were created while the data dir was one level up. Scanning a normal
+        // install's parent would mean sweeping the user's home directory.
+        .flat_map(|name| {
+            let mut candidates = vec![PathBuf::from(data_dir).join(name), root.join(name)];
+            if root == Path::new(data_dir) {
+                if let Some(parent) = Path::new(data_dir).parent() {
+                    candidates.push(parent.join(name));
+                }
+            }
+            candidates
+        })
+        // `eXo/` inside tells a pack root apart from the root's own
+        // `eXo/eXoWin3x/`, which is where those files belong.
+        .filter(|p| *p != root && p.join("eXo").is_dir())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Is there anything to merge into the single root?
+#[tauri::command]
+pub async fn pending_layout_migration(
+    db_state: State<'_, DbState>,
+) -> Result<Option<LayoutMigration>, String> {
+    let (data_dir, asked) = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        load_root_folder(&conn);
+        (
+            queries::get_config(&conn, "data_dir").map_err(|e| e.to_string())?,
+            queries::get_config(&conn, "layout_migration").map_err(|e| e.to_string())?,
+        )
+    };
+    let Some(data_dir) = data_dir else { return Ok(None) };
+    let strays = stray_roots(&data_dir);
+    if strays.is_empty() {
+        return Ok(None);
+    }
+    if asked.as_deref() == Some("skip") {
+        // Worth a log line every start: those folders are not read, so their
+        // games look uninstalled and a re-download lands a second copy in the
+        // real root while the first keeps occupying the disk.
+        log::warn!(
+            "Layout: {} folder(s) next to the game root are being ignored ({}). \
+             Merge them from Settings to make their games visible again.",
+            strays.len(),
+            strays
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    // Apparent size only - walking 282 GB of files to add up bytes would
+    // stall startup, and the dialog only needs an order of magnitude.
+    let bytes = strays.iter().map(|p| dir_size_shallow(p)).sum();
+    Ok(Some(LayoutMigration {
+        folders: strays
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect(),
+        bytes,
+        prompt: asked.as_deref() != Some("skip"),
+    }))
+}
+
+/// Sum of the game archives one level below `<root>/eXo/<pack>/`.
+fn dir_size_shallow(root: &Path) -> u64 {
+    fn walk(dir: &Path, depth: usize, acc: &mut u64) {
+        if depth > 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.filter_map(|e| e.ok()) {
+            match e.metadata() {
+                Ok(m) if m.is_file() => *acc += m.len(),
+                Ok(m) if m.is_dir() => walk(&e.path(), depth + 1, acc),
+                _ => {}
+            }
+        }
+    }
+    let mut total = 0;
+    walk(root, 0, &mut total);
+    total
+}
+
+/// Remember that the user does not want the folders merged.
+#[tauri::command]
+pub async fn skip_layout_migration(db_state: State<'_, DbState>) -> Result<(), String> {
+    let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+    queries::set_config(&conn, "layout_migration", "skip").map_err(|e| e.to_string())
+}
+
+/// Move every stray root's contents into the single root.
+///
+/// Renames only: the folders sit on one filesystem, so this is instant and
+/// nothing is copied. Anything already present at the destination is left
+/// alone rather than overwritten - a half-finished manual merge must not lose
+/// data. Torrent state is re-derived afterwards by re-initialising the
+/// managers; librqbit re-checks the files in place rather than downloading
+/// them again.
+#[tauri::command]
+pub async fn migrate_layout(
+    app: AppHandle,
+    db_state: State<'_, DbState>,
+    torrent_state: State<'_, TorrentState>,
+) -> Result<MergeTally, String> {
+    // Stop the torrent engine before touching a single file. librqbit's
+    // session opens (and therefore CREATES) every selected file of a torrent,
+    // so a live session pointed at the old folder re-materializes the whole
+    // tree the instant the merge empties it - measured: 673 files back one
+    // second after the move. Dropping the managers releases the last Arc to
+    // the session; the frontend calls init_download_manager afterwards, which
+    // rebuilds it against the single root.
+    torrent_state.0.write().await.clear();
+
+    let data_dir = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        load_root_folder(&conn);
+        queries::get_config(&conn, "data_dir")
+            .map_err(|e| e.to_string())?
+            .ok_or("No data directory configured")?
+    };
+    let root = game_root(&data_dir);
+    let mut tally = MergeTally::default();
+    let strays = stray_roots(&data_dir);
+    log::info!(
+        "Layout migration: merging {:?} into {}",
+        strays.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        root.display()
+    );
+    for stray in strays {
+        tally.add(merge_tree(&stray, &root)?);
+        // Everything is either moved or a deleted duplicate by now, so what
+        // remains is empty directories - clear them out so the folder is gone
+        // and the prompt has nothing left to find. A folder that still holds
+        // a file (something we did not put there) is kept, deliberately.
+        remove_empty_tree(&stray);
+        if stray.exists() {
+            log::warn!(
+                "Layout migration: {} kept - it still holds files Exodium did not place there",
+                stray.display()
+            );
+        }
+    }
+    // Every fastresume bitfield now describes a tree that no longer exists at
+    // the path it was recorded for. Leaving them would have librqbit skip its
+    // check and read the freshly moved-in files as missing pieces.
+    if let Ok(config_dir) = app.path().app_data_dir() {
+        let persistence = fastresume_dir(&config_dir);
+        if let Ok(entries) = std::fs::read_dir(&persistence) {
+            for entry in entries.flatten() {
+                if entry.path().extension().is_some_and(|e| e == "bitv") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
+    {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        queries::set_config(&conn, "layout_migration", "done").map_err(|e| e.to_string())?;
+    }
+    log::info!(
+        "Layout migration: {} moved, {} duplicates removed, {} left alone",
+        tally.moved,
+        tally.deduped,
+        tally.skipped
+    );
+    Ok(tally)
+}
+
+/// Move `src`'s children into `dst`, descending where both sides have the
+/// same directory so an existing `eXo/` or `Content/` is merged rather than
+/// replaced.
+///
+/// When the same file exists on both sides, **the larger one wins** and the
+/// other is deleted. That is not arbitrary: the loser is almost always a
+/// zero-byte torrent placeholder (librqbit allocates one per file of the
+/// collection) or a half-finished download, and the winner the real archive.
+/// Leaving both behind was the first attempt - it meant the old folders never
+/// disappeared, so the migration prompt came back at every start with nothing
+/// left to do.
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct MergeTally {
+    /// Files that only existed on the old side and were renamed across.
+    pub moved: usize,
+    /// Duplicates resolved - the smaller copy (usually a zero-byte torrent
+    /// placeholder) was deleted.
+    pub deduped: usize,
+    /// Entries neither side could resolve: a directory facing a file, or the
+    /// reverse. Counted rather than ignored, because "nothing happened and
+    /// nothing was reported" is exactly how the first version of this hid a
+    /// folder that never emptied.
+    pub skipped: usize,
+}
+
+impl MergeTally {
+    fn add(&mut self, other: MergeTally) {
+        self.moved += other.moved;
+        self.deduped += other.deduped;
+        self.skipped += other.skipped;
+    }
+}
+
+fn merge_tree(src: &Path, dst: &Path) -> Result<MergeTally, String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    let mut tally = MergeTally::default();
+    let entries = std::fs::read_dir(src).map_err(|e| e.to_string())?;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let from = entry.path();
+        // Not worth carrying across, and counting it would inflate the report
+        // the user reads. remove_empty_tree deletes what is left.
+        if is_os_metadata(&from) {
+            continue;
+        }
+        let to = dst.join(entry.file_name());
+        if !to.exists() {
+            std::fs::rename(&from, &to)
+                .map_err(|e| format!("moving {} to {}: {e}", from.display(), to.display()))?;
+            tally.moved += 1;
+            continue;
+        }
+        if from.is_dir() && to.is_dir() {
+            tally.add(merge_tree(&from, &to)?);
+            let _ = std::fs::remove_dir(&from);
+            continue;
+        }
+        let src_len = from.metadata().map(|m| m.len()).unwrap_or(0);
+        let dst_len = to.metadata().map(|m| m.len()).unwrap_or(0);
+        if from.is_file() && to.is_file() && src_len > dst_len {
+            std::fs::remove_file(&to).map_err(|e| e.to_string())?;
+            std::fs::rename(&from, &to)
+                .map_err(|e| format!("replacing {}: {e}", to.display()))?;
+            tally.moved += 1;
+        } else if from.is_file() {
+            std::fs::remove_file(&from)
+                .map_err(|e| format!("removing duplicate {}: {e}", from.display()))?;
+            tally.deduped += 1;
+        } else {
+            log::warn!(
+                "Layout migration: {} and {} are different kinds of entry - left alone",
+                from.display(),
+                to.display()
+            );
+            tally.skipped += 1;
+        }
+    }
+    Ok(tally)
+}
+
+/// Delete a directory tree that contains only (empty) directories.
+fn remove_empty_tree(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_dir() {
+            remove_empty_tree(&p);
+        } else if is_os_metadata(&p) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
+}
+
+/// Files the OS drops into a folder on its own. They are not user data, and
+/// keeping them is not free: a merged folder that still holds a `.DS_Store` is
+/// not empty, so it survives, `stray_roots` finds it again and the migration
+/// prompt returns at every start with nothing left to move. Seen in testing
+/// with exactly two `.DS_Store` files against 48 GB moved.
+pub(crate) fn is_os_metadata(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    // `._x` is the AppleDouble sidecar a Mac writes on non-native filesystems.
+    matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini") || name.starts_with("._")
 }
 
 /// Look up a collection definition by ID.  Returns None for unknown IDs.
@@ -161,7 +579,7 @@ fn extract_all_bundled_configs(
         if !collections.contains(&col.id) {
             continue;
         }
-        extract_bundled_configs(col, metadata_dir, &data_path.join(col.inner_folder));
+        extract_bundled_configs(col, metadata_dir, &game_root(&data_path.to_string_lossy()));
     }
 }
 
@@ -351,10 +769,9 @@ fn seed_fastresume_bitvs(
             continue;
         }
 
-        // Overlay model: all collections share the same eXoDOS folder. Only
-        // seed if it looks empty - otherwise librqbit must verify what's
-        // actually on disk.
-        let torrent_root = data_path.join(col.inner_folder);
+        // One root for every collection. Only seed if it looks empty -
+        // otherwise librqbit must verify what's actually on disk.
+        let torrent_root = game_root(&data_path.to_string_lossy());
         if !torrent_root_looks_empty(&torrent_root) {
             log::info!(
                 "fastresume: skipping seed for {} - torrent_root {} non-empty, real validation needed",
@@ -392,6 +809,9 @@ pub async fn init_download_manager(
 
     let data_dir = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        // Every path below (and in launch/uninstall/scan) is derived from the
+        // root, so it has to be in the cache before anything asks.
+        load_root_folder(&conn);
         queries::get_config(&conn, "data_dir").map_err(|e| e.to_string())?
     };
 
@@ -514,6 +934,10 @@ pub async fn init_download_manager(
     if let Some((_, mgr)) = new_managers.iter().find(|(id, _)| id == "eXoDOS") {
         crate::commands::games::rearm_support_extraction(mgr).await;
     }
+    // Same for the Win9x support payload (OS parent VHDs + emulators).
+    if let Some((_, mgr)) = new_managers.iter().find(|(id, _)| id == "eXoWin9x") {
+        crate::commands::win9x::rearm_win9x_support(mgr).await;
+    }
 
     // Acquire write lock only for the insert - no blocking work inside.
     let count = new_managers.len();
@@ -579,11 +1003,17 @@ fn apply_transfer_preferences(session: &Arc<librqbit::Session>, db_state: &State
     crate::torrent::manager::apply_session_limits(session, seeding, up_kbps, down_kbps);
 }
 
-/// Drop session torrents whose persisted output folder is outside the current
-/// data dir (the user changed the data dir since they were added). Adopting
-/// them via hydrate_from_session would report progress against files librqbit
-/// writes to the OLD location - extraction probes the new one and loops on
-/// "100% but ZIP missing" forever.
+/// Drop session torrents whose persisted output folder is not the current game
+/// root. Adopting them via hydrate_from_session would report progress against
+/// files librqbit writes to the OLD location - extraction probes the new one
+/// and loops on "100% but ZIP missing" forever.
+///
+/// The test is EXACT, not "somewhere under the data dir": every torrent is
+/// added with `output_folder = game_root`, so any other value is stale by
+/// definition. The looser check let the pre-single-root layout survive - a
+/// torrent persisted with `<data>/eXoWin9x` sat inside the data dir, passed,
+/// and librqbit re-created its whole file tree there seconds after the layout
+/// migration had merged it away.
 async fn evict_mismatched_session_torrents(
     session: &Arc<librqbit::Session>,
     persistence_dir: &Path,
@@ -621,7 +1051,7 @@ async fn evict_mismatched_session_torrents(
             s
         }
     };
-    let data_norm = normalize(&data_path.to_string_lossy());
+    let root_norm = normalize(&game_root(&data_path.to_string_lossy()).to_string_lossy());
 
     for entry in torrents.values() {
         let (Some(hash), Some(folder)) = (
@@ -630,10 +1060,7 @@ async fn evict_mismatched_session_torrents(
         ) else {
             continue;
         };
-        let folder_norm = normalize(folder);
-        // Explicit path boundary: "/data/eXoDOS-old" must not pass a
-        // "/data/eXoDOS" prefix check.
-        if folder_norm == data_norm || folder_norm.starts_with(&format!("{}/", data_norm)) {
+        if normalize(folder) == root_norm {
             continue;
         }
         let stale_id = session.with_torrents(|iter| {
@@ -646,8 +1073,8 @@ async fn evict_mismatched_session_torrents(
         });
         if let Some(tid) = stale_id {
             log::warn!(
-                "Evicting session torrent {} - persisted output folder {} is outside data dir {}",
-                hash, folder, data_norm
+                "Evicting session torrent {} - persisted output folder {} is not the game root {}",
+                hash, folder, root_norm
             );
             if let Err(e) = session
                 .delete(librqbit::api::TorrentIdOrHash::Id(tid), false)
@@ -736,16 +1163,26 @@ pub async fn factory_reset(
         .map_err(|e| e.to_string())?;
     }
 
-    // Optionally delete the eXoDOS game folder + content packs + stale downloads.
-    // data_dir is the PARENT of the eXoDOS folder, so we delete <data_dir>/eXoDOS/,
-    // never data_dir itself (which could be the home directory).
+    // Optionally delete the game folder + content packs + stale downloads.
     if let Some(dir) = data_dir {
         if !dir.is_empty() {
             let base = std::path::Path::new(&dir);
-            let exodos_path = base.join("eXoDOS");
-            if exodos_path.exists() {
-                log::info!("Deleting game data folder: {}", exodos_path.display());
-                if let Err(e) = std::fs::remove_dir_all(&exodos_path) {
+            let root = game_root(&dir);
+            // Normally the root is a folder INSIDE the data dir, so it can go
+            // whole. On a legacy install the two are the same directory - the
+            // one the user picked - and removing it would take the folder
+            // itself with it. Delete the two trees eXo puts there instead.
+            let targets: Vec<PathBuf> = if root == base {
+                vec![base.join("eXo"), base.join("Content")]
+            } else {
+                vec![root]
+            };
+            for target in targets {
+                if !target.exists() {
+                    continue;
+                }
+                log::info!("Deleting game data: {}", target.display());
+                if let Err(e) = std::fs::remove_dir_all(&target) {
                     log::error!("Failed to delete game data folder: {}", e);
                     return Err(format!("Failed to delete game data: {}", e));
                 }
@@ -1298,10 +1735,7 @@ fn scan_game_metadata(
     //   2. Content metadata pack for this collection (ships manuals without download)
     //   3. eXoDOS metadata pack as LP fallback (LP packs share EN manuals)
     //   4. Lazy-extract from GameData ZIP (legacy path before metadata packs)
-    let inner_folder = collection_def(collection)
-        .map(|c| c.inner_folder)
-        .unwrap_or("eXoDOS");
-    let torrent_root = PathBuf::from(data_dir).join(inner_folder);
+    let torrent_root = game_root(data_dir);
     let (resolved_manual, manual_kind) = if let Some(mp) = manual_path {
         let normalized = mp.replace('\\', "/");
         let pack_base = PathBuf::from(data_dir).join("content").join("metadata");
@@ -1454,6 +1888,25 @@ pub async fn get_default_data_dir() -> Result<String, String> {
     Ok(home)
 }
 
+/// Whether a directory holds nothing Exodium would recognise as game data.
+///
+/// "Change game folder" POINTS Exodium at a folder, it does not move anything
+/// into one - so an empty target is the signature of the misunderstanding: the
+/// user meant to relocate their library and is about to end up with an empty
+/// view and their games still on the old disk. OS metadata does not count as
+/// content; a Finder visit is not an install.
+#[tauri::command]
+pub async fn data_dir_is_empty(path: String) -> Result<bool, String> {
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Ok(true);
+    }
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    Ok(!entries
+        .flatten()
+        .any(|entry| !is_os_metadata(&entry.path())))
+}
+
 /// All known eXo collections.
 /// Language packs are listed BEFORE eXoDOS so their games are matched to the
 /// correct torrent before eXoDOS can claim same-title translations.
@@ -1471,6 +1924,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: Some("!german"),
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     CollectionDef {
         id: "eXoDOS_PLP",
@@ -1483,6 +1937,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: Some("!polish"),
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     CollectionDef {
         id: "eXoDOS_SLP",
@@ -1495,6 +1950,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: Some("!spanish"),
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     CollectionDef {
         id: "eXoDOS",
@@ -1507,6 +1963,7 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!dos",
         lang_dir: None,
         platform: "MS-DOS",
+        year_subdirs: false,
     },
     // First collection with an inner_folder of its own: the eXoWin3x torrent
     // carries the internal name "eXoWin3x", so it cannot collide with the four
@@ -1522,6 +1979,24 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
         shortcode_segment: "!win3x",
         lang_dir: None,
         platform: "Windows 3x",
+        year_subdirs: false,
+    },
+    // eXoWin9x nests its games one level deeper than every other pack
+    // (`eXo/eXoWin9x/<year>/<Title (Year)>.zip`) and has no 8-char shortcodes:
+    // the title directory doubles as the shortcode. Games boot Windows 95/98
+    // inside DOSBox-X (or 86Box) from VHD images - Staging cannot run them.
+    CollectionDef {
+        id: "eXoWin9x",
+        display_name: "eXoWin9x",
+        metadata_file: "Win9x.xml.gz",
+        torrent_file: "eXoWin9x.torrent",
+        configs_zip: Some("Win9x_configs.zip"),
+        inner_folder: "eXoWin9x",
+        game_prefix: "eXo/eXoWin9x",
+        shortcode_segment: "!win9x",
+        lang_dir: None,
+        platform: "Windows 9x",
+        year_subdirs: true,
     },
 ];
 
@@ -1588,11 +2063,14 @@ pub async fn setup_start(
 ) -> Result<String, String> {
     use tauri::Manager;
 
-    // Save data_dir to config
+    // Save data_dir to config. A fresh install keeps the historical root
+    // name, so nothing existing has to move.
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         queries::set_config(&conn, "data_dir", &data_dir).map_err(|e| e.to_string())?;
+        queries::set_config(&conn, "root_folder", DEFAULT_ROOT_FOLDER).map_err(|e| e.to_string())?;
     }
+    set_root_folder(DEFAULT_ROOT_FOLDER);
 
     let torrent_path = bundled_torrent_path("eXoDOS.torrent")?;
     let data_path = PathBuf::from(&data_dir);
@@ -1663,6 +2141,7 @@ pub async fn get_setup_status(
             // Ready if data_dir is configured AND the game DB has content
             let (has_data_dir, count) = {
                 let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+                load_root_folder(&conn);
                 let dir = queries::get_config(&conn, "data_dir").map_err(|e| e.to_string())?;
                 let count = queries::count_games(&conn, "").map_err(|e| e.to_string())?;
                 (dir.is_some(), count)
@@ -1909,13 +2388,23 @@ pub async fn setup_from_local(
         .to_string_lossy()
         .to_string();
 
-    // Save data_dir and all collections to config
+    // The imported folder IS the root - whatever the user called it. eXo's
+    // setup does not dictate a name, and assuming "eXoDOS" made every path
+    // miss for anyone who had named it differently or merged their packs.
+    let root_folder = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| DEFAULT_ROOT_FOLDER.to_string());
+
+    // Save data_dir, the root folder and all collections to config
     {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         queries::set_config(&conn, "data_dir", &data_dir).map_err(|e| e.to_string())?;
+        queries::set_config(&conn, "root_folder", &root_folder).map_err(|e| e.to_string())?;
         let all_collections = COLLECTION_MAP.iter().map(|c| c.id).collect::<Vec<_>>().join(",");
         queries::set_config(&conn, "collections", &all_collections).map_err(|e| e.to_string())?;
     }
+    set_root_folder(&root_folder);
     crate::allow_asset_dir(&app, &PathBuf::from(&data_dir));
 
     // The bundled DB already has the full game catalog - no need to re-parse the
@@ -2224,19 +2713,32 @@ fn scan_installed_games_with_db(
     db: &std::sync::Mutex<rusqlite::Connection>,
     data_dir: &str,
 ) -> Result<usize, String> {
-    // The eXoDOS torrent always creates a folder called "eXoDOS" inside data_dir.
-    // Extracted game data lives at:
+    // Each collection's extracted game data lives under its own tree
+    // (<data_dir>/<inner_folder>/<game_prefix>):
     //   eXo/eXoDOS/<shortcode>/           - English (eXoDOS)
-    //   eXo/eXoDOS/!german/<shortcode>/   - German LP (GLP)
-    //   eXo/eXoDOS/!polish/<shortcode>/   - Polish LP (PLP)
-    //   eXo/eXoDOS/!spanish/<shortcode>/  - Spanish LP (SLP)
+    //   eXo/eXoDOS/!german/<shortcode>/   - German LP (GLP; !polish/!spanish alike)
+    //   eXo/eXoWin3x/<shortcode>/         - eXoWin3x
+    //   eXo/eXoWin9x/<year>/<title dir>/  - eXoWin9x (year_subdirs)
     //
-    // Note: eXo/eXoDOS/!dos/<shortcode>/ contains only config/script files and is
-    // ALWAYS present in any eXoDOS installation - it is NOT an indicator of game installation.
-    let game_base = PathBuf::from(data_dir)
-        .join("eXoDOS")
-        .join("eXo")
-        .join("eXoDOS");
+    // Note: the shortcode_segment dirs (eXo/eXoDOS/!dos/ etc.) contain only
+    // config/script files and are ALWAYS present - the '!' filter below keeps
+    // them from counting as installs.
+    let game_base = game_root(data_dir).join("eXo").join("eXoDOS");
+
+    // Refuse to scan a data dir that holds no collection tree at all. The
+    // scan starts by clearing every installed flag, so running it against a
+    // missing folder - an unmounted external drive, a path typo, a move that
+    // has not finished - would report the whole library as gone and invite a
+    // re-download of hundreds of gigabytes.
+    if !COLLECTION_MAP.iter().any(|c| {
+        game_root(data_dir)
+            .join(c.game_prefix)
+            .is_dir()
+    }) {
+        return Err(format!(
+            "No game folders found under {data_dir}. Check the data directory in Settings."
+        ));
+    }
 
     // Reset installed flags before the scan so that games whose extracted
     // directory was removed are correctly flipped back to "not installed".
@@ -2253,40 +2755,70 @@ fn scan_installed_games_with_db(
     let mut total = 0usize;
 
     for col in COLLECTION_MAP {
+        let col_base = game_root(data_dir).join(col.game_prefix);
+        let list_game_dirs = |dir: &PathBuf| -> Option<Vec<String>> {
+            match std::fs::read_dir(dir) {
+                Ok(entries) => Some(
+                    entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().is_dir())
+                        .filter_map(|e| e.file_name().into_string().ok())
+                        .filter(|name| !name.starts_with('!') && !name.starts_with('.'))
+                        .collect(),
+                ),
+                Err(e) => {
+                    log::warn!("scan_installed_games: cannot read {}: {}", dir.display(), e);
+                    None
+                }
+            }
+        };
         let shortcodes: Vec<String> = if let Some(lang_dir) = col.lang_dir {
-            // LP collection: extracted game data is at game_base/<lang_dir>/<shortcode>/
-            let seg_dir = game_base.join(lang_dir);
+            // LP collection: extracted game data is at <col_base>/<lang_dir>/<shortcode>/
+            let seg_dir = col_base.join(lang_dir);
             if !seg_dir.is_dir() {
                 continue;
             }
-            match std::fs::read_dir(&seg_dir) {
-                Ok(entries) => entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect(),
-                Err(e) => {
-                    log::warn!("scan_installed_games: cannot read {}: {}", seg_dir.display(), e);
-                    continue;
-                }
+            match list_game_dirs(&seg_dir) {
+                Some(dirs) => dirs,
+                None => continue,
             }
-        } else {
-            // Base EN collection: extracted game data is directly at game_base/<shortcode>/
-            // Filter out system/language dirs (starting with '!' or '.') which are always present.
-            if !game_base.is_dir() {
+        } else if col.year_subdirs {
+            // eXoWin9x layout: title dirs nested under 4-digit year dirs.
+            // The title dir IS the shortcode; `!save/` backups are filtered
+            // out by the '!' rule inside list_game_dirs.
+            if !col_base.is_dir() {
                 continue;
             }
-            match std::fs::read_dir(&game_base) {
+            let year_dirs: Vec<PathBuf> = match std::fs::read_dir(&col_base) {
                 Ok(entries) => entries
                     .filter_map(|e| e.ok())
                     .filter(|e| e.path().is_dir())
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .filter(|name| !name.starts_with('!') && !name.starts_with('.'))
+                    .filter(|e| {
+                        let n = e.file_name();
+                        let n = n.to_string_lossy();
+                        n.len() == 4 && n.bytes().all(|b| b.is_ascii_digit())
+                    })
+                    .map(|e| e.path())
                     .collect(),
                 Err(e) => {
-                    log::warn!("scan_installed_games: cannot read {}: {}", game_base.display(), e);
+                    log::warn!("scan_installed_games: cannot read {}: {}", col_base.display(), e);
                     continue;
                 }
+            };
+            year_dirs
+                .iter()
+                .filter_map(list_game_dirs)
+                .flatten()
+                .collect()
+        } else {
+            // Base EN collection: extracted game data is directly at <col_base>/<shortcode>/
+            // (the '!'/'.' filter drops the always-present config and lang dirs).
+            if !col_base.is_dir() {
+                continue;
+            }
+            match list_game_dirs(&col_base) {
+                Some(dirs) => dirs,
+                None => continue,
             }
         };
 
@@ -2335,9 +2867,14 @@ fn scan_installed_games_with_db(
             .map(|c| c.id.to_string())
             .collect();
         let lp_placeholders = lp_sources.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        // Candidates are every not-yet-matched non-LP game. Filtering on
+        // in_library too made the scan NON-IDEMPOTENT: the first run sets it,
+        // so the second run no longer considered those rows and reported a
+        // smaller number - and any game that exists only as a ZIP quietly lost
+        // its installed flag (observed: 112, then 67, then 63).
         let zip_query = format!(
             "SELECT id, title, application_path FROM games \
-             WHERE installed = 0 AND in_library = 0 \
+             WHERE installed = 0 \
              AND torrent_source NOT IN ({})",
             lp_placeholders
         );
@@ -2370,30 +2907,50 @@ fn scan_installed_games_with_db(
                 .collect()
         };
 
-        let zip_ids: Vec<i64> = match std::fs::read_dir(&game_base) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
-                        // Skip zero-byte stubs and tiny torrent placeholders (<1 KB)
-                        && e.metadata().map(|m| m.len() >= 1024).unwrap_or(false)
-                })
-                .filter_map(|e| {
-                    let stem = e.path().file_stem()?.to_string_lossy().into_owned();
-                    name_to_id.get(&stem).copied()
-                })
-                .collect(),
-            Err(e) => {
-                log::warn!(
-                    "scan_installed_games: cannot scan {} for ZIPs: {}",
-                    game_base.display(),
-                    e
-                );
-                vec![]
+        let collect_zip_ids = |dir: &PathBuf| -> Vec<i64> {
+            match std::fs::read_dir(dir) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+                            // Skip zero-byte stubs and tiny torrent placeholders (<1 KB)
+                            && e.metadata().map(|m| m.len() >= 1024).unwrap_or(false)
+                    })
+                    .filter_map(|e| {
+                        let stem = e.path().file_stem()?.to_string_lossy().into_owned();
+                        name_to_id.get(&stem).copied()
+                    })
+                    .collect(),
+                Err(e) => {
+                    log::warn!(
+                        "scan_installed_games: cannot scan {} for ZIPs: {}",
+                        dir.display(),
+                        e
+                    );
+                    vec![]
+                }
             }
         };
+        let mut zip_ids: Vec<i64> = collect_zip_ids(&game_base);
+        // year_subdirs collections keep their ZIPs under year folders
+        // (eXo/eXoWin9x/<year>/<Title (Year)>.zip) - scan those too.
+        for col in COLLECTION_MAP.iter().filter(|c| c.year_subdirs) {
+            let col_base = game_root(data_dir).join(col.game_prefix);
+            let Ok(entries) = std::fs::read_dir(&col_base) else { continue };
+            for year_dir in entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let n = n.to_string_lossy();
+                    n.len() == 4 && n.bytes().all(|b| b.is_ascii_digit())
+                })
+            {
+                zip_ids.extend(collect_zip_ids(&year_dir.path()));
+            }
+        }
 
         if !zip_ids.is_empty() {
             let placeholders = zip_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
@@ -2412,6 +2969,29 @@ fn scan_installed_games_with_db(
             );
             total += rows;
         }
+    }
+
+    // Library entries whose files are not here. Sticky in_library is right
+    // for a game you uninstalled, but after a folder move it also describes
+    // games whose data was left behind - and a screen of unexplained
+    // "Incomplete" badges reads as a bug in the app rather than a
+    // half-finished move.
+    let orphaned: i64 = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM games WHERE in_library = 1 AND installed = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    };
+    if orphaned > 0 {
+        log::info!(
+            "scan_installed_games: {} library entries have no files under {} - left behind \
+             by a move, or never finished downloading",
+            orphaned,
+            data_dir
+        );
     }
 
     Ok(total)
@@ -2664,6 +3244,157 @@ mod metadata_scan_tests {
         assert!(meta.images.is_empty());
         assert!(meta.thumbnails.is_empty());
         let _ = std::fs::remove_dir_all(&data);
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    /// A pre-single-root install keeps its games at the DATA DIR level, so the
+    /// root has to be the folder itself - not a new one nested inside it.
+    #[test]
+    fn legacy_data_dir_holding_the_games_becomes_the_root() {
+        let dir = std::env::temp_dir().join(format!("exodium_legacy_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let old_data = dir.join("eXoDOS");
+        std::fs::create_dir_all(old_data.join("eXo/eXoDOS")).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        queries::set_config(&conn, "data_dir", &old_data.to_string_lossy()).unwrap();
+
+        repair_legacy_root(&conn);
+
+        assert_eq!(
+            queries::get_config(&conn, "data_dir").unwrap().unwrap(),
+            old_data.to_string_lossy(),
+            "the data dir stays put - content packs and caches hang off it"
+        );
+        assert_eq!(
+            queries::get_config(&conn, "root_folder").unwrap().unwrap(),
+            ROOT_IS_DATA_DIR
+        );
+        set_root_folder(ROOT_IS_DATA_DIR);
+        assert_eq!(
+            game_root(&old_data.to_string_lossy()),
+            old_data,
+            "and the root resolves to the folder the games are already in"
+        );
+        set_root_folder(DEFAULT_ROOT_FOLDER);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh install's data dir has no `eXo/` of its own - leave it alone.
+    #[test]
+    fn a_fresh_data_dir_is_not_repaired() {
+        let dir = std::env::temp_dir().join(format!("exodium_fresh_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("eXoDOS/eXo")).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        queries::set_config(&conn, "data_dir", &dir.to_string_lossy()).unwrap();
+
+        repair_legacy_root(&conn);
+
+        assert_eq!(
+            queries::get_config(&conn, "data_dir").unwrap().unwrap(),
+            dir.to_string_lossy()
+        );
+        assert!(queries::get_config(&conn, "root_folder").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The merge has to END with the old folder gone, and it must resolve
+    /// duplicates in favour of the real data: the loser is a zero-byte
+    /// torrent placeholder or a half-finished download, never the archive.
+    #[test]
+    fn merging_keeps_the_larger_copy_and_clears_the_old_folder() {
+        let dir = std::env::temp_dir().join(format!("exodium_merge_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let old = dir.join("eXoWin9x/eXo/eXoWin9x/1995");
+        let new_root = dir.join("eXoDOS/eXo/eXoWin9x/1995");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new_root).unwrap();
+        std::fs::write(old.join("Moved.zip"), b"only in the old tree").unwrap();
+        // The old tree holds the real archive, the new one a placeholder.
+        std::fs::write(old.join("Real.zip"), b"the actual game archive").unwrap();
+        std::fs::write(new_root.join("Real.zip"), b"").unwrap();
+        // And the other way round.
+        std::fs::write(old.join("Placeholder.zip"), b"").unwrap();
+        std::fs::write(new_root.join("Placeholder.zip"), b"already downloaded").unwrap();
+
+        // Finder leaves one of these in every folder it has been shown.
+        std::fs::write(dir.join("eXoWin9x/.DS_Store"), b"finder junk").unwrap();
+
+        let stray = dir.join("eXoWin9x");
+        let tally = merge_tree(&stray, &dir.join("eXoDOS")).unwrap();
+        remove_empty_tree(&stray);
+
+        assert!(new_root.join("Moved.zip").is_file(), "new files move across");
+        assert_eq!(
+            std::fs::read_to_string(new_root.join("Real.zip")).unwrap(),
+            "the actual game archive",
+            "a placeholder must not win over real data"
+        );
+        assert_eq!(
+            std::fs::read_to_string(new_root.join("Placeholder.zip")).unwrap(),
+            "already downloaded",
+            "and the existing archive is kept when the old side is empty"
+        );
+        assert_eq!(tally.moved, 2, "Moved.zip and the larger Real.zip");
+        assert_eq!(tally.deduped, 1, "the zero-byte Placeholder.zip is dropped");
+        assert_eq!(tally.skipped, 0);
+        assert!(!stray.exists(), "the old folder must be gone, or we ask again forever");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rescanning must answer the same thing every time. It did not: the ZIP
+    /// pass skipped rows whose in_library flag the previous run had set, so
+    /// repeated scans reported ever fewer games (112, 67, 63) and ZIP-only
+    /// installs silently lost their installed flag.
+    #[test]
+    fn rescanning_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("exodium_scan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // One extracted game and one that only exists as a ZIP.
+        let base = dir.join("eXoDOS/eXo/eXoDOS");
+        std::fs::create_dir_all(base.join("SQ5")).unwrap();
+        std::fs::write(base.join("Capitalism (1995).zip"), vec![0u8; 2048]).unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        conn.execute_batch(
+            r"INSERT INTO games (title, platform, language, shortcode, torrent_source,
+                                 application_path, installed, in_library)
+              VALUES ('Space Quest V', 'MS-DOS', 'EN', 'SQ5', 'eXoDOS',
+                      'eXo\eXoDOS\!dos\SQ5\Space Quest V.bat', 0, 0),
+                     ('Capitalism', 'MS-DOS', 'EN', 'captlsm', 'eXoDOS',
+                      'eXo\eXoDOS\!dos\captlsm\Capitalism (1995).bat', 0, 0)",
+        )
+        .unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let data_dir = dir.to_string_lossy().to_string();
+
+        // A data dir without any collection tree must not clear the library.
+        assert!(scan_installed_games_with_db(&db, "/nonexistent/exodium").is_err());
+
+        let first = scan_installed_games_with_db(&db, &data_dir).unwrap();
+        let second = scan_installed_games_with_db(&db, &data_dir).unwrap();
+        assert_eq!(first, 2, "one extracted dir + one ZIP");
+        assert_eq!(second, first, "a second scan must not shrink");
+
+        // And the ZIP-only game keeps its flag rather than losing it.
+        let installed: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT installed FROM games WHERE shortcode = 'captlsm'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(installed, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -2931,5 +3662,46 @@ mod gallery_cache_tests {
 
         assert!(gallery_thumbnail(&src, &cache).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_with_only_os_metadata_counts_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".DS_Store"), b"x").unwrap();
+        std::fs::write(tmp.path().join("._something"), b"x").unwrap();
+        // A Finder visit is not an install - the warning has to fire here, or
+        // it never fires for the macOS users who most need it.
+        let empty = tauri::async_runtime::block_on(data_dir_is_empty(
+            tmp.path().to_string_lossy().to_string(),
+        ))
+        .unwrap();
+        assert!(empty);
+    }
+
+    #[test]
+    fn a_folder_holding_game_data_is_not_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("eXo/eXoDOS")).unwrap();
+        let empty = tauri::async_runtime::block_on(data_dir_is_empty(
+            tmp.path().to_string_lossy().to_string(),
+        ))
+        .unwrap();
+        assert!(!empty);
+    }
+
+    #[test]
+    fn a_folder_that_does_not_exist_yet_counts_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nope");
+        let empty = tauri::async_runtime::block_on(data_dir_is_empty(
+            missing.to_string_lossy().to_string(),
+        ))
+        .unwrap();
+        assert!(empty);
     }
 }

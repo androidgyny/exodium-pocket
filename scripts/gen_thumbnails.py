@@ -111,6 +111,10 @@ def normalize(text: str) -> str:
     """Expand German umlauts (ä→ae etc.), strip remaining accents, drop non-alnum."""
     for ch, rep in _UMLAUT.items():
         text = text.replace(ch, rep)
+    # Image filenames write '&' out as 'and' ("Wallace and Gromit Fun Pack"
+    # vs the catalogue's "Wallace & Gromit Fun Pack") - expand on both sides
+    # so the two spellings collapse to one key.
+    text = text.replace("&", " and ")
     text = unicodedata.normalize("NFD", text)
     text = "".join(c for c in text if unicodedata.category(c) != "Mn")
     return re.sub(r"[^a-z0-9]", "", text.lower())
@@ -137,6 +141,14 @@ def title_variants(title: str) -> list[str]:
     Article-swapped variants are handled separately by callers via article_swap().
     """
     variants: list[str] = [title]
+    # Full title minus a "(1996)" year suffix, BEFORE the subtitle strip:
+    # image names render a colon as " - " ("Qin - Tomb of the Middle Kingdom
+    # (1996)"), and the subtitle strip's first separator would reduce that
+    # whole thing to "Qin" - the year-stripped full form is the one that
+    # matches the catalogue's "Qin: Tomb of the Middle Kingdom".
+    no_year = _YEAR_SUFFIX.sub("", title).strip()
+    if no_year and no_year != title:
+        variants.append(no_year)
     m = _SUBTITLE_SEPS.search(title)
     if m and m.start() > 0:
         variants.append(title[: m.start()].strip())
@@ -179,18 +191,26 @@ def build_lookup_from_zip(zip_path: str) -> dict[str, str]:
     return mapping
 
 
-def build_lookup_from_db(db_path: str) -> dict[str, str]:
+def build_lookup_from_db(db_path: str, platform: str | None = None) -> dict[str, str]:
     """
     Build a normalized-title→raw-title map from the pre-built exodium.db.
     DB wins over zip/XML because generate_db.rs uses the canonical XML title
     imported at build time — the exact string we want to hash.
+
+    `platform` scopes the map to one collection family: the DB holds EVERY
+    collection, and collections share titles in variant spellings ("Caesar 2"
+    under DOS vs "Caesar II" under Win9x) — an unscoped map handed the Win9x
+    cover the DOS title's hash, filing it under a key no Win9x game reads.
     """
     mapping: dict[str, str] = {}
     conn = sqlite3.connect(db_path)
     try:
-        for (title,) in conn.execute(
-            "SELECT title FROM games WHERE title IS NOT NULL AND title != ''"
-        ):
+        query = "SELECT title FROM games WHERE title IS NOT NULL AND title != ''"
+        params: tuple = ()
+        if platform:
+            query += " AND platform = ?"
+            params = (platform,)
+        for (title,) in conn.execute(query, params):
             for variant in title_variants(title):
                 mapping.setdefault(normalize(prenormalize(variant)), title)
                 sw = article_swap(variant)
@@ -253,6 +273,13 @@ def image_stem_to_title(filename: str) -> str:
     stem = Path(filename).stem  # "Space Quest V- The Next Mutation-01"
     # Remove trailing -NN or _NN numeric suffix (1-2 digits)
     stem = re.sub(r"[-_]\d{1,2}$", "", stem)
+    # Remove a LaunchBox database-ID suffix ("Mastermind.c682f3a7-…-0065")
+    stem = re.sub(
+        r"\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "",
+        stem,
+        flags=re.IGNORECASE,
+    )
     return stem
 
 
@@ -316,8 +343,8 @@ def main() -> None:
     title_lookup: dict[str, str] = {}
 
     if db_path:
-        print(f"Loading titles from {db_path}...")
-        title_lookup = build_lookup_from_db(db_path)
+        print(f"Loading titles from {db_path} (platform {platform})...")
+        title_lookup = build_lookup_from_db(db_path, platform)
         print(f"  {len(title_lookup)} keys from DB (authoritative)")
 
     zip_map = build_lookup_from_zip(metadata_zip_path)

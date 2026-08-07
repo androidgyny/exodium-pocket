@@ -1,6 +1,6 @@
 {
   "name": "exodium",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Cross-platform eXoDOS game launcher",
   "type": "module",
   "scripts": {
@@ -10,8 +10,9 @@
     "serve": "vite preview",
     "tauri": "cross-env WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri",
     "get-dosbox": "bash scripts/get-dosbox.sh",
-    "init-dev": "bash scripts/get-dosbox.sh && bash scripts/init-dev.sh",
-    "gen-db": "cd src-tauri && cargo run --bin generate_db && cd .. && gzip -kf metadata/exodium.db",
+    "get-emulators": "bash scripts/get-emulators.sh",
+    "init-dev": "bash scripts/get-dosbox.sh && bash scripts/get-emulators.sh && bash scripts/init-dev.sh",
+    "gen-db": "cd src-tauri && cargo run --example generate_db && cd .. && gzip -kf metadata/exodium.db",
     "infohash": "sqlite3 \"${EXODIUM_DB:-$HOME/Library/Application Support/com.redfox.exodium/exodium.db}\" \"SELECT key, value FROM config WHERE key LIKE '%infohash%';\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

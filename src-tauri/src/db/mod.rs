@@ -25,8 +25,9 @@ pub type DbResult<T> = Result<T, DbError>;
 /// History: 1 = pre-versioning (0.6.x), 2 = path-anchored torrent indices,
 /// 3 = curated playlists shipped in the bundled DB, 4 = eXoWin3x,
 /// 5 = case-insensitive torrent matching (recovers games whose bat and zip
-/// disagree in case, e.g. "I Can be a Dinosaur Finder").
-pub const CATALOG_VERSION: i64 = 5;
+/// disagree in case, e.g. "I Can be a Dinosaur Finder"), 6 = eXoWin9x,
+/// 7 = rating_votes ("Top rated" orders by vote count inside a star bucket).
+pub const CATALOG_VERSION: i64 = 7;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
@@ -201,10 +202,23 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
             [],
         )?;
 
+        // Stamp the version OF THE BUNDLED DB, not the code constant: during
+        // development the code can be ahead of a not-yet-regenerated bundled
+        // catalog, and stamping the constant would mark that stale import as
+        // current forever (seen live: CATALOG_VERSION 6 shipped hours before
+        // the v6 exodium.db - installs that started in between imported zero
+        // eXoWin9x rows and never refreshed again).
+        let bundled_version: String = tx
+            .query_row(
+                "SELECT value FROM cat.config WHERE key = 'catalog_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| CATALOG_VERSION.to_string());
         tx.execute(
             "INSERT INTO config (key, value) VALUES ('catalog_version', ?1) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [CATALOG_VERSION.to_string()],
+            [bundled_version],
         )?;
         tx.commit()?;
         Ok((updated, inserted))
@@ -295,6 +309,13 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         > 0;
     if !has_last_played {
         conn.execute_batch("ALTER TABLE games ADD COLUMN last_played TEXT")?;
+    }
+
+    // Community vote count behind `rating` - "Top rated" sorts by it inside
+    // each star bucket so one-vote 5.0s stop outranking widely-rated games.
+    let game_cols = table_columns(conn, "games")?;
+    if !game_cols.iter().any(|c| c == "rating_votes") {
+        conn.execute_batch("ALTER TABLE games ADD COLUMN rating_votes INTEGER")?;
     }
 
     // Playlist support (curated eXo playlists + user playlists). The tables

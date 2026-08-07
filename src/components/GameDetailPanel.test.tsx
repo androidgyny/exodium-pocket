@@ -80,8 +80,9 @@ describe("GameDetailPanel", () => {
     vi.useRealTimers();
   });
 
-  // The panel asks for a video 400ms after settling on a game, then plays it
-  // in place of the cover. Reproduces "no video plays at all".
+  // The panel asks for a video 400ms after settling on a game and then lets
+  // the cover hold the hero for another two seconds before playing it.
+  // Reproduces "no video plays at all".
   it("shows the preview video once the backend reports it ready", async () => {
     vi.useFakeTimers();
     mockInvoke.mockImplementation(async (cmd: string) => {
@@ -93,13 +94,16 @@ describe("GameDetailPanel", () => {
     });
 
     const { host, dispose } = mount(makeGame({ id: 42, shortcode: "VID42" }));
-    await vi.advanceTimersByTimeAsync(1200);
+    await vi.advanceTimersByTimeAsync(3200);
 
     const video = host.ownerDocument.querySelector("video.game-detail-hero-video");
     expect(video, "the hero video element should be mounted").not.toBeNull();
     expect(video?.getAttribute("src") ?? "").toContain("videocache");
     // The cover crossfades out only once playback actually started.
     expect(video?.className).toContain("is-visible");
+    // Previews carry sound. Re-adding `muted` to buy back autoplay would take
+    // it away silently - the muted retry in the effect is the fallback path.
+    expect((video as HTMLVideoElement | null)?.muted).toBe(false);
     dispose(); host.remove();
   });
 
@@ -125,6 +129,77 @@ describe("GameDetailPanel", () => {
     await Promise.resolve();
     expect(document.body.textContent).toContain("Play");
     b.dispose(); b.host.remove();
+  });
+
+  /** The action bar carries only the primary action and the manual; the rest
+   *  moved behind the ⋯ control, so every menu item is reached through it. */
+  const openMore = async (host: HTMLElement) => {
+    const more = [...host.ownerDocument.querySelectorAll("button")]
+      .find((b) => b.className.includes("btn-more"));
+    expect(more, "the overflow control should be offered").toBeTruthy();
+    more!.click();
+    await Promise.resolve();
+  };
+
+  const menuItem = (host: HTMLElement, text: string) =>
+    [...host.ownerDocument.querySelectorAll("button.context-menu-item")]
+      .find((b) => (b.textContent ?? "").includes(text)) as HTMLButtonElement | undefined;
+
+  // Reset throws away savegames, so a single stray click must not do it.
+  it("only resets game data on the second click", async () => {
+    const { host, dispose } = mount(makeGame({ installed: true }));
+    await Promise.resolve();
+    await openMore(host);
+
+    const button = menuItem(host, "Reset game data");
+    expect(button, "installed games should offer Reset").toBeTruthy();
+
+    button!.click();
+    await Promise.resolve();
+    expect(mockInvoke).not.toHaveBeenCalledWith("reset_game_data", expect.anything());
+    expect(menuItem(host, "Discard all game data?")).toBeTruthy();
+
+    menuItem(host, "Discard all game data?")!.click();
+    await Promise.resolve();
+    expect(mockInvoke).toHaveBeenCalledWith("reset_game_data", { id: 1 });
+    dispose(); host.remove();
+  });
+
+  it("does not offer Reset for a game that is not installed", async () => {
+    const { host, dispose } = mount(makeGame({ installed: false }));
+    await Promise.resolve();
+    await openMore(host);
+    expect(menuItem(host, "Reset game data")).toBeUndefined();
+    dispose(); host.remove();
+  });
+
+  /// Favouriting is frequent and reversible, so it belongs in the bar - it
+  /// was reachable from the grid but nowhere in the panel.
+  it("offers a favourite toggle in the action bar", async () => {
+    const { host, dispose } = mount(makeGame({ installed: true }));
+    await Promise.resolve();
+    const star = [...host.ownerDocument.querySelectorAll("button")]
+      .find((b) => b.className.includes("btn-fav"));
+    expect(star, "the panel should offer a favourite toggle").toBeTruthy();
+
+    star!.click();
+    await Promise.resolve();
+    expect(mockInvoke).toHaveBeenCalledWith("toggle_favorite", { id: 1 });
+    dispose(); host.remove();
+  });
+
+  /// The bar is down to the primary action plus the manual. Reset and
+  /// Uninstall sitting next to Play is what made it a wall of five.
+  it("keeps destructive actions out of the action bar", async () => {
+    const { host, dispose } = mount(makeGame({ installed: true }));
+    await Promise.resolve();
+    const bar = host.ownerDocument.querySelector(".game-detail-actions");
+    const labels = [...(bar?.querySelectorAll("button") ?? [])]
+      .map((b) => b.textContent ?? "").join(" | ");
+    expect(labels).not.toContain("Uninstall");
+    expect(labels).not.toContain("Reset");
+    expect(labels).not.toContain("Playlist");
+    dispose(); host.remove();
   });
 
   // The header names the row every button acts on. PL/ES variants carry

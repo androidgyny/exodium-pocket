@@ -40,6 +40,8 @@ struct XmlGame {
     #[serde(default)]
     community_star_rating: Option<String>,
     #[serde(default)]
+    community_star_rating_total_votes: Option<String>,
+    #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
     source: Option<String>,
@@ -66,6 +68,10 @@ fn blank_to_none(s: Option<String>) -> Option<String> {
 /// eXoDOS:   "eXo\eXoDOS\!dos\captlsm\Capitalism (1995).bat"   → segment "!dos" → "captlsm"
 /// eXoDOS:   "eXo\eXoDOS\!dos\!german\SQ5\Space Quest V.bat"   → segment "!dos" → "SQ5"
 /// eXoWin3x: "eXo\eXoWin3X\!win3x\101Dalma\101 Dalmatians (1997).bat" → segment "!win3x" → "101Dalma"
+/// eXoWin9x: "eXo\eXoWin9x\!win9x\1995\Connect4 (1995)\Connect4 (1995).bat"
+///           → segment "!win9x" → "Connect4 (1995)" (the pack has no 8-char
+///           shortcodes; a 4-digit YEAR directory is skipped and the title
+///           directory doubles as the shortcode)
 fn extract_shortcode(app_path: &Option<String>, segment: &str) -> Option<String> {
     let path = app_path.as_ref()?;
     let normalized = path.replace('\\', "/");
@@ -80,7 +86,17 @@ fn extract_shortcode(app_path: &Option<String>, segment: &str) -> Option<String>
     };
     // Take the shortcode (next path segment)
     let end = after_lang.find('/')?;
-    Some(after_lang[..end].to_string())
+    let code = &after_lang[..end];
+    // A 4-digit segment FOLLOWED BY another directory is a year folder
+    // (eXoWin9x nests `!win9x/<year>/<Title (Year)>/<bat>`); a bare 4-digit
+    // shortcode like eXoDOS "1939" sits directly before the bat and stays.
+    let rest = &after_lang[end + 1..];
+    if code.len() == 4 && code.bytes().all(|b| b.is_ascii_digit()) {
+        if let Some(next_end) = rest.find('/') {
+            return Some(rest[..next_end].to_string());
+        }
+    }
+    Some(code.to_string())
 }
 
 fn extract_year(date_str: &Option<String>) -> Option<i32> {
@@ -128,6 +144,13 @@ fn xml_game_to_game(x: XmlGame, shortcode_segment: &str) -> Game {
             .as_deref()
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|&r| r > 0.0),
+        // Vote count separates a 5.0 from one voter from a 4.6 from fifty -
+        // "Top rated" orders by it inside each star bucket.
+        rating_votes: x
+            .community_star_rating_total_votes
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .filter(|&v| v > 0),
         description: blank_to_none(x.notes),
         notes: None,
         source: blank_to_none(x.source),
@@ -210,6 +233,25 @@ mod tests {
     fn extract_shortcode_windows_collection() {
         let path = Some(r"eXo\eXoWin3x\!windows\MYST\Myst.bat".to_string());
         assert_eq!(extract_shortcode(&path, "!windows"), Some("MYST".to_string()));
+    }
+
+    #[test]
+    fn extract_shortcode_win9x_year_dir_skipped() {
+        // eXoWin9x nests a 4-digit year dir; the title dir is the shortcode
+        let path =
+            Some(r"eXo\eXoWin9x\!win9x\1995\Connect4 (1995)\Connect4 (1995).bat".to_string());
+        assert_eq!(
+            extract_shortcode(&path, "!win9x"),
+            Some("Connect4 (1995)".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_shortcode_four_digit_code_without_subdir_is_kept() {
+        // A real 4-digit shortcode (eXoDOS "1939") sits directly before the
+        // bat and must not be mistaken for a year directory
+        let path = Some(r"eXo\eXoDOS\!dos\1939\1939.bat".to_string());
+        assert_eq!(extract_shortcode(&path, "!dos"), Some("1939".to_string()));
     }
 
     #[test]

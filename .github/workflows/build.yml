@@ -50,6 +50,13 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
+          # The gstreamer runtime packages feed bundleMediaFramework: linuxdeploy
+          # copies the runner's plugins into the AppImage next to the GStreamer
+          # core it already bundles as a WebKit dependency. Plugins only load
+          # into the core they were built against, so the ones from this runner
+          # are the ONLY ones that bundled core can ever use - a host's plugins
+          # (Arch: 1.28 vs the bundled 1.20) refuse both ways. deb/rpm instead
+          # declare distro packages as dependencies and bundle nothing.
           sudo apt-get install -y \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
@@ -57,7 +64,13 @@ jobs:
             librsvg2-dev \
             patchelf \
             libssl-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-libav \
+            gstreamer1.0-alsa \
+            gstreamer1.0-pulseaudio \
+            gstreamer1.0-gl
 
       - name: Download DOSBox Staging
         shell: bash
@@ -73,6 +86,11 @@ jobs:
             echo "::error::glshaders staging is missing or placeholder-only - a release from this state crashes DOSBox on fresh installs"
             exit 1
           fi
+
+      # The Win9x emulators (DOSBox-X, 86Box) are NOT bundled anymore: they
+      # ship as content packs (content-packs.yml builds them), saving 344 MB
+      # of macOS bundle / ~90 MB of Linux installer for binaries most users
+      # never ran. get-emulators.sh remains a dev-only helper.
 
       - name: Install frontend dependencies
         run: pnpm install
