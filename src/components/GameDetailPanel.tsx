@@ -33,6 +33,11 @@ interface Props {
 /** How long the cover keeps the hero to itself before the preview fades in. */
 const VIDEO_START_DELAY_MS = 2000;
 
+/** Fallback for the slide-in's `animationend` (main.css: 260ms). Only reached
+ *  when the event cannot arrive - prefers-reduced-motion, a hidden window -
+ *  so it may sit a little past the animation without costing anything. */
+const SETTLE_FALLBACK_MS = 350;
+
 /** A note, plus the two things the UI needs to decide about it: a stable key
  *  to remember a dismissal under, and whether it may be dismissed at all.
  *  `blocking` notes describe a launch that cannot work; hiding those would
@@ -462,6 +467,36 @@ export function GameDetailPanel(props: Props) {
   const currentStatus = () => status();
 
 
+  // ── Settle gate ──────────────────────────────────────────────────────────
+  // The panel slides in over 260ms, and opening it also kicks off the metadata
+  // scan (a strip of thumbnails to decode) plus the Win9x probes - all landing
+  // inside that window. Linux paints the animation on WebKit's fallback
+  // renderer (see App.tsx), where that burst is visible as a stutter, so the
+  // work that is neither cheap nor layout-defining waits for the slide-in to
+  // end. `animationend` on the panel is the signal; the timeout covers the
+  // cases where it never fires (reduced motion, a hidden window). Variants and
+  // the game's own fields stay immediate - they decide the panel's layout, and
+  // holding them back would only trade a stutter for a visible pop-in.
+  const [panelSettled, setPanelSettled] = createSignal(false);
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  // Guarded on open/closed rather than on props.game itself: the prop is
+  // replaced with a fresh object on every library refresh, and re-arming the
+  // fallback on those would push it out indefinitely during a download.
+  let panelOpen = false;
+  const markSettled = () => {
+    clearTimeout(settleTimer);
+    setPanelSettled(true);
+  };
+  createEffect(() => {
+    const open = props.game != null;
+    if (open === panelOpen) { return; }
+    panelOpen = open;
+    clearTimeout(settleTimer);
+    setPanelSettled(false);
+    if (open) { settleTimer = setTimeout(markSettled, SETTLE_FALLBACK_MS); }
+  });
+  onCleanup(() => clearTimeout(settleTimer));
+
   // Reset media state only when the DISPLAYED GAME changes - background
   // library refreshes (install/uninstall completing) replace the game object
   // with a fresh one for the same id, and resetting on those made the cover
@@ -527,6 +562,7 @@ export function GameDetailPanel(props: Props) {
   // closed and reopened.
   createEffect(() => {
     installedPacks();
+    if (!panelSettled()) { return; }
     const g = props.game;
     if (!isWin9x(g)) { return; }
     const id = g?.id;
@@ -548,6 +584,8 @@ export function GameDetailPanel(props: Props) {
   createEffect(() => {
     const g = props.game;
     if (!isWin9x(g) || isOffline()) { setSupportStatus(null); return; }
+    // Polling can wait for the slide-in - the note it feeds is secondary.
+    if (!panelSettled()) { return; }
     const variant = g?.dosbox_variant ?? null;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -591,6 +629,11 @@ export function GameDetailPanel(props: Props) {
     if (!v?.title || !v.torrent_source) { return; }
     const key = `${v.id}:${v.torrent_source}:${row?.manual_path ?? ""}`;
     if (key === lastMetaKey) { return; }
+    // Held until the slide-in ends: the scan returns a strip of thumbnails to
+    // decode, which is the heaviest thing an open kicks off. The loading flag
+    // is set anyway, so the Manual button looks exactly as it did before -
+    // busy from the first frame rather than briefly inert.
+    if (!panelSettled()) { setMetadataLoading(true); return; }
     lastMetaKey = key;
     setMetadata(null);
     setBrokenImages(new Set<number>());
@@ -978,7 +1021,12 @@ export function GameDetailPanel(props: Props) {
     <Show when={props.game}>
       <Portal>
         <div class="game-detail-backdrop" onClick={props.onClose} />
-        <div class="game-detail-panel">
+        {/* animationend bubbles, so only the panel's own slide-in counts -
+            a child's spinner or badge burst must not settle the panel early. */}
+        <div
+          class="game-detail-panel"
+          onAnimationEnd={(e) => { if (e.target === e.currentTarget) { markSettled(); } }}
+        >
           {/* Hero: thumbnail + title. The close button lives INSIDE it so the
               hover that reveals it survives the pointer reaching the button -
               as a sibling, moving onto it left the hero un-hovered and the
