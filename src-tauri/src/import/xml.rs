@@ -40,6 +40,8 @@ struct XmlGame {
     #[serde(default)]
     community_star_rating: Option<String>,
     #[serde(default)]
+    community_star_rating_total_votes: Option<String>,
+    #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
     source: Option<String>,
@@ -142,6 +144,13 @@ fn xml_game_to_game(x: XmlGame, shortcode_segment: &str) -> Game {
             .as_deref()
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|&r| r > 0.0),
+        // Vote count separates a 5.0 from one voter from a 4.6 from fifty -
+        // "Top rated" orders by it inside each star bucket.
+        rating_votes: x
+            .community_star_rating_total_votes
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .filter(|&v| v > 0),
         description: blank_to_none(x.notes),
         notes: None,
         source: blank_to_none(x.source),

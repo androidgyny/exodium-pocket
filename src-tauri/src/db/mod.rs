@@ -25,8 +25,9 @@ pub type DbResult<T> = Result<T, DbError>;
 /// History: 1 = pre-versioning (0.6.x), 2 = path-anchored torrent indices,
 /// 3 = curated playlists shipped in the bundled DB, 4 = eXoWin3x,
 /// 5 = case-insensitive torrent matching (recovers games whose bat and zip
-/// disagree in case, e.g. "I Can be a Dinosaur Finder"), 6 = eXoWin9x.
-pub const CATALOG_VERSION: i64 = 6;
+/// disagree in case, e.g. "I Can be a Dinosaur Finder"), 6 = eXoWin9x,
+/// 7 = rating_votes ("Top rated" orders by vote count inside a star bucket).
+pub const CATALOG_VERSION: i64 = 7;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
@@ -308,6 +309,13 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         > 0;
     if !has_last_played {
         conn.execute_batch("ALTER TABLE games ADD COLUMN last_played TEXT")?;
+    }
+
+    // Community vote count behind `rating` - "Top rated" sorts by it inside
+    // each star bucket so one-vote 5.0s stop outranking widely-rated games.
+    let game_cols = table_columns(conn, "games")?;
+    if !game_cols.iter().any(|c| c == "rating_votes") {
+        conn.execute_batch("ALTER TABLE games ADD COLUMN rating_votes INTEGER")?;
     }
 
     // Playlist support (curated eXo playlists + user playlists). The tables

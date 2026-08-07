@@ -9,7 +9,8 @@ const GAME_COLUMNS: &str =
      description, notes, source, application_path, dosbox_conf,
      status, region, max_players, language, shortcode, torrent_source,
      in_library, installed, game_torrent_index, gamedata_torrent_index, download_size,
-     has_thumbnail, dosbox_variant, favorited, thumbnail_key, manual_path, last_played";
+     has_thumbnail, dosbox_variant, favorited, thumbnail_key, manual_path, last_played,
+     rating_votes";
 
 fn row_to_game(row: &Row) -> rusqlite::Result<Game> {
     Ok(Game {
@@ -49,6 +50,7 @@ fn row_to_game(row: &Row) -> rusqlite::Result<Game> {
         thumbnail_key: row.get(31)?,
         manual_path: row.get(32)?,
         last_played: row.get(33)?,
+        rating_votes: row.get(34)?,
     })
 }
 
@@ -67,13 +69,13 @@ pub fn insert_games(conn: &Connection, games: &[Game]) -> DbResult<usize> {
             release_date, year, genre, series, play_mode,
             rating, description, notes, source, application_path,
             dosbox_conf, status, region, max_players, language, shortcode,
-            manual_path
+            manual_path, rating_votes
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21,
-            ?22
+            ?22, ?23
         )",
     )?;
 
@@ -102,6 +104,7 @@ pub fn insert_games(conn: &Connection, games: &[Game]) -> DbResult<usize> {
             game.language,
             game.shortcode,
             game.manual_path,
+            game.rating_votes,
         ])?;
         count += 1;
     }
@@ -284,14 +287,27 @@ fn build_where_clause(f: &GameFilter) -> (String, Vec<Box<dyn rusqlite::types::T
     (format!(" WHERE {}", conditions.join(" AND ")), params)
 }
 
-fn order_clause(sort_by: &str) -> &str {
+// Alphabetical order MUST use the same expression the section keys and the
+// frontend's groupKey() use (COALESCE(sort_title,title)): ordering by bare
+// title while sectioning by sort_title scattered "The X"/"X 2"-style games
+// into fake mid-alphabet sections, and the jump bar scrolled to those.
+const TITLE_ORDER: &str = "COALESCE(sort_title, title) COLLATE NOCASE";
+
+fn order_clause(sort_by: &str) -> String {
     match sort_by {
-        "year_asc" => "ORDER BY COALESCE(year, 9999) ASC, title ASC",
-        "year_desc" => "ORDER BY COALESCE(year, 0) DESC, title ASC",
-        "rating" => "ORDER BY COALESCE(rating, -1) DESC, title ASC",
-        "title_desc" => "ORDER BY title DESC",
-        "genre" => "ORDER BY COALESCE(genre, 'zzz') ASC, title ASC",
-        _ => "ORDER BY title ASC",
+        "year_asc" => format!("ORDER BY COALESCE(year, 9999) ASC, {TITLE_ORDER} ASC"),
+        "year_desc" => format!("ORDER BY COALESCE(year, 0) DESC, {TITLE_ORDER} ASC"),
+        // Star bucket first (keeps the section labels monotonic), then vote
+        // count: eXoDOS carries 185 games at a flat 5.0 from a single vote,
+        // and raw-rating order put that wall of one-vote entries above every
+        // widely-rated classic.
+        "rating" => format!(
+            "ORDER BY CAST(ROUND(COALESCE(rating, -1)) AS INTEGER) DESC, \
+             COALESCE(rating_votes, 0) DESC, COALESCE(rating, -1) DESC, {TITLE_ORDER} ASC"
+        ),
+        "title_desc" => format!("ORDER BY {TITLE_ORDER} DESC"),
+        "genre" => format!("ORDER BY COALESCE(genre, 'zzz') ASC, {TITLE_ORDER} ASC"),
+        _ => format!("ORDER BY {TITLE_ORDER} ASC"),
     }
 }
 
@@ -830,6 +846,7 @@ mod tests {
             series: None,
             play_mode: None,
             rating: None,
+            rating_votes: None,
             description: None,
             notes: None,
             source: None,
@@ -903,6 +920,49 @@ mod tests {
         // marker as much as a search aid.
         let solo = games.iter().find(|g| g.title == "Bloxit").unwrap();
         assert_eq!(solo.variant_titles, None);
+    }
+
+    /// The list order and the section keys must derive from the SAME
+    /// expression (COALESCE(sort_title, title)). Ordering by bare title while
+    /// sectioning by sort_title scattered "The X"-style games into fake
+    /// mid-alphabet sections and the jump bar scrolled to those.
+    #[test]
+    fn title_sort_follows_sort_title() {
+        let conn = open_test_db();
+        let mut the_aardvark = make_game("The Aardvark");
+        the_aardvark.sort_title = Some("Aardvark, The".to_string());
+        let beta = make_game("Beta");
+        insert_games(&conn, &[beta, the_aardvark]).unwrap();
+
+        let f = GameFilter { query: "", genre: "", sort_by: "title", collection: "", favorites_only: false, playlist_id: None };
+        let games = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+        let titles: Vec<&str> = games.iter().map(|g| g.title.as_str()).collect();
+        // sort_title "Aardvark, The" files it under A, before Beta - title
+        // order would put it under T, after.
+        assert_eq!(titles, vec!["The Aardvark", "Beta"]);
+    }
+
+    /// "Top rated" orders by vote count inside a star bucket: eXoDOS carries
+    /// 185 games at a flat 5.0 from a single vote, and raw-rating order put
+    /// that wall above every widely-rated classic.
+    #[test]
+    fn rating_sort_prefers_vote_count_inside_a_star_bucket() {
+        let conn = open_test_db();
+        let mut one_vote_five = make_game("Obscurity");
+        one_vote_five.rating = Some(5.0);
+        one_vote_five.rating_votes = Some(1);
+        let mut classic = make_game("DOOM");
+        classic.rating = Some(4.62); // rounds into the same 5-star bucket
+        classic.rating_votes = Some(147);
+        let mut lower_bucket = make_game("Solid");
+        lower_bucket.rating = Some(4.4); // 4-star bucket, must stay below both
+        lower_bucket.rating_votes = Some(500);
+        insert_games(&conn, &[one_vote_five, classic, lower_bucket]).unwrap();
+
+        let f = GameFilter { query: "", genre: "", sort_by: "rating", collection: "", favorites_only: false, playlist_id: None };
+        let games = fetch_games_filtered(&conn, 1, 50, &f).unwrap();
+        let titles: Vec<&str> = games.iter().map(|g| g.title.as_str()).collect();
+        assert_eq!(titles, vec!["DOOM", "Obscurity", "Solid"]);
     }
 
     /// eXoWin3x reuses ten eXoDOS shortcodes for entirely different games

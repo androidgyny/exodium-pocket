@@ -39,7 +39,8 @@ pub fn create_tables(conn: &Connection) -> DbResult<()> {
             dosbox_variant        TEXT,
             thumbnail_key         TEXT,
             manual_path           TEXT,
-            last_played           TEXT
+            last_played           TEXT,
+            rating_votes          INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS downloads (

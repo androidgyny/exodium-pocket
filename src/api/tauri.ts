@@ -13,6 +13,7 @@ export interface Game {
   series: string | null;
   play_mode: string | null;
   rating: number | null;
+  rating_votes: number | null;
   description: string | null;
   notes: string | null;
   source: string | null;
