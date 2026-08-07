@@ -132,7 +132,10 @@ jobs:
           V="${{ inputs.pack_version }}"
           check "dosbox-x-linux-x86_64-v$V.tar.gz" "dosbox-x/DOSBox-X.AppImage"
           check "86box-linux-x86_64-v$V.tar.gz"    "86box/86Box.AppImage"
-          check "dosbox-x-macos-arm64-v$V.tar.gz"  "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x" yes
+          # dosbox-x.app is fully static - the upstream release zip carries 0
+          # symlinks (verified against dosbox-x-macosx-arm64-20250201150724.zip),
+          # so only 86Box.app (Qt framework links) gets the symlink assertion.
+          check "dosbox-x-macos-arm64-v$V.tar.gz"  "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x"
           check "86box-macos-universal-v$V.tar.gz" "86box/86Box.app/Contents/MacOS/86Box" yes
       - name: Emit manifest snippet + checksums
         run: |
