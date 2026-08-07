@@ -87,34 +87,10 @@ jobs:
             exit 1
           fi
 
-      - name: Download Win9x emulators
-        # tauri.conf.json lists resources/dosbox-x and 86box unconditionally,
-        # so every platform needs both to exist - the script creates
-        # placeholders for the ones it does not fill.
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash scripts/get-emulators.sh
-
-      - name: Verify Win9x emulators are complete
-        # Same reasoning as the glshaders guard: a placeholder-only dir bundles
-        # fine and only fails at launch, where eXoWin9x games have no engine.
-        # Two deliberate gaps: DOSBox-X publishes no Linux binaries (PATH or
-        # Flatpak at runtime), and Windows bundles neither emulator because
-        # eXo's EXTWin9x.zip already carries both.
-        shell: bash
-        run: |
-          case "${{ matrix.platform }}" in
-            macos)   want=("src-tauri/resources/dosbox-x/dosbox-x.app" "src-tauri/resources/86box/86Box.app") ;;
-            linux)   want=("src-tauri/resources/86box/86Box.AppImage") ;;
-            windows) want=() ;;
-          esac
-          for p in ${want[@]+"${want[@]}"}; do
-            if [[ ! -e "$p" ]]; then
-              echo "::error::$p is missing - eXoWin9x games cannot launch from this build"
-              exit 1
-            fi
-          done
+      # The Win9x emulators (DOSBox-X, 86Box) are NOT bundled anymore: they
+      # ship as content packs (content-packs.yml builds them), saving 344 MB
+      # of macOS bundle / ~90 MB of Linux installer for binaries most users
+      # never ran. get-emulators.sh remains a dev-only helper.
 
       - name: Install frontend dependencies
         run: pnpm install

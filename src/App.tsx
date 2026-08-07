@@ -39,7 +39,7 @@ import { updateState, checkForAppUpdate, startUpdate, restartToUpdate } from "./
 import { fetchGames } from "./stores/games";
 import { applyNetworkMode, isOffline, loadNetworkMode } from "./stores/network";
 import { loadThumbnailDir } from "./stores/thumbnails";
-import { refreshInstalledPacks } from "./stores/contentPacks";
+import { refreshInstalledPacks, initContentPackEvents } from "./stores/contentPacks";
 import { showToast } from "./stores/toasts";
 import { startTransferPolling } from "./stores/transfer";
 import "./styles/main.css";
@@ -125,6 +125,9 @@ function App() {
   });
 
   onMount(async () => {
+    // Before anything else: the backend can start pack installs on its own
+    // (Win9x emulator auto-queue), and only this listener makes them visible.
+    initContentPackEvents().catch(() => {});
     try {
       const status = await getSetupStatus();
       if (status.ready) {

@@ -1,0 +1,166 @@
+# Builds the Win9x emulator content-pack tarballs (manual dispatch only).
+#
+# Produces workflow ARTIFACTS, never a release: publishing stays the manual
+# `gh release create content-vN ... --latest=false` flow (CLAUDE.md §10 - a
+# content release must never become "latest", and it must exist BEFORE the
+# app release whose manifest.json references it). Run this only when the
+# emulator pin changes; the pack tarballs must not be re-rolled afterwards
+# (tar mtimes change the hash the manifest pins).
+name: Emulator Content Packs
+
+on:
+  workflow_dispatch:
+    inputs:
+      dosbox_x_version:
+        description: "DOSBox-X tag to build (keep near eXo's x98 build)"
+        default: "2025.02.01"
+        required: true
+      e86box_version:
+        description: "86Box release to package"
+        default: "6.0"
+        required: true
+      pack_version:
+        description: "Pack version suffix (-vN in the tarball names)"
+        default: "1"
+        required: true
+
+jobs:
+  # DOSBox-X has no upstream Linux binaries: build the pinned tag from source
+  # and package it as an anylinux AppImage (sharun/uruntime).
+  dosbox-x-linux:
+    runs-on: ubuntu-latest
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare container (quick-sharun toolchain)
+        uses: pkgforge-dev/anylinux-setup-action@v2
+      - name: Build DOSBox-X AppImage from source
+        env:
+          DOSBOX_X_VERSION: ${{ inputs.dosbox_x_version }}
+        run: sh scripts/build-dosbox-x-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dosbox-x-appimage
+          path: |
+            dist/DOSBox-X.AppImage
+            dist/dosbox-x-*-source.tar.gz
+          if-no-files-found: error
+
+  linux-packs:
+    needs: dosbox-x-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dosbox-x-appimage
+          path: dist
+      - name: Assemble Linux pack tarballs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOSBOX_X_VERSION: ${{ inputs.dosbox_x_version }}
+          E86BOX_VERSION: ${{ inputs.e86box_version }}
+          PACK_VERSION: ${{ inputs.pack_version }}
+        run: bash scripts/build-emulator-packs.sh --platform linux --dosbox-x-appimage dist/DOSBox-X.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packs-linux
+          path: |
+            dist/packs/*.tar.gz
+            dist/dosbox-x-*-source.tar.gz
+          if-no-files-found: error
+
+  macos-packs:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble macOS pack tarballs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOSBOX_X_VERSION: ${{ inputs.dosbox_x_version }}
+          E86BOX_VERSION: ${{ inputs.e86box_version }}
+          PACK_VERSION: ${{ inputs.pack_version }}
+        run: bash scripts/build-emulator-packs.sh --platform macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packs-macos
+          path: dist/packs/*.tar.gz
+          if-no-files-found: error
+
+  # Extract every tarball and assert the properties whose absence has shipped
+  # as a bug before: the stable binary path (resolvers probe exact names),
+  # exec bits (tar preserves, the installer never chmods), zero AppleDouble
+  # sidecars (invisible to `tar tzf`, break .app signatures), and surviving
+  # .app symlinks (a materialized Frameworks symlink breaks the seal).
+  assemble:
+    needs: [linux-packs, macos-packs]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packs-*
+          merge-multiple: true
+          path: packs
+      - name: Verification gate
+        run: |
+          set -euo pipefail
+          cd packs
+          check() { # check <tarball> <binary-path> [expect-symlinks]
+            local tb="$1" bin="$2" want_links="${3:-no}"
+            local dir; dir="$(mktemp -d)"
+            tar xzf "$tb" -C "$dir"
+            if [ ! -f "$dir/$bin" ]; then
+              echo "::error::$tb: expected binary $bin missing"; exit 1
+            fi
+            if [ ! -x "$dir/$bin" ]; then
+              echo "::error::$tb: $bin is not executable"; exit 1
+            fi
+            if find "$dir" -name '._*' | grep -q .; then
+              echo "::error::$tb: AppleDouble ._* entries present"; exit 1
+            fi
+            if [ "$want_links" = "yes" ] && ! find "$dir" -type l | grep -q .; then
+              echo "::error::$tb: .app bundle lost its symlinks"; exit 1
+            fi
+            rm -rf "$dir"
+            echo "OK: $tb"
+          }
+          V="${{ inputs.pack_version }}"
+          check "dosbox-x-linux-x86_64-v$V.tar.gz" "dosbox-x/DOSBox-X.AppImage"
+          check "86box-linux-x86_64-v$V.tar.gz"    "86box/86Box.AppImage"
+          check "dosbox-x-macos-arm64-v$V.tar.gz"  "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x" yes
+          check "86box-macos-universal-v$V.tar.gz" "86box/86Box.app/Contents/MacOS/86Box" yes
+      - name: Emit manifest snippet + checksums
+        run: |
+          set -euo pipefail
+          cd packs
+          sha256sum *.tar.gz > SHA256SUMS
+          BASE="https://github.com/${{ github.repository }}/releases/download/content-vN"
+          V="${{ inputs.pack_version }}"
+          jq -n \
+            --arg base "$BASE" \
+            --arg dlx "dosbox-x-linux-x86_64-v$V.tar.gz" \
+            --arg dmx "dosbox-x-macos-arm64-v$V.tar.gz" \
+            --arg blx "86box-linux-x86_64-v$V.tar.gz" \
+            --arg bmx "86box-macos-universal-v$V.tar.gz" \
+            --arg h_dlx "$(sha256sum $(ls dosbox-x-linux-*) | cut -d' ' -f1)" \
+            --arg h_dmx "$(sha256sum $(ls dosbox-x-macos-*) | cut -d' ' -f1)" \
+            --arg h_blx "$(sha256sum $(ls 86box-linux-*) | cut -d' ' -f1)" \
+            --arg h_bmx "$(sha256sum $(ls 86box-macos-*) | cut -d' ' -f1)" \
+            --argjson s_dlx "$(wc -c < $(ls dosbox-x-linux-*) | tr -d ' ')" \
+            --argjson s_dmx "$(wc -c < $(ls dosbox-x-macos-*) | tr -d ' ')" \
+            --argjson s_blx "$(wc -c < $(ls 86box-linux-*) | tr -d ' ')" \
+            --argjson s_bmx "$(wc -c < $(ls 86box-macos-*) | tr -d ' ')" \
+            '{
+              "dosbox-x": { platforms: {
+                "darwin-aarch64": { url: ($base + "/" + $dmx), sha256: $h_dmx, size_bytes: $s_dmx },
+                "linux-x86_64":  { url: ($base + "/" + $dlx), sha256: $h_dlx, size_bytes: $s_dlx } } },
+              "86box": { platforms: {
+                "darwin-aarch64": { url: ($base + "/" + $bmx), sha256: $h_bmx, size_bytes: $s_bmx },
+                "linux-x86_64":  { url: ($base + "/" + $blx), sha256: $h_blx, size_bytes: $s_blx } } }
+            }' > manifest-snippet.json
+          cat manifest-snippet.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emulator-packs
+          path: packs/
+          if-no-files-found: error

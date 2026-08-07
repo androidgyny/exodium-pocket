@@ -21,6 +21,7 @@ import { loadVariants } from "../stores/variants";
 import { toggleFavorite, updateGameFavorited } from "../stores/games";
 import { videos, requestVideo, releaseVideo, setForegroundVideo, getVideoState, videoPlaybackUnsupported, PHASE_QUEUED, PHASE_PROBING } from "../stores/videos";
 import { ensureDismissedNotesLoaded, isNoteDismissed, dismissedNotesLoaded, dismissNote } from "../stores/notes";
+import { packsByCollection, activeJobs, installedPacks, startContentPackInstall } from "../stores/contentPacks";
 import { ensurePreviewMutedLoaded, previewMuted, setPreviewMuted } from "../stores/playback";
 
 interface Props {
@@ -40,6 +41,10 @@ interface PanelNote {
   key: string;
   text: string;
   blocking?: boolean;
+  /** Optional remedy rendered as a button in the note - a blocking note that
+   *  names a fix the app can perform (download the emulator pack) should
+   *  offer it right there instead of sending the user to Settings. */
+  action?: { label: string; onClick: () => void };
 }
 
 /** A credit line under the title: pictogram, then the value. The pictogram
@@ -158,6 +163,50 @@ export function GameDetailPanel(props: Props) {
       };
     }
     if (win9xEngineMissing()) {
+      // Same variant → pack mapping as the backend's emulator_pack_for_variant.
+      const packId = v?.startsWith("86box") ? "86box" : v === "pcbox" ? null : "dosbox-x";
+      const col = selected()?.torrent_source ?? props.game?.torrent_source ?? "eXoWin9x";
+      const pack = packId
+        ? (packsByCollection()[col] ?? []).find((p) => p.id === packId && p.available && !p.installed)
+        : undefined;
+      if (pack) {
+        const job = activeJobs()[`${col}:${pack.id}`];
+        if (job && !job.finished) {
+          const pct = job.total_bytes > 0
+            ? Math.round((job.downloaded_bytes / job.total_bytes) * 100)
+            : 0;
+          return {
+            key: "engine-missing",
+            blocking: true,
+            text: job.phase === "extracting"
+              ? `Installing ${pack.display_name}…`
+              : `Downloading ${pack.display_name}… ${pct}%`,
+          };
+        }
+        if (isOffline()) {
+          return {
+            key: "engine-missing",
+            blocking: true,
+            text: `This game needs ${emulatorName()}, which is not downloaded yet. `
+              + "Go online (Settings → Network) to download it.",
+          };
+        }
+        return {
+          key: "engine-missing",
+          blocking: true,
+          text: `This game needs ${emulatorName()}, which is not downloaded yet.`,
+          action: {
+            label: `Download emulator (${formatBytes(pack.size_bytes)})`,
+            onClick: () => {
+              startContentPackInstall(col, pack.id, pack.display_name).catch((e) => {
+                showToast(`Couldn't start the ${pack.display_name} download`, "error", {
+                  detail: String(e),
+                });
+              });
+            },
+          },
+        };
+      }
       return {
         key: "engine-missing",
         blocking: true,
@@ -405,6 +454,19 @@ export function GameDetailPanel(props: Props) {
         setSelectedId(defaultVariant(v)?.id ?? g.id ?? null);
       }).catch(() => {});
     }
+  });
+
+  // Re-probe the engine when a pack install lands (installedPacks changes):
+  // the "downloading emulator" note must clear itself without the panel being
+  // closed and reopened.
+  createEffect(() => {
+    installedPacks();
+    const g = props.game;
+    if (!isWin9x(g)) { return; }
+    const id = g?.id;
+    win9xEngineAvailable(g?.dosbox_variant ?? null)
+      .then((ok) => { if (props.game?.id === id) { setWin9xEngineMissing(!ok); } })
+      .catch(() => {});
   });
 
   // Metadata (screenshots + manual) belongs to the SELECTED variant, not to
@@ -936,6 +998,13 @@ export function GameDetailPanel(props: Props) {
                     {n().blocking ? "!" : "i"}
                   </span>
                   <p class="game-detail-note-text">{n().text}</p>
+                  <Show when={n().action}>
+                    {(a) => (
+                      <Button variant="action" class="game-detail-note-action" onClick={() => a().onClick()}>
+                        {a().label}
+                      </Button>
+                    )}
+                  </Show>
                   <Show when={!n().blocking}>
                     <button
                       class="game-detail-note-dismiss"

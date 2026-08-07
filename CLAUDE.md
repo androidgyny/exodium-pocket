@@ -367,13 +367,25 @@ part that has to exist first. See issue #18.
 - The uploaded file must be the exact one whose SHA-256 is in the manifest -
   re-running `tar` changes mtimes and therefore the hash, and the installer
   verifies it.
-- **`install_path` names the EXACT directory and must end in the collection**
-  (`content/posters/eXoWin9x`, `content/metadata/eXoWin9x`). The installer
-  `remove_dir_all`s that path before renaming staging onto it, so a path shared
-  between collections deletes its siblings' art on every install. All three
-  poster packs used to point at a bare `content/posters`, and installing the
-  Win9x pack duly wiped eXoDOS's 396 MB and eXoWin3x's 66 MB while the ledger
-  went on reporting them installed.
+- **`install_path` names the EXACT directory and must be UNIQUE per pack**
+  (`content/posters/eXoWin9x`, `content/metadata/eXoWin9x`,
+  `content/emulators/dosbox-x`). The installer `remove_dir_all`s that path
+  before renaming staging onto it, so a path shared between packs deletes its
+  siblings' content on every install. All three poster packs used to point at
+  a bare `content/posters`, and installing the Win9x pack duly wiped eXoDOS's
+  396 MB and eXoWin3x's 66 MB while the ledger went on reporting them
+  installed. The uniqueness is now a test
+  (`manifest_install_paths_are_unique`); the wrapper dir inside a tarball must
+  repeat the path's LAST segment (`dosbox-x/`, not the collection) for
+  `unwrapped_source`'s name check.
+- **Platform-specific packs** carry a `platforms` map
+  (`{"darwin-aarch64": {url, sha256, size_bytes}, "linux-x86_64": …}` - same
+  tokens as gen_latest_json.py) and placeholder top-level url/sha/size.
+  `ContentPackInfo::for_current_platform` substitutes the running platform's
+  source at the three boundaries (`list_content_packs`,
+  `install_content_pack`, `adopt_packs_on_disk`); a platform without an entry
+  never sees the pack, which is how Windows never sees the emulator packs. A
+  pack WITHOUT the map behaves exactly as before.
 - Archive shape is normalized, not enforced: `unwrapped_source` strips a lone
   top-level directory **iff it repeats the target's own name**, so
   `posters-eXoDOS-v5` (wraps everything in `eXoDOS/`) and
@@ -754,28 +766,55 @@ a fresh C: per boot is by design, not waste.
 - **pcbox games**: PCBox is a Windows-only 86Box fork we don't ship;
   launching errors with a clear message and the panel shows a note.
 
-**Engine resolution** (`resolve_dosbox_x` / `resolve_86box`): **Windows bundles
-neither emulator.** eXo's EXTWin9x.zip carries Windows builds of both next to
-the parent VHDs, and `win9x_support_ready` refuses to launch without those
-VHDs - so a bundled Windows build could never be the reason a launch succeeds,
-and cost 68 MB of installer to never run (measured: setup.exe 55 -> 123 MB).
-Both resolvers therefore take the extracted tree first on Windows, then PATH.
-macOS is bundled-then-PATH; Linux gets a bundled 86Box AppImage, and DOSBox-X
-from PATH-then-Flatpak (`com.dosbox_x.DOSBox-X`) because it publishes no Linux
-binaries. `scripts/get-emulators.sh` fetches the two platform builds that are
-still bundled (pinned versions, resources `dosbox-x`/`86box` with
-`.placeholder` gitkeep, downloading nothing at all on Windows); **CI must run
-it** - the resource entries are gitignored, so a fresh checkout without that
-step fails the bundler with "resource path doesn't exist". The panel's
-"emulator missing" note asks the backend (`win9x_engine_available`), which
-answers with the launcher's own resolver.
+**Engine resolution** (`resolve_dosbox_x` / `resolve_86box`): **the installer
+bundles NEITHER emulator on ANY platform.** On Windows eXo's EXTWin9x.zip
+carries builds of both next to the parent VHDs, and `win9x_support_ready`
+refuses to launch without those VHDs - a bundled Windows build could never be
+the reason a launch succeeds, and cost 68 MB of installer to never run
+(measured: setup.exe 55 -> 123 MB). On macOS/Linux the emulators are CONTENT
+PACKS under eXoWin9x (`dosbox-x`, `86box` - the bundled copies were 344 MB of
+the macOS .app, 292 MB of that 86Box serving 29 of 662 games), installed to
+`content/emulators/<pack>/` and probed by `pack_candidate` as a filesystem
+check, never the ledger (factory-reset-keep-data wipes the ledger but keeps
+`content/`; launching must survive until adoption re-records it). Resolution
+order: Windows extracted-tree → PATH; macOS pack → old bundled resource
+(transition) → PATH; Linux dosbox-x PATH-with-CAP_NET_RAW → pack → PATH →
+Flatpak (`com.dosbox_x.DOSBox-X`), 86box pack → PATH. The panel's "emulator
+missing" note asks the backend (`win9x_engine_available`), which answers with
+the launcher's own resolver, and doubles as a "Download emulator" button; the
+pack also auto-queues with the first Win9x game download (`download_game` →
+`start_pack_install`, resolver-gated so a system install never pays it, and
+announced to the frontend via the `content-pack-install-started` event -
+frontend polling only watches jobs it knows about).
+
+**Linux DOSBox-X is OUR OWN AppImage** - upstream publishes no Linux binaries
+at all. `content-packs.yml` (manual dispatch, run only on pin bumps) compiles
+the pinned tag from source in pkgforge's Arch container and packages it with
+quick-sharun/uruntime (recipe adapted from pkgforge-dev/DOSBox-X-AppImage,
+self-updater deliberately stripped - an emulator updating itself under the
+pinned confs defeats the pin). The workflow hard-fails if libslirp/libpcap
+are missing from the AppDir (67 network-parent games boot through slirp) and
+gates every tarball on: stable binary path present + executable, zero
+AppleDouble `._*` entries, `.app` symlinks intact. Both emulators are GPLv2 -
+the source tarballs and the recipe go onto the same content release.
+
+**The pcap/multiplayer capability stays on a SYSTEM dosbox-x, never the
+pack.** A file capability puts the loader into secure-execution mode, which
+ignores the `LD_LIBRARY_PATH` a sharun bundle needs - setcap on the pack's
+AppImage bricks it, and a pack update would drop the grant anyway. Hence the
+Linux resolver's PATH-with-cap preference (the granted binary is the one that
+launches), `resolved_dosbox_x_path` is PATH-only with an explicit refusal
+message, and `win9x_network_status` on Linux asks `getcap` about that binary
+instead of probing AF_PACKET from Exodium's own process - the process probe
+answered false even after a successful setcap, because the capability sits on
+the emulator's file, not on us.
 
 Do not re-add the Windows builds "for users without support files": that state
 cannot launch a Win9x game for want of a parent VHD, so the bundle only ever
-adds download size. The same argument does NOT extend to macOS/Linux - the
-pack ships `.exe` only, so those two genuinely need their own builds. Making
-them lazy is a separate, open question (a content pack per §10; note 86Box's
-macOS `.app` is 292 MB, 209 MB of it Qt, serving 29 of 662 games).
+adds download size. `scripts/get-emulators.sh` is now DEV-ONLY: it fills
+`src-tauri/resources/`, which release builds no longer bundle and only the
+debug-build probe in `resource_candidate` (CARGO_MANIFEST_DIR fallback) still
+reads.
 
 **Support files**: parent OS VHDs + both emulators sit in the torrent's
 `eXo/util/utilWin9x.zip` (2.5 GB, inner `EXTWin9x.zip` - same matryoshka as
@@ -919,13 +958,19 @@ user hits the same failure on every click. The DOS path had this from the
 start; `win9x.rs` did not until 2026-08-06.
 
 **Still open**: Nothing on Linux or
-Windows has been run at all (DOSBox-X via PATH/Flatpak, the 86Box AppImage,
-`pkexec setcap`, the parent-VHD case aliases, npcap, the PowerShell Wi-Fi
-probe). Remote multiplayer is unverified end to end - it needs a wired
-connection nobody had. The catalogue upgrade for an existing 0.11 install
-(CATALOG_VERSION 6 + `enable_new_collections`) has only been exercised by
-resetting the stamp by hand. NetHost/NetJoin multiplayer menus stay out of
-scope (solo play.cfg only).
+Windows has been run at all (the self-built DOSBox-X AppImage on a real
+distro, the 86Box AppImage, the PATH-with-cap preference, `pkexec setcap`,
+the parent-VHD case aliases, npcap, the PowerShell Wi-Fi probe). The
+emulator-pack pipeline has not produced artifacts yet: `content-packs.yml`
+needs its first dispatch (budget one iteration - the 2025.02.01 tag on Arch's
+current GCC may want a flag), then `content-v6` published `--latest=false`
+BEFORE the app release, then manifest.json's TODO URLs/hashes filled from its
+`manifest-snippet.json`; until then the packs read "coming soon" and the
+resolvers behave as before. Remote multiplayer is unverified end to end - it
+needs a wired connection nobody had. The catalogue upgrade for an existing
+0.11 install (CATALOG_VERSION 6 + `enable_new_collections`) has only been
+exercised by resetting the stamp by hand. NetHost/NetJoin multiplayer menus
+stay out of scope (solo play.cfg only).
 
 ## Conventions
 

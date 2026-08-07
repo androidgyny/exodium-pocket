@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
 import {
   listContentPacks,
   installContentPack,
@@ -148,6 +149,39 @@ function clearJob(key: string) {
 }
 
 // ── Public actions ───────────────────────────────────────────────────────────
+
+/** Pick up pack jobs the backend starts on its own (the Win9x emulator
+ *  auto-queue): the poll loop only watches jobs it knows about, so without
+ *  this a backend-initiated download runs invisibly until the next full
+ *  refresh. Registered once at app mount. */
+export async function initContentPackEvents() {
+  await listen<{ collection: string; pack_id: string; display_name: string }>(
+    "content-pack-install-started",
+    (event) => {
+      const { collection, pack_id, display_name } = event.payload;
+      const key = `${collection}:${pack_id}`;
+      jobLabels[key] = display_name;
+      setActiveJobs((prev) =>
+        prev[key]
+          ? prev
+          : {
+              ...prev,
+              [key]: {
+                phase: "starting",
+                progress: 0,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                finished: false,
+                installed: false,
+                error: null,
+                label: display_name,
+              },
+            },
+      );
+      startPolling(collection, pack_id);
+    },
+  );
+}
 
 export async function startContentPackInstall(collection: string, packId: string, displayName?: string) {
   const key = `${collection}:${packId}`;

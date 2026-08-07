@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# get-emulators.sh — Download the Win9x emulators (DOSBox-X, 86Box) for the
-# current platform into src-tauri/resources/.
+# get-emulators.sh — DEV-ONLY: download the Win9x emulators (DOSBox-X, 86Box)
+# for the current platform into src-tauri/resources/.
+#
+# Release builds do NOT bundle these anymore - users get them as content
+# packs (see content-packs.yml / build-emulator-packs.sh). This script keeps
+# a dev machine launching Win9x games without installing the packs: the
+# resolvers probe src-tauri/resources/ in debug builds (resource_candidate's
+# CARGO_MANIFEST_DIR fallback).
 #
 # eXoWin9x games boot Windows 95/98: DOSBox-X runs the x98-variant games
 # (Staging cannot boot Win9x guests), 86Box runs the 86box-variant handful.
 # WINDOWS DOWNLOADS NOTHING: eXo's EXTWin9x.zip carries Windows builds of both
 # emulators next to the parent VHDs, and no game launches without those VHDs,
 # so a bundled Windows build could never run. DOSBox-X publishes NO Linux
-# binaries (Flatpak/distro only), so Linux resolves it from PATH/Flatpak at
-# runtime and only gets 86Box here.
+# binaries (Flatpak/distro only), so Linux resolves it from the pack, PATH or
+# Flatpak at runtime and only gets 86Box here.
 #
 # Usage:
 #   pnpm run get-emulators                 # download for current platform
@@ -33,15 +39,7 @@ E86BOX_VERSION="${E86BOX_VERSION:-6.0}"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-# Both resource dirs must exist with at least a placeholder on every platform
-# - tauri.conf.json lists them in bundle.resources and the build script
-# hard-errors on a missing path.
-for d in dosbox-x 86box; do
-  if [[ ! -d "$RES_DIR/$d" ]]; then
-    mkdir -p "$RES_DIR/$d"
-    touch "$RES_DIR/$d/.placeholder"
-  fi
-done
+mkdir -p "$RES_DIR/dosbox-x" "$RES_DIR/86box"
 
 STAMP="$RES_DIR/.win9x-emulators-version"
 WANT_STAMP="dosbox-x=$DOSBOX_X_VERSION 86box=$E86BOX_VERSION os=$OS"
@@ -84,9 +82,9 @@ dbx_url() { # dbx_url <grep-pattern>
 
 case "$OS" in
   Darwin)
-    if [[ -d "$RES_DIR/dosbox-x/dosbox-x.app" && "$FORCE" -eq 0 ]]; then
-      echo "dosbox-x.app already present, skipping DOSBox-X download."
-    else
+    # No presence short-circuit here: the stamp check above already handles
+    # "same versions, skip" - a directory check on top of it kept a STALE
+    # dosbox-x.app in place after a DOSBOX_X_VERSION bump.
     case "$ARCH" in
       arm64)  DBX_URL="$(dbx_url 'macosx-arm64-[^"]*\.zip')" ;;
       x86_64) DBX_URL="$(dbx_url 'macosx-x86_64-[^"]*\.zip')" ;;
@@ -97,7 +95,7 @@ case "$OS" in
     unzip -q "$TMP_DIR/dosbox-x-mac.zip" -d "$TMP_DIR/dbx"
     APP_SRC="$(find "$TMP_DIR/dbx" -type d -name "dosbox-x.app" | head -1)"
     if [[ -z "$APP_SRC" ]]; then
-      echo "ERROR: dosbox-x.app not found in $DBX_ARCHIVE"; exit 1
+      echo "ERROR: dosbox-x.app not found in $DBX_URL"; exit 1
     fi
     rm -rf "$RES_DIR/dosbox-x/dosbox-x.app"
     mkdir -p "$RES_DIR/dosbox-x"
@@ -106,7 +104,6 @@ case "$OS" in
     xattr -cr "$RES_DIR/dosbox-x/dosbox-x.app" 2>/dev/null || true
     codesign --force --deep --sign - "$RES_DIR/dosbox-x/dosbox-x.app"
     echo "Installed: $RES_DIR/dosbox-x/dosbox-x.app"
-    fi
     ;;
   Linux)
     echo "DOSBox-X: no official Linux binaries - resolved from PATH/Flatpak at runtime."

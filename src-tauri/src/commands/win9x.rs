@@ -304,19 +304,105 @@ fn resource_candidate(app: &AppHandle, sub: &str) -> Option<PathBuf> {
     if let Some(res) = crate::commands::setup::RESOURCE_DIR.get() {
         candidates.push(res.join(sub));
     }
+    // Dev builds: the emulators are no longer in bundle.resources, so tauri
+    // does not stage them into target/debug - probe the dev tree directly
+    // (get-emulators.sh fills src-tauri/resources/).
+    if cfg!(debug_assertions) {
+        candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(sub));
+    }
     candidates.into_iter().find(|p| p.exists())
+}
+
+/// Downloaded emulator pack probe: <data_dir>/content/emulators/<sub>.
+///
+/// Deliberately a filesystem check, not a ledger lookup: factory_reset with
+/// kept game data wipes the config table (and with it the content_packs
+/// ledger) while `content/` survives - launching must keep working before
+/// the next `list_content_packs` re-adopts the pack.
+fn pack_candidate(data_dir: &str, sub: &str) -> Option<PathBuf> {
+    if data_dir.is_empty() {
+        return None;
+    }
+    let p = Path::new(data_dir).join("content/emulators").join(sub);
+    p.exists().then_some(p)
+}
+
+/// Resolve a possibly bare command name to its absolute PATH location.
+#[cfg(target_os = "linux")]
+fn absolutize_on_path(bin: &Path) -> Option<PathBuf> {
+    if bin.is_absolute() {
+        return Some(bin.to_path_buf());
+    }
+    let out = Command::new("which").arg(bin).output().ok()?;
+    let resolved = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!resolved.is_empty()).then(|| PathBuf::from(resolved))
+}
+
+/// Does this binary carry CAP_NET_RAW? Asked of the file, not our process:
+/// the capability sits on the emulator, and Exodium itself never has it.
+#[cfg(target_os = "linux")]
+fn has_cap_net_raw(bin: &Path) -> bool {
+    let Some(abs) = absolutize_on_path(bin) else { return false };
+    // getcap lives in /usr/sbin on Debian-family systems, which is not on a
+    // desktop user's PATH. Missing everywhere = treat as "no capability".
+    ["getcap", "/usr/sbin/getcap", "/sbin/getcap"].iter().any(|g| {
+        Command::new(g)
+            .arg(&abs)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("cap_net_raw"))
+            .unwrap_or(false)
+    })
+}
+
+/// A system-installed DOSBox-X that already holds CAP_NET_RAW - the one
+/// binary pcap multiplayer can run through. The pack's AppImage can never be
+/// that binary: a file capability puts the loader into secure-execution mode,
+/// which ignores the LD_LIBRARY_PATH its bundled libraries need, and the
+/// capability would be lost on every pack update anyway.
+#[cfg(target_os = "linux")]
+fn path_dosbox_x_with_cap() -> Option<PathBuf> {
+    let abs = absolutize_on_path(Path::new("dosbox-x"))?;
+    has_cap_net_raw(&abs).then_some(abs)
+}
+
+/// Is the DOSBox-X Flatpak installed? (Linux fallback of last resort.)
+fn flatpak_dosbox_x_available() -> bool {
+    Command::new("flatpak")
+        .args(["info", "com.dosbox_x.DOSBox-X"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// DOSBox-X for x98 games. On Windows eXo's own "x98" build (extracted from
 /// EXTWin9x.zip) is the intended emulator, exactly like the ECE precedent, and
-/// nothing is bundled for it - see `resolve_86box` for why. macOS gets the
-/// bundled build; Linux falls back to a system DOSBox-X or its Flatpak.
-fn resolve_dosbox_x(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
+/// nothing is bundled for it - see `resolve_86box` for why. macOS and Linux
+/// use the downloaded emulator pack (pinned 2025.02.01, near eXo's own x98
+/// build), falling back to the pre-pack bundled copy, then PATH, then the
+/// Flatpak on Linux.
+fn resolve_dosbox_x(app: &AppHandle, torrent_root: &Path, data_dir: &str) -> Option<EngineCmd> {
     if cfg!(windows) {
         let exo_build = torrent_root.join("eXo/emulators/dosbox/x98/dosbox-x.exe");
         if exo_build.exists() {
             return Some(EngineCmd::Direct(exo_build));
         }
+    }
+    // A system copy already holding CAP_NET_RAW outranks the pack: the user
+    // set it up for pcap multiplayer, and the pack's AppImage cannot carry
+    // the capability (see path_dosbox_x_with_cap).
+    #[cfg(target_os = "linux")]
+    if let Some(bin) = path_dosbox_x_with_cap() {
+        return Some(EngineCmd::Direct(bin));
+    }
+    let packed = if cfg!(target_os = "macos") {
+        pack_candidate(data_dir, "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x")
+    } else if cfg!(target_os = "linux") {
+        pack_candidate(data_dir, "dosbox-x/DOSBox-X.AppImage")
+    } else {
+        None
+    };
+    if let Some(bin) = packed {
+        return Some(EngineCmd::Direct(bin));
     }
     let bundled = if cfg!(target_os = "macos") {
         resource_candidate(app, "dosbox-x/dosbox-x.app/Contents/MacOS/dosbox-x")
@@ -329,13 +415,7 @@ fn resolve_dosbox_x(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
     if binary_exists_on_path("dosbox-x") {
         return Some(EngineCmd::Direct(PathBuf::from("dosbox-x")));
     }
-    if cfg!(target_os = "linux")
-        && Command::new("flatpak")
-            .args(["info", "com.dosbox_x.DOSBox-X"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    {
+    if cfg!(target_os = "linux") && flatpak_dosbox_x_available() {
         return Some(EngineCmd::Flatpak("com.dosbox_x.DOSBox-X"));
     }
     None
@@ -347,27 +427,60 @@ fn resolve_dosbox_x(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
 /// so a bundled Windows build can never be the reason a launch succeeds, and
 /// cost 68 MB of installer to never run. macOS/Linux need their own builds
 /// (the pack ships .exe only). PATH fallback on every platform.
-fn resolve_86box(app: &AppHandle, torrent_root: &Path) -> Option<EngineCmd> {
+fn resolve_86box(app: &AppHandle, torrent_root: &Path, data_dir: &str) -> Option<EngineCmd> {
     if cfg!(windows) {
         let exo_build = torrent_root.join("eXo/emulators/86Box98/86Box.exe");
         if exo_build.exists() {
             return Some(EngineCmd::Direct(exo_build));
         }
     }
-    let bundled = if cfg!(target_os = "macos") {
-        resource_candidate(app, "86box/86Box.app/Contents/MacOS/86Box")
+    let sub = if cfg!(target_os = "macos") {
+        Some("86box/86Box.app/Contents/MacOS/86Box")
     } else if cfg!(target_os = "linux") {
-        resource_candidate(app, "86box/86Box.AppImage")
+        Some("86box/86Box.AppImage")
     } else {
         None
     };
-    if let Some(bin) = bundled {
-        return Some(EngineCmd::Direct(bin));
+    if let Some(sub) = sub {
+        if let Some(bin) = pack_candidate(data_dir, sub) {
+            return Some(EngineCmd::Direct(bin));
+        }
+        if let Some(bin) = resource_candidate(app, sub) {
+            return Some(EngineCmd::Direct(bin));
+        }
     }
     if binary_exists_on_path("86Box") {
         return Some(EngineCmd::Direct(PathBuf::from("86Box")));
     }
     None
+}
+
+/// Which emulator pack a Win9x variant needs: the auto-queue and the panel
+/// button both key off this. pcbox has no pack (Windows-only emulator we do
+/// not ship); Windows needs no pack at all (eXo's EXTWin9x.zip carries both
+/// builds next to the parent VHDs).
+pub(crate) fn emulator_pack_for_variant(variant: Option<&str>) -> Option<&'static str> {
+    match variant {
+        Some("pcbox") => None,
+        Some(v) if v.starts_with("86box") => Some("86box"),
+        _ => Some("dosbox-x"),
+    }
+}
+
+/// Would launching this variant find its emulator right now? Wraps the same
+/// resolvers `launch_win9x_game` uses, so the auto-queue and the panel note
+/// can never disagree with what launch would actually do.
+pub(crate) fn win9x_engine_resolvable(
+    app: &AppHandle,
+    torrent_root: &Path,
+    data_dir: &str,
+    variant: Option<&str>,
+) -> bool {
+    match variant {
+        Some("pcbox") => false,
+        Some(v) if v.starts_with("86box") => resolve_86box(app, torrent_root, data_dir).is_some(),
+        _ => resolve_dosbox_x(app, torrent_root, data_dir).is_some(),
+    }
 }
 
 /// Per-variant 86Box wiring, from eXo's 9xlaunch86Box*.bat files: which
@@ -496,30 +609,36 @@ fn extract_zip_mounts(conf: &str, exo_dir: &Path) -> String {
 /// `/dev/bpf*` nodes are root-only unless Wireshark's ChmodBPF helper is
 /// installed; on Linux it takes CAP_NET_RAW. Both are one-time, user-side
 /// decisions we must not make for them - so we detect and adapt instead.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn can_capture_packets() -> bool {
-    #[cfg(target_os = "macos")]
+    (0..4).any(|i| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("/dev/bpf{i}"))
+            .is_ok()
+    })
+}
+
+/// Can the emulator we would launch open a capture handle?
+///
+/// macOS: the /dev/bpf* nodes are user-visible state, and a child process
+/// inherits our access - probing from Exodium's own process answers for the
+/// emulator too. Linux is different: CAP_NET_RAW is a FILE capability on the
+/// emulator binary, not on us, so an AF_PACKET probe from this process says
+/// nothing about DOSBox-X (it answered false even after a successful setcap).
+/// Ask the binary instead - and because `resolve_dosbox_x` prefers a
+/// capability-holding system copy, "some dosbox-x on PATH has the cap" is
+/// exactly "the binary we will launch has the cap".
+#[cfg(unix)]
+fn host_can_bridge() -> bool {
+    #[cfg(target_os = "linux")]
     {
-        (0..4).any(|i| {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(format!("/dev/bpf{i}"))
-                .is_ok()
-        })
+        path_dosbox_x_with_cap().is_some()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_os = "linux"))]
     {
-        // AF_PACKET/SOCK_RAW is exactly the privilege libpcap needs.
-        // SAFETY: plain syscall; the fd is closed immediately.
-        unsafe {
-            let fd = libc::socket(libc::AF_PACKET, libc::SOCK_RAW, 0);
-            if fd < 0 {
-                return false;
-            }
-            libc::close(fd);
-            true
-        }
+        can_capture_packets()
     }
 }
 
@@ -609,23 +728,37 @@ pub struct Win9xNetworkStatus {
 pub async fn win9x_network_status() -> Result<Win9xNetworkStatus, String> {
     #[cfg(unix)]
     {
-        let captures = can_capture_packets();
+        let captures = host_can_bridge();
         let wired = default_interface().is_some_and(|n| is_wired_interface(&n));
+        // Linux grants the capability to a system-installed dosbox-x; the
+        // downloaded pack's AppImage cannot hold it (secure-exec would break
+        // its bundled libraries), so without a PATH copy there is nothing to
+        // enable and the row has to say why.
+        #[cfg(target_os = "linux")]
+        let system_bin = binary_exists_on_path("dosbox-x");
+        #[cfg(not(target_os = "linux"))]
+        let system_bin = true;
         #[cfg(target_os = "linux")]
         let tool = binary_exists_on_path("pkexec");
         #[cfg(not(target_os = "linux"))]
         let tool = true;
         Ok(Win9xNetworkStatus {
             enabled: captures && wired,
-            can_enable: !captures && wired && tool,
+            can_enable: !captures && wired && tool && system_bin,
             detail: match (captures, wired) {
                 (true, true) => "Enabled.".into(),
                 (_, false) => "Online play needs a wired connection - Wi-Fi cannot bridge \
                                the emulated network card."
                     .into(),
+                (false, true) if !system_bin => {
+                    "Multiplayer needs a system-installed DOSBox-X - the downloaded \
+                     emulator pack cannot hold packet-capture permission. Install \
+                     DOSBox-X from your distribution's packages."
+                        .into()
+                }
                 (false, true) => "Needs packet access, like Wireshark.".into(),
             },
-            manual_hint: (!captures && wired && !tool)
+            manual_hint: (!captures && wired && system_bin && !tool)
                 .then(|| "sudo setcap cap_net_raw+ep $(which dosbox-x)".to_string()),
         })
     }
@@ -783,7 +916,8 @@ pub async fn enable_win9x_network(app: AppHandle) -> Result<Win9xNetworkStatus, 
     }
     #[cfg(target_os = "linux")]
     {
-        grant_cap_net_raw_linux(&app).await?;
+        let _ = &app;
+        grant_cap_net_raw_linux().await?;
     }
     #[cfg(windows)]
     {
@@ -811,7 +945,8 @@ pub async fn disable_win9x_network(app: AppHandle) -> Result<Win9xNetworkStatus,
     }
     #[cfg(target_os = "linux")]
     {
-        let bin = resolved_dosbox_x_path(&app)?;
+        let _ = &app;
+        let bin = resolved_dosbox_x_path()?;
         let status = Command::new("pkexec")
             .arg("setcap")
             .arg("-r")
@@ -950,36 +1085,37 @@ async fn run_privileged_macos(body: &str) -> Result<(), String> {
     run_privileged_macos_script(&script).await
 }
 
-/// Absolute path of the DOSBox-X the launcher would use - the binary a
-/// capability has to sit on. Flatpak cannot carry one at all.
+/// Absolute path of the DOSBox-X a capability can sit on: a system install
+/// from PATH, nothing else. The downloaded pack's AppImage is deliberately
+/// not an option - a file capability puts the loader into secure-execution
+/// mode, which ignores the LD_LIBRARY_PATH its bundled libraries need, and a
+/// pack update would silently drop the grant. Flatpak cannot carry one at
+/// all. (`resolve_dosbox_x` prefers a capability-holding PATH copy, so the
+/// grant lands on the binary that then actually launches.)
 #[cfg(target_os = "linux")]
-fn resolved_dosbox_x_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let bin = match resolve_dosbox_x(app, &PathBuf::new()) {
-        Some(EngineCmd::Direct(path)) => path,
-        Some(EngineCmd::Flatpak(_)) => {
-            return Err(
-                "The Flatpak build of DOSBox-X cannot be granted packet access. Install \
-                 DOSBox-X from your distribution's packages to use multiplayer."
-                    .into(),
-            )
-        }
-        None => return Err("DOSBox-X was not found on this system.".into()),
-    };
-    if bin.is_absolute() {
+fn resolved_dosbox_x_path() -> Result<PathBuf, String> {
+    if let Some(bin) = absolutize_on_path(Path::new("dosbox-x")) {
         return Ok(bin);
     }
-    let out = Command::new("which").arg(&bin).output().map_err(|e| e.to_string())?;
-    let resolved = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if resolved.is_empty() {
-        return Err("DOSBox-X was not found on this system.".into());
+    if flatpak_dosbox_x_available() {
+        return Err(
+            "The Flatpak build of DOSBox-X cannot be granted packet access. Install \
+             DOSBox-X from your distribution's packages to use multiplayer."
+                .into(),
+        );
     }
-    Ok(PathBuf::from(resolved))
+    Err(
+        "Multiplayer needs a system-installed DOSBox-X - the emulator pack Exodium \
+         downloads cannot hold packet-capture permission. Install DOSBox-X from your \
+         distribution's packages."
+            .into(),
+    )
 }
 
 /// Put CAP_NET_RAW on the DOSBox-X binary the launcher actually resolves.
 #[cfg(target_os = "linux")]
-async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
-    let bin = resolved_dosbox_x_path(app)?;
+async fn grant_cap_net_raw_linux() -> Result<(), String> {
+    let bin = resolved_dosbox_x_path()?;
     // Null stdio for the same reason as the macOS path: a GUI process must
     // not hand parent descriptors to a privileged child.
     let status = Command::new("pkexec")
@@ -1029,7 +1165,7 @@ async fn grant_cap_net_raw_linux(app: &AppHandle) -> Result<(), String> {
 /// gives the guest working TCP/UDP.
 #[cfg(unix)]
 fn bridgeable_interface() -> Option<String> {
-    if !can_capture_packets() {
+    if !host_can_bridge() {
         return None;
     }
     default_interface().filter(|nic| is_wired_interface(nic))
@@ -1174,6 +1310,7 @@ pub(crate) async fn launch_win9x_game(
             app,
             game,
             id,
+            data_dir,
             &torrent_root,
             &exo_dir,
             &conf_dir,
@@ -1185,6 +1322,7 @@ pub(crate) async fn launch_win9x_game(
             app,
             game,
             id,
+            data_dir,
             &torrent_root,
             &exo_dir,
             &conf_dir,
@@ -1199,21 +1337,23 @@ fn launch_dosbox_x(
     app: &AppHandle,
     game: Game,
     id: i64,
+    data_dir: &str,
     torrent_root: &Path,
     exo_dir: &Path,
     conf_dir: &Path,
     fullscreen: bool,
     per_game_config: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
-    let Some(engine) = resolve_dosbox_x(app, torrent_root) else {
+    let Some(engine) = resolve_dosbox_x(app, torrent_root, data_dir) else {
         return Err(if cfg!(target_os = "linux") {
-            "DOSBox-X is required for Windows 9x games but was not found. \
-             Install it via your package manager or Flatpak \
-             (com.dosbox_x.DOSBox-X) and try again."
+            "DOSBox-X is required for Windows 9x games but is not installed. \
+             Download it from this game's page or Settings → Content Packs, \
+             or install it via your package manager / Flatpak \
+             (com.dosbox_x.DOSBox-X)."
                 .to_string()
         } else {
-            "DOSBox-X is required for Windows 9x games but was not found. \
-             Re-run the app installer or place dosbox-x on your PATH."
+            "DOSBox-X is required for Windows 9x games but is not installed. \
+             Download it from this game's page or Settings → Content Packs."
                 .to_string()
         });
     };
@@ -1306,6 +1446,12 @@ fn launch_dosbox_x(
     if cfg!(windows) {
         cmd.arg("-noconsole");
     }
+    // Same belt-and-braces as launch_86box: the pack's own AppImage uses
+    // uruntime (no FUSE needed, var ignored), but a user-supplied AppImage on
+    // PATH may not.
+    if cfg!(target_os = "linux") {
+        cmd.env("APPIMAGE_EXTRACT_AND_RUN", "1");
+    }
 
     log::info!(
         "Launching Win9x game {} via DOSBox-X ({})",
@@ -1320,13 +1466,14 @@ fn launch_86box(
     app: &AppHandle,
     game: Game,
     id: i64,
+    data_dir: &str,
     torrent_root: &Path,
     exo_dir: &Path,
     conf_dir: &Path,
     variant: &str,
     fullscreen: bool,
 ) -> Result<String, String> {
-    let Some(engine) = resolve_86box(app, torrent_root) else {
+    let Some(engine) = resolve_86box(app, torrent_root, data_dir) else {
         return Err(if cfg!(windows) {
             // Nothing is bundled here, so the extracted support tree is the
             // only source - and it passed the readiness gate, meaning the
@@ -1336,8 +1483,9 @@ fn launch_86box(
              86Box on your PATH, or re-download the support files."
                 .to_string()
         } else {
-            "86Box is required for this game but was not found. Re-run the app \
-             installer or place 86Box on your PATH."
+            "86Box is required for this game but is not installed. Download it \
+             from this game's page or Settings → Content Packs, or place 86Box \
+             on your PATH."
                 .to_string()
         });
     };
@@ -1468,10 +1616,7 @@ pub async fn win9x_engine_available(
             .unwrap_or_default()
     };
     let torrent_root = crate::commands::setup::game_root(&data_dir);
-    if variant.starts_with("86box") {
-        return Ok(resolve_86box(&app, &torrent_root).is_some());
-    }
-    Ok(resolve_dosbox_x(&app, &torrent_root).is_some())
+    Ok(win9x_engine_resolvable(&app, &torrent_root, &data_dir, Some(variant.as_str())))
 }
 
 /// Support-file state for the detail panel: lets it show "Windows 9x support

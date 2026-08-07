@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 
 // ── Manifest schema (v2) ─────────────────────────────────────────────────────
 
+/// One platform's download source for a pack whose payload differs per OS
+/// (the emulator packs: a macOS .app is useless on Linux and vice versa).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PlatformSource {
+    pub url: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
 /// A downloadable content pack. Two source kinds:
 ///   - HTTP tar.gz (url + sha256): externally hosted release asset
 ///   - Torrent-sourced ZIP (torrent_file_path): a file inside the collection's
@@ -17,7 +26,10 @@ pub struct ContentPackInfo {
     pub sha256: String,
     pub size_bytes: u64,
     pub version: u32,
-    /// Relative path under data_dir where the pack extracts to.
+    /// Relative path under data_dir where the pack extracts to. Must name a
+    /// directory owned by this pack ALONE - the installer remove_dir_all's it
+    /// before renaming staging onto it (a path shared between packs deletes
+    /// its siblings' content on every install).
     pub install_path: String,
     /// Pack IDs this pack replaces (e.g. media supersedes posters).
     #[serde(default)]
@@ -34,6 +46,55 @@ pub struct ContentPackInfo {
     /// (e.g. "Content/XODOSMetadata.zip"). The extractor expects a .zip.
     #[serde(default)]
     pub torrent_file_path: Option<String>,
+    /// When set, the pack exists only on the listed platforms: the entry for
+    /// the current platform supplies url/sha256/size_bytes (the top-level
+    /// triple is a placeholder by convention), and a platform without an
+    /// entry does not see the pack at all. Keys are release-target tokens
+    /// ("darwin-aarch64", "linux-x86_64", ...), same vocabulary as
+    /// gen_latest_json.py, so adding an architecture later is additive.
+    #[serde(default)]
+    pub platforms: Option<HashMap<String, PlatformSource>>,
+}
+
+/// The release-target token for the running build, matching the platforms-map
+/// keys in manifest.json.
+pub(crate) fn current_platform() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "darwin-aarch64"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "darwin-x86_64"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux-x86_64"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "linux-aarch64"
+    } else if cfg!(target_os = "windows") {
+        "windows-x86_64"
+    } else {
+        "unknown"
+    }
+}
+
+impl ContentPackInfo {
+    /// The pack as this platform sees it: packs without a platforms map pass
+    /// through unchanged, platform-mapped packs get their source triple
+    /// substituted, and None means "not for this platform" - callers drop the
+    /// pack entirely, which is how Windows never sees the emulator packs.
+    pub fn for_current_platform(&self) -> Option<ContentPackInfo> {
+        self.for_platform(current_platform())
+    }
+
+    fn for_platform(&self, platform: &str) -> Option<ContentPackInfo> {
+        match &self.platforms {
+            None => Some(self.clone()),
+            Some(map) => map.get(platform).map(|src| {
+                let mut out = self.clone();
+                out.url = src.url.clone();
+                out.sha256 = src.sha256.clone();
+                out.size_bytes = src.size_bytes;
+                out
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,5 +159,70 @@ mod manifest_load_tests {
         let ex = m.collections.get("eXoDOS").expect("no eXoDOS collection");
         assert!(!ex.content_packs.is_empty(), "eXoDOS has no content packs");
         println!("packs: {:?}", ex.content_packs.keys().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn platform_map_substitutes_source_triple() {
+        let pack: super::ContentPackInfo = serde_json::from_str(
+            r#"{
+                "display_name": "DOSBox-X Emulator", "description": "",
+                "url": "", "sha256": "", "size_bytes": 0, "version": 1,
+                "install_path": "content/emulators/dosbox-x",
+                "platforms": {
+                    "linux-x86_64": { "url": "https://x/l.tar.gz", "sha256": "aa", "size_bytes": 55 },
+                    "darwin-aarch64": { "url": "https://x/m.tar.gz", "sha256": "bb", "size_bytes": 52 }
+                }
+            }"#,
+        )
+        .expect("pack with platforms map fails to parse");
+
+        let linux = pack.for_platform("linux-x86_64").expect("linux entry missing");
+        assert_eq!(linux.url, "https://x/l.tar.gz");
+        assert_eq!(linux.sha256, "aa");
+        assert_eq!(linux.size_bytes, 55);
+        // Non-source fields carry over untouched.
+        assert_eq!(linux.install_path, "content/emulators/dosbox-x");
+        assert_eq!(linux.version, 1);
+
+        // No entry for the platform = the pack does not exist there.
+        assert!(pack.for_platform("windows-x86_64").is_none());
+    }
+
+    #[test]
+    fn packs_without_platform_map_pass_through() {
+        let pack: super::ContentPackInfo = serde_json::from_str(
+            r#"{
+                "display_name": "Box Art", "description": "",
+                "url": "https://x/p.tar.gz", "sha256": "cc", "size_bytes": 9,
+                "version": 5, "install_path": "content/posters/eXoDOS"
+            }"#,
+        )
+        .expect("plain pack fails to parse");
+        let resolved = pack.for_platform("windows-x86_64").expect("plain pack filtered out");
+        assert_eq!(resolved.url, "https://x/p.tar.gz");
+        assert_eq!(resolved.size_bytes, 9);
+    }
+
+    /// Every install_path in the shipped manifest must be unique: the
+    /// installer remove_dir_all's the target before renaming staging onto it,
+    /// so a shared path means installing one pack deletes another's content
+    /// (all three poster packs once shared "content/posters" and installing
+    /// the Win9x pack wiped eXoDOS's 396 MB).
+    #[test]
+    fn manifest_install_paths_are_unique() {
+        let m = super::load_manifest().expect("load_manifest failed");
+        let mut seen = std::collections::HashMap::new();
+        for (col, cm) in &m.collections {
+            for (id, pack) in &cm.content_packs {
+                let key = pack.install_path.trim_matches('/').to_string();
+                assert!(
+                    !key.is_empty(),
+                    "{col}:{id} has an empty install_path"
+                );
+                if let Some(prev) = seen.insert(key.clone(), format!("{col}:{id}")) {
+                    panic!("install_path {key:?} is shared by {prev} and {col}:{id}");
+                }
+            }
+        }
     }
 }

@@ -2905,6 +2905,14 @@ body {
   margin: 0;
 }
 
+/* A note's remedy button (e.g. "Download emulator") goes on its own row,
+   aligned with the text column, not squeezed into the dismiss slot. */
+.game-detail-note-action {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 2px;
+}
+
 /* Visible at rest, because a note the user cannot see how to silence is just
    a note. Quiet enough not to compete with the action bar underneath. */
 .game-detail-note-dismiss {

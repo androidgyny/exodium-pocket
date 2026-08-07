@@ -370,6 +370,7 @@ pub async fn get_transfer_stats(torrent_state: State<'_, TorrentState>) -> Resul
 /// Queue a game for download via torrent.
 #[tauri::command]
 pub async fn download_game(
+    app: AppHandle,
     db_state: State<'_, DbState>,
     torrent_state: State<'_, TorrentState>,
     id: i64,
@@ -414,16 +415,47 @@ pub async fn download_game(
         (manager, main_mgr)
     };
 
+    let is_win9x_collection = crate::commands::setup::collection_def(source)
+        .is_some_and(|c| c.year_subdirs);
+
     // Win9x games need the shared support payload (parent OS VHDs +
     // emulators) from utilWin9x.zip before they can launch; queued further
     // down with the first Win9x game download, but the disk preflight has to
     // budget it here (2.5 GB zip + 2.5 GB inner temp + ~2.5 GB extracted).
-    let win9x_support_missing = crate::commands::setup::collection_def(source)
-        .is_some_and(|c| c.year_subdirs)
+    let win9x_support_missing = is_win9x_collection
         && !crate::commands::win9x::win9x_support_ready(
             &manager.torrent_root(),
             game.dosbox_variant.as_deref(),
         );
+
+    let data_dir = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        queries::get_config(&conn, "data_dir").ok().flatten()
+    };
+
+    // On macOS/Linux the emulator itself is a content pack; queue it with
+    // the download the same way the support files are. Resolver-gated, so a
+    // PATH/Flatpak/system install (or an already-installed pack) never pays
+    // for it - and Windows never needs it (eXo's EXTWin9x.zip carries both
+    // builds). None also when the manifest has no installable source yet.
+    let win9x_emulator_pack = if is_win9x_collection && !cfg!(windows) {
+        let dd = data_dir.clone().unwrap_or_default();
+        crate::commands::win9x::emulator_pack_for_variant(game.dosbox_variant.as_deref())
+            .filter(|_| {
+                !crate::commands::win9x::win9x_engine_resolvable(
+                    &app,
+                    &manager.torrent_root(),
+                    &dd,
+                    game.dosbox_variant.as_deref(),
+                )
+            })
+            .and_then(|pack_id| {
+                crate::commands::content_packs::installable_pack(source, pack_id)
+                    .map(|info| (pack_id, info))
+            })
+    } else {
+        None
+    };
 
     // Disk-space preflight: refusing upfront beats a multi-GB torrent (plus
     // ~equal-sized extraction) failing halfway with a partial install. Runs
@@ -431,11 +463,7 @@ pub async fn download_game(
     // entry. Downloaded bytes on disk are credited ONCE (they only reduce
     // the remaining download; the extraction target still needs full size).
     if let Some(size) = game.download_size {
-        let data_dir = {
-            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-            queries::get_config(&conn, "data_dir").ok().flatten()
-        };
-        if let Some(dir) = data_dir {
+        if let Some(dir) = data_dir.as_deref() {
             let on_disk = manager
                 .file_output_path(game_idx)
                 .and_then(|p| std::fs::metadata(p).ok())
@@ -448,7 +476,12 @@ pub async fn download_game(
             if win9x_support_missing {
                 needed += 8 * 1024 * 1024 * 1024;
             }
-            if let Ok(free) = fs4::available_space(std::path::Path::new(&dir)) {
+            if let Some((_, info)) = &win9x_emulator_pack {
+                // Same 2.2x factor as the pack installer's own preflight
+                // (archive + extracted copy).
+                needed += (info.size_bytes as f64 * 2.2) as u64;
+            }
+            if let Ok(free) = fs4::available_space(std::path::Path::new(dir)) {
                 if free < needed {
                     let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
                     return Err(format!(
@@ -472,6 +505,16 @@ pub async fn download_game(
     // arm the extraction watcher (budgeted in the preflight above).
     if win9x_support_missing {
         crate::commands::win9x::ensure_win9x_support_queued(&manager).await;
+    }
+
+    // Queue the emulator pack alongside (see win9x_emulator_pack above).
+    // "Install already in progress" is the normal second-download case.
+    if let Some((pack_id, _)) = &win9x_emulator_pack {
+        if let Err(e) =
+            crate::commands::content_packs::start_pack_install(&app, source, pack_id).await
+        {
+            log::info!("Win9x emulator pack '{pack_id}' not queued: {e}");
+        }
     }
 
     if let Some(ref main_mgr) = main_mgr_opt {

@@ -113,6 +113,50 @@
       "torrent_infohash": "dd8a867f62a6c9cc939d51c742143de2ac98c9f2",
       "game_count": 662,
       "content_packs": {
+        "dosbox-x": {
+          "display_name": "DOSBox-X Emulator",
+          "description": "Runs most Windows 9x games (633 of 662). Downloads automatically with your first Windows 9x game.",
+          "url": "",
+          "sha256": "",
+          "size_bytes": 0,
+          "version": 1,
+          "install_path": "content/emulators/dosbox-x",
+          "supersedes": [],
+          "platforms": {
+            "darwin-aarch64": {
+              "url": "TODO: https://github.com/tvollstaedt/exodium/releases/download/content-v6/dosbox-x-macos-arm64-v1.tar.gz",
+              "sha256": "TODO",
+              "size_bytes": 0
+            },
+            "linux-x86_64": {
+              "url": "TODO: https://github.com/tvollstaedt/exodium/releases/download/content-v6/dosbox-x-linux-x86_64-v1.tar.gz",
+              "sha256": "TODO",
+              "size_bytes": 0
+            }
+          }
+        },
+        "86box": {
+          "display_name": "86Box Emulator",
+          "description": "Runs the 29 Windows 9x games that need full PC hardware emulation. Downloads automatically with your first such game.",
+          "url": "",
+          "sha256": "",
+          "size_bytes": 0,
+          "version": 1,
+          "install_path": "content/emulators/86box",
+          "supersedes": [],
+          "platforms": {
+            "darwin-aarch64": {
+              "url": "TODO: https://github.com/tvollstaedt/exodium/releases/download/content-v6/86box-macos-universal-v1.tar.gz",
+              "sha256": "TODO",
+              "size_bytes": 0
+            },
+            "linux-x86_64": {
+              "url": "TODO: https://github.com/tvollstaedt/exodium/releases/download/content-v6/86box-linux-x86_64-v1.tar.gz",
+              "sha256": "TODO",
+              "size_bytes": 0
+            }
+          }
+        },
         "posters": {
           "display_name": "Box Art",
           "description": "HD box art for all 662 Windows 9x games",

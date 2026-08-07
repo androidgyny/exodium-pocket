@@ -184,6 +184,10 @@ fn adopt_packs_on_disk(
     let mut adopted = Vec::new();
     let mut vanished = Vec::new();
     for (id, info) in &col.content_packs {
+        // A pack the current platform cannot see must not be adopted either,
+        // or a data dir moved from another OS would grow ledger rows for
+        // binaries this build can never use.
+        let Some(info) = info.for_current_platform() else { continue };
         // install_path names the exact directory - it already carries the
         // collection (`content/posters/eXoWin9x`). Appending it a second time
         // meant metadata packs were never adopted at all.
@@ -245,9 +249,12 @@ pub async fn list_content_packs(
     let mut result: Vec<ContentPackStatus> = col
         .content_packs
         .iter()
-        .map(|(id, info)| {
+        .filter_map(|(id, info)| {
+            // Platform-mapped packs resolve to their per-OS source or vanish
+            // (the emulator packs exist on macOS/Linux only).
+            let info = info.for_current_platform()?;
             let inst = col_installed.and_then(|c| c.get(id));
-            ContentPackStatus {
+            Some(ContentPackStatus {
                 id: id.clone(),
                 display_name: info.display_name.clone(),
                 description: info.description.clone(),
@@ -258,7 +265,7 @@ pub async fn list_content_packs(
                     || (!info.url.is_empty() && !info.url.starts_with("TODO")),
                 installed: inst.is_some(),
                 installed_version: inst.map(|i| i.version),
-            }
+            })
         })
         .collect();
     result.sort_by(|a, b| a.id.cmp(&b.id));
@@ -270,11 +277,54 @@ pub async fn list_content_packs(
 #[tauri::command]
 pub async fn install_content_pack(
     app: AppHandle,
-    db_state: State<'_, DbState>,
-    pack_state: State<'_, ContentPackState>,
     collection: String,
     pack_id: String,
 ) -> Result<(), String> {
+    start_pack_install(&app, &collection, &pack_id).await
+}
+
+/// The platform-resolved manifest entry for a pack, but only when it can
+/// actually be installed right now (a real source, this platform). Backend
+/// auto-triggers gate on this so a TODO-URL manifest entry stays inert.
+pub(crate) fn installable_pack(collection: &str, pack_id: &str) -> Option<ContentPackInfo> {
+    let manifest = load_manifest().ok()?;
+    let info = manifest
+        .collections
+        .get(collection)?
+        .content_packs
+        .get(pack_id)?
+        .for_current_platform()?;
+    let has_http_source = !info.url.is_empty()
+        && !info.url.starts_with("TODO")
+        && !info.sha256.starts_with("TODO");
+    (info.torrent_file_path.is_some() || has_http_source).then_some(info)
+}
+
+/// Payload of the "content-pack-install-started" event. Emitted for EVERY
+/// job, because the backend can start one itself (the Win9x emulator
+/// auto-queue) and the frontend's progress badge only polls jobs it knows
+/// about.
+#[derive(Clone, Serialize)]
+struct PackInstallStarted {
+    collection: String,
+    pack_id: String,
+    display_name: String,
+}
+
+/// Start a pack install job. Shared by the `install_content_pack` command
+/// and backend triggers; returns once the job is registered (the download
+/// runs in a spawned task, polled via `get_content_pack_progress`).
+pub(crate) async fn start_pack_install(
+    app: &AppHandle,
+    collection: &str,
+    pack_id: &str,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let db_state: State<'_, DbState> = app.state();
+    let pack_state: State<'_, ContentPackState> = app.state();
+    let collection = collection.to_string();
+    let pack_id = pack_id.to_string();
+
     // Resolve pack info from the manifest (fast, in-memory).
     let manifest = load_manifest()?;
     let col = manifest
@@ -285,7 +335,10 @@ pub async fn install_content_pack(
         .content_packs
         .get(&pack_id)
         .ok_or_else(|| format!("Unknown pack '{}' in '{}'", pack_id, collection))?
-        .clone();
+        .for_current_platform()
+        .ok_or_else(|| {
+            format!("'{}' is not available on this platform.", pack_id)
+        })?;
     let col_packs = col.content_packs.clone();
 
     // Guard: reject packs without a real source. Torrent-sourced packs (via
@@ -337,6 +390,18 @@ pub async fn install_content_pack(
                 installed: false,
                 error: None,
                 cancel: cancel.clone(),
+            },
+        );
+    }
+
+    {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "content-pack-install-started",
+            PackInstallStarted {
+                collection: collection.clone(),
+                pack_id: pack_id.clone(),
+                display_name: pack_info.display_name.clone(),
             },
         );
     }
@@ -868,6 +933,10 @@ async fn do_install(
 }
 
 /// Recursively copy a directory tree (fallback for cross-filesystem rename).
+///
+/// Symlinks are recreated, not followed: the emulator packs carry .app
+/// bundles whose Frameworks are symlink-heavy, and a materialized copy both
+/// bloats the install and breaks the bundle's code-signature seal.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dst).map_err(|e| format!("mkdir {}: {}", dst.display(), e))?;
     for entry in
@@ -876,7 +945,20 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| e.to_string())?;
         let ft = entry.file_type().map_err(|e| e.to_string())?;
         let dest = dst.join(entry.file_name());
-        if ft.is_dir() {
+        if ft.is_symlink() {
+            let target = std::fs::read_link(entry.path())
+                .map_err(|e| format!("readlink {}: {}", entry.path().display(), e))?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dest)
+                .map_err(|e| format!("symlink {}: {}", dest.display(), e))?;
+            #[cfg(not(unix))]
+            {
+                // Windows pack payloads contain no symlinks; if one ever
+                // appears, copying the target is the useful degradation.
+                let _ = target;
+                std::fs::copy(entry.path(), &dest).map_err(|e| format!("copy: {}", e))?;
+            }
+        } else if ft.is_dir() {
             copy_dir_recursive(&entry.path(), &dest)?;
         } else {
             std::fs::copy(entry.path(), &dest)
@@ -1094,6 +1176,33 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+#[cfg(all(test, unix))]
+mod copy_tests {
+    use super::*;
+
+    /// The EXDEV fallback must recreate symlinks: 86Box.app's Frameworks are
+    /// symlink-heavy, and a materialized copy breaks the codesign seal.
+    #[test]
+    fn copy_dir_recursive_recreates_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("Frameworks")).unwrap();
+        std::fs::write(src.join("Frameworks/lib.dylib"), b"x").unwrap();
+        std::os::unix::fs::symlink("lib.dylib", src.join("Frameworks/lib.1.dylib")).unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        let link = dst.join("Frameworks/lib.1.dylib");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink(), "symlink was materialized");
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            std::path::PathBuf::from("lib.dylib")
+        );
+    }
+}
+
 #[cfg(test)]
 mod adopt_tests {
     use super::*;
@@ -1111,7 +1220,38 @@ mod adopt_tests {
             install_path: install_path.into(),
             supersedes: Vec::new(),
             min_compatible_version: 0,
+            platforms: None,
         }
+    }
+
+    /// A data dir moved from another OS must not grow ledger rows for
+    /// binaries this build can never run - adoption skips packs the current
+    /// platform cannot see.
+    #[test]
+    fn does_not_adopt_a_pack_for_another_platform() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init(&conn).unwrap();
+        crate::db::queries::set_config(&conn, "data_dir", tmp.path().to_str().unwrap()).unwrap();
+
+        let dir = tmp.path().join("content/emulators/dosbox-x");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("DOSBox-X.AppImage"), b"x").unwrap();
+
+        let mut p = pack("content/emulators/dosbox-x");
+        // A platforms map with no entry for any real platform: invisible everywhere.
+        p.platforms = Some(HashMap::new());
+        let mut content_packs = HashMap::new();
+        content_packs.insert("dosbox-x".to_string(), p);
+        let col = CollectionManifest {
+            torrent_infohash: String::new(),
+            game_count: 0,
+            content_packs,
+        };
+
+        adopt_packs_on_disk(&conn, "eXoWin9x", &col);
+
+        assert!(read_installed_packs(&conn).get("eXoWin9x").is_none_or(|c| c.is_empty()));
     }
 
     fn manifest(install_path: &str) -> CollectionManifest {
