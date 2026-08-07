@@ -41,6 +41,16 @@
   installs), and in-app manuals/screenshots from Win3x/Win9x game folders are
   no longer blocked by the asset-protocol scope.
 
+### Fixed
+
+- Opening a Windows 9x game on Windows no longer flashes two console windows
+  (the emulator probe now runs windowless).
+- The Windows 9x detail panel no longer claims "emulator not found" while the
+  shared support files are still on their way: it shows the download's live
+  progress, names the one-time ~2.5 GB payload next to the game's own size
+  before the first download, and reports an extraction failure instead of
+  showing progress forever.
+
 ## 0.11.0 - 2026-08-03
 
 ### Added
@@ -75,13 +85,6 @@
 
 ### Fixed
 
-- Opening a Windows 9x game on Windows no longer flashes two console windows
-  (the emulator probe now runs windowless).
-- The Windows 9x detail panel no longer claims "emulator not found" while the
-  shared support files are still on their way: it shows the download's live
-  progress, names the one-time ~2.5 GB payload next to the game's own size
-  before the first download, and reports an extraction failure instead of
-  showing progress forever.
 - The Manual button no longer looks clickable while a game's media is still
   being scanned (it shows a spinner), and a temporary scan failure no longer
   leaves it dead until the next app start.
