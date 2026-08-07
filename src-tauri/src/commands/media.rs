@@ -654,3 +654,179 @@ mod tests {
         assert_eq!(err, "cancelled");
     }
 }
+
+// ── Localhost media server (Linux) ───────────────────────────────────────────
+//
+// WebKitGTK's media player cannot pull media out of a custom URI scheme
+// handler: a <video> whose src is served through one ends with
+// MEDIA_ERR_SRC_NOT_SUPPORTED / networkState NO_SOURCE (measured on WebKitGTK
+// 2.52 with a minimal harness - the same file plays fine from file://).
+// Images are unaffected, so the asset protocol stays for those; only <video>
+// sources go through this 127.0.0.1 HTTP server, whose responses tower-http's
+// ServeFile answers with proper Range support (GStreamer seeks).
+//
+// URLs carry an opaque per-session token instead of a path: the HTTP side
+// never parses paths, an unknown token is a 404, and only files the backend
+// itself registered (after the same under-the-data-dir check the asset scope
+// enforces) are reachable. Bound to 127.0.0.1; other local processes can
+// fetch registered previews, which is the same exposure any local media
+// server has.
+
+/// Token -> file map plus the lazily-started server's port. The map sits
+/// behind its own Arc because the axum router holds a clone of it.
+pub struct MediaServerState {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    port: std::sync::Mutex<Option<u16>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    tokens: std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>,
+}
+
+impl MediaServerState {
+    pub fn new() -> Self {
+        Self {
+            port: std::sync::Mutex::new(None),
+            tokens: std::sync::Arc::default(),
+        }
+    }
+}
+
+impl Default for MediaServerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Translate an absolute media path into a playable URL, or None where the
+/// asset protocol already plays media fine (macOS/Windows) - the frontend
+/// falls back to convertFileSrc then.
+#[tauri::command]
+pub async fn media_url(
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] db_state: State<
+        '_,
+        crate::DbState,
+    >,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] server: State<
+        '_,
+        MediaServerState,
+    >,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] path: String,
+) -> Result<Option<String>, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(None)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let data_dir = {
+            let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+            queries::get_config(&conn, "data_dir")
+                .map_err(|e| e.to_string())?
+                .ok_or("Data directory not configured")?
+        };
+        // Same containment rule as the asset-protocol scope: only files under
+        // the user's data dir are servable. Canonicalize both sides so a
+        // symlinked data dir still matches and `..` segments can't escape.
+        let canon_file = std::fs::canonicalize(&path).map_err(|e| format!("{path}: {e}"))?;
+        let canon_root =
+            std::fs::canonicalize(&data_dir).map_err(|e| format!("{data_dir}: {e}"))?;
+        if !canon_file.starts_with(&canon_root) {
+            return Err(format!("{} is outside the data directory", canon_file.display()));
+        }
+        if !canon_file.is_file() {
+            return Err(format!("{} is not a file", canon_file.display()));
+        }
+
+        let port = {
+            // Hold the port lock across server startup so two concurrent
+            // calls can't both bind a listener.
+            let mut port = server.port.lock().map_err(|e| e.to_string())?;
+            match *port {
+                Some(p) => p,
+                None => {
+                    let p = start_media_server(server.tokens.clone())?;
+                    *port = Some(p);
+                    p
+                }
+            }
+        };
+        let token = media_token(&canon_file);
+        server
+            .tokens
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(token.clone(), canon_file);
+        Ok(Some(format!("http://127.0.0.1:{port}/m/{token}")))
+    }
+}
+
+/// Opaque, non-guessable token: file path hashed with a per-process salt.
+#[cfg(target_os = "linux")]
+fn media_token(path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    use std::sync::OnceLock;
+    static SALT: OnceLock<u128> = OnceLock::new();
+    let salt = *SALT.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+            ^ (std::process::id() as u128) << 64
+    });
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    salt.hash(&mut h);
+    path.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+#[cfg(target_os = "linux")]
+fn start_media_server(
+    tokens: std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>,
+) -> Result<u16, String> {
+    use axum::body::Body;
+    use axum::extract::{Path as AxPath, State as AxState};
+    use axum::http::{Request, StatusCode};
+    use axum::response::Response;
+    use tower::ServiceExt;
+
+    async fn serve(
+        AxState(tokens): AxState<std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>>,
+        AxPath(token): AxPath<String>,
+        req: Request<Body>,
+    ) -> Result<Response, StatusCode> {
+        let file = tokens
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&token).cloned())
+            .ok_or(StatusCode::NOT_FOUND)?;
+        tower_http::services::ServeFile::new(file)
+            .oneshot(req)
+            .await
+            .map(|res| res.map(Body::new))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+
+    let router = axum::Router::new()
+        .route("/m/{token}", axum::routing::get(serve))
+        .with_state(tokens);
+
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(l) => l,
+            Err(e) => {
+                log::error!("media server: listener conversion failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = axum::serve(listener, router).await {
+            log::error!("media server exited: {e}");
+        }
+    });
+
+    log::info!("media server listening on 127.0.0.1:{port}");
+    Ok(port)
+}

@@ -579,6 +579,7 @@ pub fn run() {
             app.manage(TorrentState(RwLock::new(std::collections::HashMap::new())));
             app.manage(ContentPackState::new());
             app.manage(commands::media::VideoState::new());
+            app.manage(commands::media::MediaServerState::new());
 
             // macOS uses native traffic-light controls (no custom titlebar).
             // Linux/Windows keep the framed shell from tauri.conf.json
@@ -618,6 +619,7 @@ pub fn run() {
             init_download_manager,
             commands::media::start_game_video,
             commands::media::get_video_status,
+            commands::media::media_url,
             commands::media::video_playback_supported,
             commands::media::cancel_game_video,
             factory_reset,

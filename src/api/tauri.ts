@@ -528,6 +528,13 @@ export async function cancelGameVideo(id: number): Promise<void> {
   return invoke("cancel_game_video", { id });
 }
 
+/** Playable URL for a media file. Linux answers with a localhost HTTP URL
+ *  (WebKitGTK cannot play media through the asset protocol); macOS/Windows
+ *  answer null - use convertFileSrc there. */
+export async function mediaUrl(path: string): Promise<string | null> {
+  return invoke("media_url", { path });
+}
+
 export async function getGameMetadata(
   collection: string,
   title: string,

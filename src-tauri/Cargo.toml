@@ -97,6 +97,16 @@ junction = "1"
 [target."cfg(unix)".dependencies]
 libc = "0.2.189"
 
+# Localhost media server (Linux only): WebKitGTK's GStreamer player cannot
+# pull media out of a custom URI scheme handler (MEDIA_ERR_SRC_NOT_SUPPORTED),
+# so <video> sources are served over 127.0.0.1 HTTP with Range support
+# instead. All three crates are already in the tree via librqbit - this adds
+# no new compilation units beyond tower-http's "fs" service.
+[target.'cfg(target_os = "linux")'.dependencies]
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"

@@ -9,7 +9,7 @@ import { FieldIcon, IconSoundOn, IconSoundOff, IconZoom, type FieldIconName } fr
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Button } from "./Button";
 import type { Game, GameMetadata } from "../api/tauri";
-import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xMultiplayerInfo, dismissWin9xNetworkPrompt, enableWin9xNetwork } from "../api/tauri";
+import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xMultiplayerInfo, dismissWin9xNetworkPrompt, enableWin9xNetwork, mediaUrl } from "../api/tauri";
 import type { Win9xMultiplayerInfo } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall, performReset } from "../util";
 import { showToast } from "../stores/toasts";
@@ -578,10 +578,22 @@ export function GameDetailPanel(props: Props) {
   // reader nothing they could act on and drew the eye to the absence of a
   // feature. The progress states below still speak, because those describe
   // work in flight the reader is waiting on.
-  const videoSrc = () => {
+  // WebKitGTK cannot play media through the asset protocol (Linux answers a
+  // localhost HTTP URL from media_url; macOS/Windows answer null and keep
+  // convertFileSrc). Async, so the URL lives in a signal the effect fills.
+  const [videoSrc, setVideoSrc] = createSignal<string | null>(null);
+  createEffect(() => {
     const p = videoState()?.path;
-    return p ? convertFileSrc(p) : null;
-  };
+    if (!p) {
+      setVideoSrc(null);
+      return;
+    }
+    let stale = false;
+    mediaUrl(p)
+      .then((url) => { if (!stale) { setVideoSrc(url ?? convertFileSrc(p)); } })
+      .catch(() => { if (!stale) { setVideoSrc(convertFileSrc(p)); } });
+    onCleanup(() => { stale = true; });
+  });
 
   // Start the fetch a beat after the panel settles on a game. The delay is the
   // point: clicking through the grid would otherwise queue a torrent read per
