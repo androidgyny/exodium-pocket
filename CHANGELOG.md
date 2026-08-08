@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.12.2 - 2026-08-08
+
+### Fixed
+
+- The interface was drawn on the processor instead of the graphics card on
+  Linux with NVIDIA, so scrolling, the detail panel and every animation ran at
+  a fraction of the frame rate they should. A workaround for a startup crash
+  from July switched off accelerated drawing for all of Linux, well beyond the
+  crash it was meant to avoid. Exodium now picks the right path for the driver
+  and display server it actually finds, and keeps the safe one everywhere it is
+  still needed. Measured on an RTX 3080 under KDE Wayland: 10.6 to 60.8 frames
+  per second. If an accelerated start ever fails, the next one falls back on
+  its own.
+- The AppImage could not reach that faster path at all, for two reasons of its
+  own: it forced the X11 display backend on every system, and the WebKit it
+  bundles refuses accelerated drawing on NVIDIA cards unless told otherwise.
+  Both are fixed, which brings the AppImage to the same 60 frames per second.
+  The same change also helps .deb users on distributions whose WebKit is older
+  than 2.52, Ubuntu 24.04 among them.
+- A test asserted a Unix-style path and could never pass on Windows, which had
+  kept the Windows CI job red since the eXoWin9x merge.
+
 ## 0.12.1 - 2026-08-07
 
 ### Fixed
