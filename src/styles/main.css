@@ -1093,8 +1093,9 @@ body {
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   background: var(--bg-card);
   /* Isolate each card's layout/paint so appending new cards doesn't trigger
-     full-grid reflow. Combined with content-visibility on .game-section,
-     this keeps scroll performance smooth even with 7000+ cards loaded. */
+     full-grid reflow. This alone does NOT keep 7000+ cards cheap - every card
+     stays rendered and its cover stays decoded; skipping offscreen ones is
+     tracked in #24. */
   contain: layout style paint;
 }
 

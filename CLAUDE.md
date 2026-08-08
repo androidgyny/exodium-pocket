@@ -963,20 +963,26 @@ won't open; both launch paths therefore map an EOCD/invalid-archive error to
 user hits the same failure on every click. The DOS path had this from the
 start; `win9x.rs` did not until 2026-08-06.
 
-**Still open**: Nothing on Linux or
-Windows has been run at all (the self-built DOSBox-X AppImage on a real
-distro, the 86Box AppImage, the PATH-with-cap preference, `pkexec setcap`,
-the parent-VHD case aliases, npcap, the PowerShell Wi-Fi probe). The
-emulator-pack pipeline has not produced artifacts yet: `content-packs.yml`
-needs its first dispatch (budget one iteration - the 2025.02.01 tag on Arch's
-current GCC may want a flag), then `content-v6` published `--latest=false`
-BEFORE the app release, then manifest.json's TODO URLs/hashes filled from its
-`manifest-snippet.json`; until then the packs read "coming soon" and the
-resolvers behave as before. Remote multiplayer is unverified end to end - it
-needs a wired connection nobody had. The catalogue upgrade for an existing
-0.11 install (CATALOG_VERSION 6 + `enable_new_collections`) has only been
-exercised by resetting the stamp by hand. NetHost/NetJoin multiplayer menus
-stay out of scope (solo play.cfg only).
+**Linux verified 2026-08-07** (CachyOS x86_64, see
+`docs/HANDOVER-linux-emulator-packs.md`): the self-built DOSBox-X AppImage
+boots Windows 98 through the full conf chain, the 86Box chain works once
+`launch_86box` rewrites the child VHD (eXo's shipped child has a
+backslash locator minivhd cannot resolve), and `getcap` round-trips exactly
+as `has_cap_net_raw` expects. The pack pipeline has shipped: `content-v6`
+carries both emulators for `darwin-aarch64` and `linux-x86_64`, and
+`manifest.json` holds the real URLs and hashes.
+
+**Still open**: WINDOWS has not been run at all (extracted-tree resolution,
+npcap, the PowerShell Wi-Fi probe, the parent-VHD case aliases). On Linux the
+items needing an UNLOCKED desktop session are untested - resolver ORDER in the
+running app (pack vs PATH-with-cap), the `win9x_network_status` row in
+Settings, the Flatpak fallback, and auto-queue plus ActivityBadge end to end;
+the emulator runs themselves were confirmed from logs and VHD growth behind a
+lockscreen. Remote multiplayer is unverified end to end - it needs a wired
+connection nobody had. The catalogue upgrade for an existing 0.11 install
+(CATALOG_VERSION 6 + `enable_new_collections`) has only been exercised by
+resetting the stamp by hand. NetHost/NetJoin multiplayer menus stay out of
+scope (solo play.cfg only).
 
 ### 17. The Linux render path is chosen per GDK backend, not disabled wholesale
 
