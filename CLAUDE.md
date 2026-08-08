@@ -1005,12 +1005,28 @@ reproduces exactly in a page with no Exodium code in it.
 
 Three rules follow. **Non-NVIDIA sets nothing** - the DMA-BUF path is the fast
 one on Intel/AMD and disabling it would be a regression. **The backend is read
-the way GTK reads it** (`GDK_BACKEND` first, then `WAYLAND_DISPLAY`), because
-the AppImage's linuxdeploy hook forces `GDK_BACKEND=x11` over Tauri issue 8541
-- AppImage users therefore keep exactly today's behaviour and the accelerated
-branch only ever applies to the .deb/.rpm/dev builds that run on the host
-WebKit. **An already-set variable is left alone**, which is the escape hatch
-when this guess is wrong on someone's box.
+the way GTK reads it** (`GDK_BACKEND` first, then `WAYLAND_DISPLAY`), so
+whatever forces that variable decides the render path with it. **An
+already-set variable is left alone**, which is the escape hatch when this
+guess is wrong on someone's box.
+
+**Two more things have to line up before an AppImage sees any of this, and
+each one alone is worth the whole difference.** linuxdeploy's GTK hook
+exported `GDK_BACKEND=x11` over Tauri issue 8541, which pinned every AppImage
+to the backend NVIDIA cannot allocate a GBM buffer on; `build.yml` now strips
+that export while the AppDir is open for the GPU-lib removal, and fails the
+build if the line ever stops being there, since a silently skipped patch looks
+exactly like a working one. And **WebKitGTK before 2.52 refuses its own
+DMA-BUF renderer on NVIDIA**: `AcceleratedBackingStoreDMABuf::checkRequirements`
+ends in `strstr(vendor, "NVIDIA")`, with `WEBKIT_FORCE_DMABUF_RENDERER` (any
+value but `"0"`, read a few instructions earlier) as the documented override.
+2.52 deleted the check and the variable both, so setting it costs nothing
+there. Measured with the same harness on the same box against the AppImage's
+bundled 2.50.4: unforced 12.8 fps / 97% CPU / 7 nvidia fds, forced 60.0 fps /
+29% CPU / 38 fds - i.e. identical to what the host's 2.52.5 does with no
+variable at all. Removing the x11 export without forcing the renderer buys
+nothing on NVIDIA, and forcing it without removing the export cannot even be
+reached.
 
 The accelerated branch is guarded by a sentinel file
 (`~/.local/share/com.redfox.exodium/accel-attempt`), because a user whose app
@@ -1022,11 +1038,18 @@ safe path and clears it again. Do NOT clear it in `setup()`: the GDK failure
 happens when the webview first paints, which is AFTER setup has run and logged,
 so surviving setup proves nothing. The 6 seconds is a deliberate floor - an
 ungraceful kill inside that window (SIGTERM at logout) costs the next start its
-acceleration, and only that one.
+acceleration, and only that one. It also covers the AppImage's Wayland backend
+now, armed even without NVIDIA: issue 8541 is not vendor-specific, and a
+declined fallback would loop a non-NVIDIA user on a backend that never comes
+up. Finding the marker puts `GDK_BACKEND=x11` back, so the safe path is
+byte-for-byte what every AppImage did up to 0.12.1.
 
-`WEBKIT_DISABLE_DMABUF_RENDERER=0` means "do not disable" on WebKitGTK 2.52 but
-"disable" on the older build the AppImage bundles, so it is not a portable way
-to test the accelerated path.
+`WEBKIT_DISABLE_DMABUF_RENDERER=0` means "do not disable" on both 2.50 and
+2.52 (`g_strcmp0(value, "0")` in each), so it is NOT a way to prove the
+accelerated path is live - on a pre-2.52 build the vendor blocklist takes it
+away again a few lines later, which is what makes it look like the variable
+means the opposite. Read `/dev/nvidia*` fds instead: 7 is the software
+rasterizer, ~38 is the GPU.
 
 ## Conventions
 

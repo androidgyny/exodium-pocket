@@ -433,6 +433,9 @@ pub struct RenderPath {
     pub disable_dmabuf: bool,
     /// Keep the DMA-BUF renderer but take NVIDIA's implicit-sync path.
     pub disable_explicit_sync: bool,
+    /// Override the NVIDIA blocklist WebKitGTK < 2.52 applies to its own
+    /// DMA-BUF renderer. Unread by 2.52+, which dropped the check.
+    pub force_dmabuf: bool,
 }
 
 /// WebKit bug 262607 ("[GTK] Disable DMABuf renderer for NVIDIA proprietary
@@ -454,6 +457,15 @@ pub struct RenderPath {
 /// user's ~10 fps panel animation was. Non-NVIDIA GPUs get nothing set: their
 /// DMA-BUF path is the fast one and disabling it would be a regression.
 ///
+/// Keeping the DMA-BUF renderer is not enough on its own before WebKitGTK
+/// 2.52: `AcceleratedBackingStoreDMABuf::checkRequirements` there ends in a
+/// `strstr(vendor, "NVIDIA")` that refuses the renderer outright, and
+/// `WEBKIT_FORCE_DMABUF_RENDERER` (read a few instructions earlier, any value
+/// but "0") is the override. 2.52 deleted both the check and the variable, so
+/// setting it is free there. Same harness, same box, WebKitGTK 2.50.4:
+/// unforced 12.8 fps / 97% CPU / 7 nvidia fds, forced 60.0 fps / 29% CPU / 38
+/// fds - identical to what 2.52.5 does with no variable at all.
+///
 /// `accel_known_bad` is the safety valve - see `accel_sentinel`. A previous
 /// accelerated start that did not survive falls back to the path that always
 /// renders, because a user whose app will not start is worse off than one
@@ -464,17 +476,20 @@ pub fn choose_render_path(nvidia: bool, wayland: bool, accel_known_bad: bool) ->
         return RenderPath {
             disable_dmabuf: false,
             disable_explicit_sync: false,
+            force_dmabuf: false,
         };
     }
     if wayland && !accel_known_bad {
         return RenderPath {
             disable_dmabuf: false,
             disable_explicit_sync: true,
+            force_dmabuf: true,
         };
     }
     RenderPath {
         disable_dmabuf: true,
         disable_explicit_sync: false,
+        force_dmabuf: false,
     }
 }
 
@@ -486,8 +501,9 @@ fn nvidia_proprietary_in_use() -> bool {
 }
 
 /// Which GDK backend GTK will pick, decided the same way GTK decides it.
-/// `GDK_BACKEND` wins when set (the AppImage's linuxdeploy hook forces `x11`),
-/// otherwise a Wayland display means the Wayland backend.
+/// `GDK_BACKEND` wins when set, otherwise a Wayland display means the Wayland
+/// backend. Must be read AFTER `prefer_wayland_backend_in_appimage` has had
+/// its say, since that is what may set the variable.
 #[cfg(target_os = "linux")]
 fn on_wayland_backend() -> bool {
     match std::env::var("GDK_BACKEND") {
@@ -513,12 +529,38 @@ fn accel_sentinel() -> Option<std::path::PathBuf> {
     Some(base.join("com.redfox.exodium").join("accel-attempt"))
 }
 
+/// The AppImage build strips linuxdeploy's `export GDK_BACKEND=x11` (see
+/// `.github/workflows/build.yml`), so a Wayland session reaches the Wayland
+/// backend and with it the accelerated path. Should that start not survive,
+/// this puts the AppImage back exactly where it was: X11 backend, no DMA-BUF,
+/// which is what every AppImage did up to 0.12.1. Returns whether the Wayland
+/// backend is being attempted, so the caller knows to arm the sentinel even
+/// for a non-NVIDIA GPU - the crash the x11 export existed for
+/// (tauri-apps/tauri#8541) is not vendor-specific.
+#[cfg(target_os = "linux")]
+fn prefer_wayland_backend_in_appimage(accel_known_bad: bool) -> bool {
+    // APPDIR is set by AppRun, and the AppImage is the only build whose GDK
+    // backend anybody ever forced.
+    if std::env::var_os("APPDIR").is_none()
+        || std::env::var_os("GDK_BACKEND").is_some()
+        || std::env::var_os("WAYLAND_DISPLAY").is_none()
+    {
+        return false;
+    }
+    if accel_known_bad {
+        std::env::set_var("GDK_BACKEND", "x11");
+        return false;
+    }
+    true
+}
+
 /// Apply the chosen render path, leaving any variable the user set themselves
 /// alone - that is the escape hatch when this guess is wrong on their box.
 #[cfg(target_os = "linux")]
 fn apply_render_path() {
     let sentinel = accel_sentinel();
     let known_bad = sentinel.as_ref().is_some_and(|p| p.exists());
+    let appimage_wayland = prefer_wayland_backend_in_appimage(known_bad);
     let nvidia = nvidia_proprietary_in_use();
     let wayland = on_wayland_backend();
     let path = choose_render_path(nvidia, wayland, known_bad);
@@ -527,6 +569,10 @@ fn apply_render_path() {
     if path.disable_dmabuf && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         applied.push("WEBKIT_DISABLE_DMABUF_RENDERER=1");
+    }
+    if path.force_dmabuf && std::env::var_os("WEBKIT_FORCE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_FORCE_DMABUF_RENDERER", "1");
+        applied.push("WEBKIT_FORCE_DMABUF_RENDERER=1");
     }
     if path.disable_explicit_sync && std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
         std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
@@ -544,11 +590,12 @@ fn apply_render_path() {
         }
     );
 
-    if !path.disable_dmabuf && nvidia {
-        // Accelerated compositing is on; arm the sentinel and disarm it once
-        // we have clearly survived first paint. A clean exit disarms it too
-        // (see `run`), or quitting inside the window would cost the next
-        // start its acceleration.
+    if (!path.disable_dmabuf && nvidia) || appimage_wayland {
+        // Something riskier than the old blanket-safe path is in play -
+        // accelerated compositing, the AppImage's Wayland backend, or both.
+        // Arm the sentinel and disarm it once we have clearly survived first
+        // paint. A clean exit disarms it too (see `run`), or quitting inside
+        // the window would cost the next start its acceleration.
         if let Some(p) = sentinel {
             if let Some(dir) = p.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -893,6 +940,7 @@ mod render_path_tests {
                 let p = choose_render_path(false, wayland, bad);
                 assert!(!p.disable_dmabuf);
                 assert!(!p.disable_explicit_sync);
+                assert!(!p.force_dmabuf);
             }
         }
     }
@@ -906,13 +954,23 @@ mod render_path_tests {
         assert!(p.disable_explicit_sync);
     }
 
+    /// Keeping the renderer is not enough before WebKitGTK 2.52 - it refuses
+    /// to use it on NVIDIA unless forced, which is what left the AppImage's
+    /// bundled 2.50.4 at 12.8 fps while the host's 2.52.5 did 60.
+    #[test]
+    fn nvidia_wayland_overrides_the_pre_2_52_blocklist() {
+        assert!(choose_render_path(true, true, false).force_dmabuf);
+    }
+
     /// NVIDIA on X11/XWayland cannot allocate GBM buffers at all, so the
-    /// DMA-BUF renderer has to go or nothing ever paints.
+    /// DMA-BUF renderer has to go or nothing ever paints - forcing it there
+    /// would be forcing the path that never paints.
     #[test]
     fn nvidia_x11_disables_dmabuf() {
         let p = choose_render_path(true, false, false);
         assert!(p.disable_dmabuf);
         assert!(!p.disable_explicit_sync);
+        assert!(!p.force_dmabuf);
     }
 
     /// A start that already died with acceleration on falls back to the path
@@ -922,5 +980,6 @@ mod render_path_tests {
         let p = choose_render_path(true, true, true);
         assert!(p.disable_dmabuf);
         assert!(!p.disable_explicit_sync);
+        assert!(!p.force_dmabuf);
     }
 }
