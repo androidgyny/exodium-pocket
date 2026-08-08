@@ -978,6 +978,56 @@ needs a wired connection nobody had. The catalogue upgrade for an existing
 exercised by resetting the stamp by hand. NetHost/NetJoin multiplayer menus
 stay out of scope (solo play.cfg only).
 
+### 17. The Linux render path is chosen per GDK backend, not disabled wholesale
+
+WebKit bug 262607 ("[GTK] Disable DMABuf renderer for NVIDIA proprietary
+drivers") was closed WONTFIX, so WebKitGTK never degrades on its own and every
+app picks its own path. `choose_render_path` in `lib.rs` does that, and the
+answer differs per backend. Measured on the reference box (RTX 3080, driver
+610.57.04, WebKitGTK 2.52.5, KDE/Wayland, 5120x1440) against a 300-layer
+transform animation in a standalone GTK3+WebKit2 harness - same engine, no
+Exodium involved:
+
+| backend | DMA-BUF | explicit sync | result |
+|---|---|---|---|
+| Wayland | on | on | Gdk "Error 71" protocol error, process dies |
+| Wayland | off | - | 10.6 fps, WebProcess 95% CPU, 7 nvidia fds |
+| Wayland | on | off | **60.8 fps, WebProcess 14% CPU, 38 nvidia fds** |
+| X11 | on | - | "Failed to create GBM buffer", 0% CPU, never paints |
+| X11 | off | - | 37.9 fps, WebProcess 95% CPU |
+
+So NVIDIA needs a workaround on both backends but a DIFFERENT one, and the
+blanket `WEBKIT_DISABLE_DMABUF_RENDERER=1` we used to set on all of Linux was
+the expensive one: it drops accelerated compositing, and WebKit then rasterizes
+every frame on the WebProcess main thread. That, not page weight alone, is what
+made a 260 ms transform+opacity panel slide run at ~10 fps - the number
+reproduces exactly in a page with no Exodium code in it.
+
+Three rules follow. **Non-NVIDIA sets nothing** - the DMA-BUF path is the fast
+one on Intel/AMD and disabling it would be a regression. **The backend is read
+the way GTK reads it** (`GDK_BACKEND` first, then `WAYLAND_DISPLAY`), because
+the AppImage's linuxdeploy hook forces `GDK_BACKEND=x11` over Tauri issue 8541
+- AppImage users therefore keep exactly today's behaviour and the accelerated
+branch only ever applies to the .deb/.rpm/dev builds that run on the host
+WebKit. **An already-set variable is left alone**, which is the escape hatch
+when this guess is wrong on someone's box.
+
+The accelerated branch is guarded by a sentinel file
+(`~/.local/share/com.redfox.exodium/accel-attempt`), because a user whose app
+will not start is worse off than one whose app scrolls badly - and the crash
+this replaces was a startup crash (commit 6dfcc2db). It is armed before an
+accelerated start and cleared 6 seconds later or on `RunEvent::Exit`; finding
+it at startup means the last accelerated attempt died, so that start takes the
+safe path and clears it again. Do NOT clear it in `setup()`: the GDK failure
+happens when the webview first paints, which is AFTER setup has run and logged,
+so surviving setup proves nothing. The 6 seconds is a deliberate floor - an
+ungraceful kill inside that window (SIGTERM at logout) costs the next start its
+acceleration, and only that one.
+
+`WEBKIT_DISABLE_DMABUF_RENDERER=0` means "do not disable" on WebKitGTK 2.52 but
+"disable" on the older build the AppImage bundles, so it is not a portable way
+to test the accelerated path.
+
 ## Conventions
 
 - **Every Tauri command that touches the DB, filesystem, or network MUST be

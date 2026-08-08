@@ -470,8 +470,8 @@ export function GameDetailPanel(props: Props) {
   // ── Settle gate ──────────────────────────────────────────────────────────
   // The panel slides in over 260ms, and opening it also kicks off the metadata
   // scan (a strip of thumbnails to decode) plus the Win9x probes - all landing
-  // inside that window. Linux paints the animation on WebKit's fallback
-  // renderer (see App.tsx), where that burst is visible as a stutter, so the
+  // inside that window. Linux may paint the animation on WebKit's fallback
+  // renderer (CLAUDE.md §17), where that burst is visible as a stutter, so the
   // work that is neither cheap nor layout-defining waits for the slide-in to
   // end. `animationend` on the panel is the signal; the timeout covers the
   // cases where it never fires (reduced motion, a hidden window). Variants and

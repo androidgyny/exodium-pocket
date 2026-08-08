@@ -125,9 +125,11 @@ function App() {
   });
 
   onMount(async () => {
-    // Linux always runs WebKit's fallback renderer (lib.rs disables the
-    // DMA-BUF path, which aborts on NVIDIA/Wayland). Backdrop blur is a
-    // per-frame CPU repaint there - main.css drops it under this class.
+    // Linux may run WebKit's fallback renderer: lib.rs still disables the
+    // DMA-BUF path on NVIDIA/X11, which is what the AppImage always is (see
+    // CLAUDE.md §17). Backdrop blur is a per-frame CPU repaint there, and the
+    // renderer in use is not observable from here, so main.css drops it for
+    // all of Linux under this class.
     if (navigator.userAgent.includes("Linux")) {
       document.documentElement.classList.add("soft-render");
     }

@@ -424,19 +424,165 @@ fn init_logger(log_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     file_writer.map(|_| log_path)
 }
 
+/// Which WebKitGTK render-path workaround this Linux session needs.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderPath {
+    /// Drop accelerated compositing entirely (WebProcess rasterizes on its
+    /// main thread). Costly, but the only thing that renders on X11/NVIDIA.
+    pub disable_dmabuf: bool,
+    /// Keep the DMA-BUF renderer but take NVIDIA's implicit-sync path.
+    pub disable_explicit_sync: bool,
+}
+
+/// WebKit bug 262607 ("[GTK] Disable DMABuf renderer for NVIDIA proprietary
+/// drivers") was closed WONTFIX, so WebKitGTK never degrades on its own and
+/// each app has to pick a path. Measured on the reference box (RTX 3080,
+/// driver 610.57.04, WebKitGTK 2.52.5, KDE/Wayland, 5120x1440) with a 300-layer
+/// transform animation:
+///
+/// | backend | DMA-BUF | explicit sync |            result |
+/// |---------|---------|---------------|-------------------|
+/// | Wayland |      on |            on | Gdk "Error 71" protocol error, app dies |
+/// | Wayland |     off |             - | 10.6 fps, WebProcess 95% CPU, 7 nvidia fds |
+/// | Wayland |      on |           off | 60.8 fps, WebProcess 14% CPU, 38 nvidia fds |
+/// | X11     |      on |             - | "Failed to create GBM buffer", never paints |
+/// | X11     |     off |             - | 37.9 fps, WebProcess 95% CPU |
+///
+/// So NVIDIA needs a workaround on both backends, but a DIFFERENT one, and
+/// disabling the DMA-BUF renderer is the expensive answer - it is what the
+/// user's ~10 fps panel animation was. Non-NVIDIA GPUs get nothing set: their
+/// DMA-BUF path is the fast one and disabling it would be a regression.
+///
+/// `accel_known_bad` is the safety valve - see `accel_sentinel`. A previous
+/// accelerated start that did not survive falls back to the path that always
+/// renders, because a user whose app will not start is worse off than one
+/// whose app scrolls badly.
+#[cfg(target_os = "linux")]
+pub fn choose_render_path(nvidia: bool, wayland: bool, accel_known_bad: bool) -> RenderPath {
+    if !nvidia {
+        return RenderPath {
+            disable_dmabuf: false,
+            disable_explicit_sync: false,
+        };
+    }
+    if wayland && !accel_known_bad {
+        return RenderPath {
+            disable_dmabuf: false,
+            disable_explicit_sync: true,
+        };
+    }
+    RenderPath {
+        disable_dmabuf: true,
+        disable_explicit_sync: false,
+    }
+}
+
+/// True when the proprietary NVIDIA driver is loaded. nouveau creates neither
+/// of these, so Intel/AMD/nouveau fall through to the upstream default.
+#[cfg(target_os = "linux")]
+fn nvidia_proprietary_in_use() -> bool {
+    Path::new("/sys/module/nvidia_drm").exists() || Path::new("/dev/nvidia0").exists()
+}
+
+/// Which GDK backend GTK will pick, decided the same way GTK decides it.
+/// `GDK_BACKEND` wins when set (the AppImage's linuxdeploy hook forces `x11`),
+/// otherwise a Wayland display means the Wayland backend.
+#[cfg(target_os = "linux")]
+fn on_wayland_backend() -> bool {
+    match std::env::var("GDK_BACKEND") {
+        Ok(v) => v
+            .split(',')
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case("wayland")),
+        Err(_) => std::env::var_os("WAYLAND_DISPLAY").is_some(),
+    }
+}
+
+/// Marker written before an accelerated start and cleared once the app has
+/// been alive long enough to have painted. Its presence at startup means the
+/// last accelerated attempt died, so we take the safe path instead. The GDK
+/// failure happens when the webview first renders - AFTER `setup()` has run -
+/// so surviving setup is not evidence; elapsed time and a clean exit are.
+#[cfg(target_os = "linux")]
+fn accel_sentinel() -> Option<std::path::PathBuf> {
+    let base = match std::env::var_os("XDG_DATA_HOME") {
+        Some(d) if !d.is_empty() => std::path::PathBuf::from(d),
+        _ => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".local/share"),
+    };
+    Some(base.join("com.redfox.exodium").join("accel-attempt"))
+}
+
+/// Apply the chosen render path, leaving any variable the user set themselves
+/// alone - that is the escape hatch when this guess is wrong on their box.
+#[cfg(target_os = "linux")]
+fn apply_render_path() {
+    let sentinel = accel_sentinel();
+    let known_bad = sentinel.as_ref().is_some_and(|p| p.exists());
+    let nvidia = nvidia_proprietary_in_use();
+    let wayland = on_wayland_backend();
+    let path = choose_render_path(nvidia, wayland, known_bad);
+
+    let mut applied: Vec<&str> = Vec::new();
+    if path.disable_dmabuf && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        applied.push("WEBKIT_DISABLE_DMABUF_RENDERER=1");
+    }
+    if path.disable_explicit_sync && std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
+        std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+        applied.push("__NV_DISABLE_EXPLICIT_SYNC=1");
+    }
+
+    // Logging is not up yet (init_logger needs the app handle), so this goes
+    // to stderr - it still lands in the journal and in a terminal bug report.
+    eprintln!(
+        "render path: nvidia={nvidia} wayland={wayland} accel_known_bad={known_bad} -> [{}]",
+        if applied.is_empty() {
+            "upstream defaults".to_string()
+        } else {
+            applied.join(", ")
+        }
+    );
+
+    if !path.disable_dmabuf && nvidia {
+        // Accelerated compositing is on; arm the sentinel and disarm it once
+        // we have clearly survived first paint. A clean exit disarms it too
+        // (see `run`), or quitting inside the window would cost the next
+        // start its acceleration.
+        if let Some(p) = sentinel {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&p, "1");
+            // The GDK failure kills the process about a second after setup,
+            // so a few seconds of life is already proof. Keep this short: any
+            // ungraceful kill inside the window (SIGTERM at logout, force
+            // quit) costs the NEXT start its acceleration, and that start
+            // then clears the marker again.
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(6));
+                disarm_accel_sentinel();
+            });
+        }
+    } else {
+        disarm_accel_sentinel();
+    }
+}
+
+/// Record that this render path got the app running.
+#[cfg(target_os = "linux")]
+fn disarm_accel_sentinel() {
+    if let Some(p) = accel_sentinel() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     raise_fd_limit();
 
-    // WebKitGTK's DMA-BUF renderer aborts with "Could not create default EGL
-    // display: EGL_BAD_PARAMETER" on some Wayland/driver combos (NVIDIA
-    // especially) before our window even exists. Disable it unless the user
-    // explicitly set the variable themselves - the fallback render path works
-    // everywhere at a minor compositing cost.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
+    apply_render_path();
 
     tauri::Builder::default()
         // A second instance would contend on the SQLite DB and corrupt the
@@ -664,8 +810,16 @@ pub fn run() {
             set_playlist_membership,
             get_game_playlists,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, _event| {
+            // Reaching a clean exit proves the render path works, whether or
+            // not the timer got there first.
+            #[cfg(target_os = "linux")]
+            if matches!(_event, tauri::RunEvent::Exit) {
+                disarm_accel_sentinel();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -722,5 +876,51 @@ mod fd_limit_tests {
             // Floor candidate is 10240; anything less means the raise loop broke.
             assert!(lim.rlim_cur >= 10240.min(lim.rlim_max));
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod render_path_tests {
+    use super::choose_render_path;
+
+    /// Intel/AMD/nouveau must keep WebKit's default DMA-BUF path - it is the
+    /// fast one there, and the old blanket disable made them pay for a bug
+    /// only the NVIDIA proprietary driver has.
+    #[test]
+    fn non_nvidia_gets_no_workaround() {
+        for wayland in [true, false] {
+            for bad in [true, false] {
+                let p = choose_render_path(false, wayland, bad);
+                assert!(!p.disable_dmabuf);
+                assert!(!p.disable_explicit_sync);
+            }
+        }
+    }
+
+    /// NVIDIA on Wayland: keep accelerated compositing, fix it with implicit
+    /// sync. Measured 60.8 fps vs 10.6 for the disable.
+    #[test]
+    fn nvidia_wayland_keeps_acceleration() {
+        let p = choose_render_path(true, true, false);
+        assert!(!p.disable_dmabuf);
+        assert!(p.disable_explicit_sync);
+    }
+
+    /// NVIDIA on X11/XWayland cannot allocate GBM buffers at all, so the
+    /// DMA-BUF renderer has to go or nothing ever paints.
+    #[test]
+    fn nvidia_x11_disables_dmabuf() {
+        let p = choose_render_path(true, false, false);
+        assert!(p.disable_dmabuf);
+        assert!(!p.disable_explicit_sync);
+    }
+
+    /// A start that already died with acceleration on falls back to the path
+    /// that always renders, rather than looping on a black window.
+    #[test]
+    fn a_failed_accelerated_start_falls_back() {
+        let p = choose_render_path(true, true, true);
+        assert!(p.disable_dmabuf);
+        assert!(!p.disable_explicit_sync);
     }
 }
