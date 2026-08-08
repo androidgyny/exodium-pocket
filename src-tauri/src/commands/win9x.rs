@@ -1180,9 +1180,9 @@ async fn grant_cap_net_raw_linux() -> Result<(), String> {
 /// the host's kernel resets every connection the guest opens. Measured on
 /// macOS Wi-Fi, the guest's PPTP dial:
 ///
-///   guest > server:1723  [S]     ; SYN from 10.200.1.217 (the host's IP)
+///   guest > server:1723  [S]     ; SYN from 10.x.y.z (the host's own IP)
 ///   server > guest       [S.]    ; server answers
-///   10.200.1.217 > server [R]    ; the HOST's stack resets it
+///   10.x.y.z > server    [R]     ; the HOST's stack resets it
 ///
 /// The remaining fix - a static guest IP outside the DHCP pool - lives inside
 /// eXo's Win9x image, not here. So on Wi-Fi we stay on slirp, which at least

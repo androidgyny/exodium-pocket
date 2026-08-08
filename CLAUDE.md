@@ -907,11 +907,11 @@ so a guest with its own MAC gets nothing through. Cloning the host's MAC fixes
 that layer - and then the DHCP server, which keys leases on the MAC, hands the
 guest THE HOST'S OWN IP; both stacks answer for one address and the host's
 kernel resets every connection the guest opens. Captured on macOS Wi-Fi during
-a PPTP dial: guest SYN from 10.200.1.217 → server SYN-ACK → `Flags [R]` from
-the host. The remaining fix (a static guest IP outside the DHCP pool) lives in
-eXo's Win9x image, not here, so Wi-Fi stays on `slirp` and the UI says a wired
-connection is needed. Do not re-attempt MAC cloning without solving the lease
-collision first.
+a PPTP dial: guest SYN sourced from the host's own LAN address → server
+SYN-ACK → `Flags [R]` from the host. The remaining fix (a static guest IP
+outside the DHCP pool) lives in eXo's Win9x image, not here, so Wi-Fi stays on
+`slirp` and the UI says a wired connection is needed. Do not re-attempt MAC
+cloning without solving the lease collision first.
 
 The offer is made where the feature is missed: pressing Play on one of those
 67 titles asks once (`win9x_needs_network_prompt` gates on network parent +
