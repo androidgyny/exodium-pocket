@@ -1,7 +1,7 @@
 {
   "name": "exodium",
   "version": "0.12.2",
-  "description": "Cross-platform eXoDOS game launcher",
+  "description": "Cross-platform launcher for the eXoDOS collections",
   "type": "module",
   "scripts": {
     "start": "vite",

@@ -5,7 +5,7 @@
 <h1 align="center">Exodium</h1>
 
 <p align="center">
-  A cross-platform launcher for the <a href="https://www.retro-exo.com/exodos.html">eXoDOS</a> collection. Browse, download, and play DOS games on Linux, macOS, and Windows.
+  A cross-platform launcher for the <a href="https://www.retro-exo.com/exodos.html">eXoDOS</a> collections. Browse, download, and play DOS, Windows 3.x, and Windows 9x games on Linux, macOS, and Windows.
 </p>
 
 <p align="center">
