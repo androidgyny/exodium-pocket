@@ -516,7 +516,7 @@ an invisible 0px and clip the gallery.
 
 The metadata pack is 36k images / 5.0 GB (avg 145 KB, max 18.6 MB) rendered in
 a 64x48 strip, so `scan_game_metadata` downscales each to 160 px once into
-`<data_dir>/content/.thumbcache/` and returns them as `GameMetadata.thumbnails`
+`<data_dir>/content/thumbcache/` and returns them as `GameMetadata.thumbnails`
 (same order as `images`; falls back to the full path when a file can't be
 decoded). The strip renders thumbnails, the lightbox keeps the originals. Cache
 keys hash path + size + mtime, so a re-downloaded pack misses rather than
