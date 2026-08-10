@@ -1016,6 +1016,16 @@ body {
   box-shadow: 0 -12px 0 0 var(--bg-primary);
 }
 
+/* Close each section with a divider so its end reads while the next header
+   is still approaching (#5). The line cannot sit on the sticky header itself
+   (it would travel with it), and the margin must clear the header's 12px
+   opaque top strip (the box-shadow above) or the strip paints over it. */
+.game-section:not(:last-child) {
+  padding-bottom: 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 16px;
+}
+
 /* ── Jump bar ── */
 .jump-bar {
   position: fixed;
