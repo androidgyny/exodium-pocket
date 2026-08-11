@@ -307,6 +307,24 @@ fn order_clause(sort_by: &str) -> String {
         ),
         "title_desc" => format!("ORDER BY {TITLE_ORDER} DESC"),
         "genre" => format!("ORDER BY COALESCE(genre, 'zzz') ASC, {TITLE_ORDER} ASC"),
+        // List-view column sorts (#21). NULLIF folds empty strings in with the
+        // NULLs so unknown entries land at the end in either direction.
+        "developer" => format!(
+            "ORDER BY COALESCE(NULLIF(developer, ''), 'zzzz') COLLATE NOCASE ASC, {TITLE_ORDER} ASC"
+        ),
+        "developer_desc" => format!(
+            "ORDER BY COALESCE(NULLIF(developer, ''), '') COLLATE NOCASE DESC, {TITLE_ORDER} ASC"
+        ),
+        "publisher" => format!(
+            "ORDER BY COALESCE(NULLIF(publisher, ''), 'zzzz') COLLATE NOCASE ASC, {TITLE_ORDER} ASC"
+        ),
+        "publisher_desc" => format!(
+            "ORDER BY COALESCE(NULLIF(publisher, ''), '') COLLATE NOCASE DESC, {TITLE_ORDER} ASC"
+        ),
+        "size" => format!(
+            "ORDER BY COALESCE(download_size, 9223372036854775807) ASC, {TITLE_ORDER} ASC"
+        ),
+        "size_desc" => format!("ORDER BY COALESCE(download_size, -1) DESC, {TITLE_ORDER} ASC"),
         _ => format!("ORDER BY {TITLE_ORDER} ASC"),
     }
 }
@@ -996,6 +1014,37 @@ mod tests {
         let w3x_variants = fetch_game_variants(&conn, "EarthQue", "eXoWin3x").unwrap();
         assert_eq!(w3x_variants.len(), 1);
         assert_eq!(w3x_variants[0].title, "Eyewitness Virtual Reality: Earth Quest");
+    }
+
+    /// The list view's column sorts (#21): games without a developer/size
+    /// sort last in BOTH directions instead of clumping at the top.
+    #[test]
+    fn column_sorts_put_unknown_values_last() {
+        let conn = open_test_db();
+        let mut a = make_game("Alpha");
+        a.developer = Some("Sierra".to_string());
+        let b = make_game("Beta");
+        let mut c = make_game("Gamma");
+        c.developer = Some("id Software".to_string());
+        insert_games(&conn, &[a, b, c]).unwrap();
+        // download_size is not part of insert_games - it arrives via the
+        // torrent-matching UPDATE, so the test writes it the same way.
+        conn.execute("UPDATE games SET download_size = 500 WHERE title = 'Alpha'", []).unwrap();
+        conn.execute("UPDATE games SET download_size = 2000 WHERE title = 'Gamma'", []).unwrap();
+
+        let fetch = |sort_by: &str| {
+            let f = GameFilter { query: "", genre: "", sort_by, collection: "", favorites_only: false, playlist_id: None };
+            fetch_games_filtered(&conn, 1, 50, &f)
+                .unwrap()
+                .into_iter()
+                .map(|g| g.title)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(fetch("developer"), vec!["Gamma", "Alpha", "Beta"]);
+        assert_eq!(fetch("developer_desc"), vec!["Alpha", "Gamma", "Beta"]);
+        assert_eq!(fetch("size"), vec!["Alpha", "Gamma", "Beta"]);
+        assert_eq!(fetch("size_desc"), vec!["Gamma", "Alpha", "Beta"]);
     }
 
     #[test]

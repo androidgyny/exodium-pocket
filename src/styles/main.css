@@ -1026,6 +1026,195 @@ body {
   margin-bottom: 16px;
 }
 
+/* ── List view (#21) ── */
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.view-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.view-toggle-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.view-toggle-btn:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.game-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header and rows share one template so the columns stay aligned. */
+.game-list-header,
+.game-row {
+  display: grid;
+  grid-template-columns:
+    28px minmax(200px, 2.4fr) 44px minmax(110px, 1.3fr)
+    minmax(110px, 1.3fr) minmax(110px, 1.3fr) 58px 68px 104px;
+  gap: 10px;
+  align-items: center;
+  padding: 0 6px;
+}
+
+.game-list-header {
+  position: sticky;
+  /* top set via inline style - same stack as the grid separators */
+  z-index: 8;
+  background: var(--bg-primary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 -12px 0 0 var(--bg-primary);
+}
+
+.list-col {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  text-align: left;
+  padding: 10px 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.list-col.sortable {
+  cursor: pointer;
+}
+
+.list-col.sortable:hover {
+  color: var(--text-primary);
+}
+
+.game-row {
+  min-height: 40px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  /* Uniform row height makes the intrinsic size exact: offscreen rows skip
+     layout and paint entirely, which is what keeps 8k+ rows scrollable. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 41px;
+}
+
+.game-row:hover {
+  background: var(--bg-hover);
+}
+
+.game-row > span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.game-row .row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+
+.row-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-list-header .row-year,
+.game-list-header .row-size,
+.game-row .row-year,
+.game-row .row-size {
+  text-align: right;
+}
+
+.game-row .row-fav {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  opacity: 0.35;
+  font-size: 14px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.game-row .row-fav:hover {
+  opacity: 1;
+}
+
+.game-row .row-fav.is-favorited {
+  color: #f0b429;
+  opacity: 1;
+}
+
+.game-row .row-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: visible;
+}
+
+.row-cancel {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.row-cancel:hover {
+  color: var(--danger);
+}
+
+/* Narrow windows: drop publisher, then developer - the template must lose
+   the matching tracks or every cell shifts one column over. */
+@media (max-width: 1150px) {
+  .game-list-header,
+  .game-row {
+    grid-template-columns:
+      28px minmax(200px, 2.4fr) 44px minmax(110px, 1.3fr)
+      minmax(110px, 1.3fr) 58px 68px 104px;
+  }
+
+  .game-list-header .row-pub,
+  .game-row .row-pub {
+    display: none;
+  }
+}
+
+@media (max-width: 950px) {
+  .game-list-header,
+  .game-row {
+    grid-template-columns:
+      28px minmax(160px, 2.4fr) 44px minmax(100px, 1.3fr) 58px 68px 104px;
+  }
+
+  .game-list-header .row-dev,
+  .game-row .row-dev {
+    display: none;
+  }
+}
+
 /* ── Jump bar ── */
 .jump-bar {
   position: fixed;

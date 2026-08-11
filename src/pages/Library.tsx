@@ -19,6 +19,8 @@ import {
 import { PackHintBanner } from "../components/PackHintBanner";
 import { getGame, getGenres, getInstalledGames, getRecentlyPlayed, getConfig, getAvailableCollections, getSectionKeys, getGames, type CollectionInfo, type Game, type Playlist } from "../api/tauri";
 import { GameCard } from "../components/GameCard";
+import { GameRow } from "../components/GameRow";
+import { viewMode, applyViewMode, loadViewMode } from "../stores/view";
 import { GameDetailPanel } from "../components/GameDetailPanel";
 import { PlaylistNameDialog } from "../components/PlaylistNameDialog";
 import { CollectionShelf } from "../components/CollectionShelf";
@@ -66,6 +68,20 @@ const sortOptions = [
   { value: "year_asc", label: "Oldest first" },
   { value: "rating", label: "Top rated" },
   { value: "genre", label: "Genre A\u2013Z" },
+];
+
+/** List-view columns (#21). `asc`/`desc` are order_clause arms; a column
+ *  without `desc` sorts one way only (rating's bucket order is descending by
+ *  design, genre mirrors the grid's sort select). Status is display-only. */
+const listColumns: { label: string; cls: string; asc?: string; desc?: string }[] = [
+  { label: "Title", cls: "row-title", asc: "title", desc: "title_desc" },
+  { label: "Year", cls: "row-year", asc: "year_asc", desc: "year_desc" },
+  { label: "Genre", cls: "row-genre", asc: "genre" },
+  { label: "Developer", cls: "row-dev", asc: "developer", desc: "developer_desc" },
+  { label: "Publisher", cls: "row-pub", asc: "publisher", desc: "publisher_desc" },
+  { label: "Rating", cls: "row-rating", asc: "rating" },
+  { label: "Size", cls: "row-size", asc: "size", desc: "size_desc" },
+  { label: "Status", cls: "row-status" },
 ];
 
 export function Library() {
@@ -536,6 +552,8 @@ export function Library() {
     const interval = setInterval(() => { refreshRecent(); refreshInstalled(); refreshFavorites(); }, 5000);
     onCleanup(() => { clearInterval(interval); observer.disconnect(); });
 
+    loadViewMode();
+
     (async () => {
       // Load recently played first - if any exist, auto-switch to My Library tab.
       const recent = await getRecentlyPlayed(12).catch(() => [] as Game[]);
@@ -593,6 +611,21 @@ export function Library() {
     setter(value);
     fetchGames();
     refreshSectionKeys();
+  };
+
+  // Column-header sorting: first click sorts ascending, a second click flips
+  // to descending where an arm exists. Same signal as the grid's sort select.
+  const sortByColumn = (col: typeof listColumns[number]) => {
+    if (!col.asc) { return; }
+    const next = sortBy() === col.asc && col.desc ? col.desc : col.asc;
+    applyFilter(setSortBy)(next);
+  };
+
+  const columnIndicator = (col: typeof listColumns[number]) => {
+    // "rating" is a descending bucket sort by design - show it as such.
+    if (sortBy() === col.asc) { return col.asc === "rating" ? " ▼" : " ▲"; }
+    if (col.desc && sortBy() === col.desc) { return " ▼"; }
+    return "";
   };
 
   const switchCollection = (id: string) => {
@@ -658,12 +691,26 @@ export function Library() {
               placeholder="Playlists"
             />
           </Show>
-          <Select
-            options={sortOptions}
-            value={sortBy()}
-            onChange={applyFilter(setSortBy)}
-            placeholder="Sort by"
-          />
+          <Show when={viewMode() === "grid"}>
+            <Select
+              options={sortOptions}
+              value={sortBy()}
+              onChange={applyFilter(setSortBy)}
+              placeholder="Sort by"
+            />
+          </Show>
+          <div class="view-toggle" role="group" aria-label="View mode">
+            <button
+              class={`view-toggle-btn ${viewMode() === "grid" ? "active" : ""}`}
+              title="Grid view"
+              onClick={() => applyViewMode("grid")}
+            >▦</button>
+            <button
+              class={`view-toggle-btn ${viewMode() === "list" ? "active" : ""}`}
+              title="List view"
+              onClick={() => applyViewMode("list")}
+            >☰</button>
+          </div>
           <Show when={totalGames() > 0}>
             <span class="results-count">{totalGames().toLocaleString()} games</span>
           </Show>
@@ -713,35 +760,64 @@ export function Library() {
           </div>
         </Show>
 
-        <div class="sections-list">
-          <For each={sections()}>
-            {(section) => (
-              <>
-                <Show when={section.label}>
-                  <div
-                    id={`sep-${section.index}`}
-                    data-section-label={section.label}
-                    class="grid-separator"
-                    style={{ top: separatorTop() }}
-                  >
-                    {section.label}
+        <Show when={viewMode() === "grid"}>
+          <div class="sections-list">
+            <For each={sections()}>
+              {(section) => (
+                <>
+                  <Show when={section.label}>
+                    <div
+                      id={`sep-${section.index}`}
+                      data-section-label={section.label}
+                      class="grid-separator"
+                      style={{ top: separatorTop() }}
+                    >
+                      {section.label}
+                    </div>
+                  </Show>
+                  <div class="game-grid game-section">
+                    <For each={section.games}>
+                      {(game) => (
+                        <GameCard
+                          game={game}
+                          onFavoriteChanged={handleFavoriteChanged}
+                          onDetail={setDetailGame}
+                        />
+                      )}
+                    </For>
                   </div>
-                </Show>
-                <div class="game-grid game-section">
-                  <For each={section.games}>
-                    {(game) => (
-                      <GameCard
-                        game={game}
-                        onFavoriteChanged={handleFavoriteChanged}
-                        onDetail={setDetailGame}
-                      />
-                    )}
-                  </For>
-                </div>
-              </>
-            )}
-          </For>
-        </div>
+                </>
+              )}
+            </For>
+          </div>
+        </Show>
+        <Show when={viewMode() === "list"}>
+          <div class="game-list">
+            <div class="game-list-header" style={{ top: separatorTop() }}>
+              <span class="row-fav" />
+              <For each={listColumns}>
+                {(col) => (
+                  <button
+                    class={`list-col ${col.cls}${col.asc ? " sortable" : ""}`}
+                    disabled={!col.asc}
+                    onClick={() => sortByColumn(col)}
+                  >
+                    {col.label}{columnIndicator(col)}
+                  </button>
+                )}
+              </For>
+            </div>
+            <For each={games()}>
+              {(game) => (
+                <GameRow
+                  game={game}
+                  onFavoriteChanged={handleFavoriteChanged}
+                  onDetail={setDetailGame}
+                />
+              )}
+            </For>
+          </div>
+        </Show>
         </div>
       </Show>
 
@@ -894,7 +970,9 @@ export function Library() {
         </Show>
       </div>
 
-      <Show when={activeTab() === "browse" && jumpBarLabels().length > 1}>
+      {/* The jump bar targets grid section separators; the list view has a
+          sticky column header instead and no sections to jump to. */}
+      <Show when={activeTab() === "browse" && viewMode() === "grid" && jumpBarLabels().length > 1}>
         <Portal>
           <div class="jump-bar">
             <For each={jumpBarLabels()}>
