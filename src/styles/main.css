@@ -1033,6 +1033,20 @@ body {
   border-radius: 6px;
   overflow: hidden;
   flex-shrink: 0;
+  /* Always flush right, so the switch sits in the same spot on both tabs
+     and regardless of which selects are visible. */
+  margin-left: auto;
+}
+
+/* When the results count precedes it, the count's own auto margin already
+   pushes both to the right edge - a second auto margin would split the gap. */
+.results-count + .view-toggle {
+  margin-left: 0;
+}
+
+.library-toolbar-plain {
+  position: static;
+  padding: 14px 0 4px;
 }
 
 .view-toggle-btn {

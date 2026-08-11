@@ -628,6 +628,44 @@ export function Library() {
     return "";
   };
 
+  // One instance per toolbar, so the switch sits in the same right-edge spot
+  // on both tabs.
+  const ViewToggle = () => (
+    <div class="view-toggle" role="group" aria-label="View mode">
+      <button
+        class={`view-toggle-btn ${viewMode() === "grid" ? "active" : ""}`}
+        title="Grid view"
+        onClick={() => applyViewMode("grid")}
+      >▦</button>
+      <button
+        class={`view-toggle-btn ${viewMode() === "list" ? "active" : ""}`}
+        title="List view"
+        onClick={() => applyViewMode("list")}
+      >☰</button>
+    </div>
+  );
+
+  // Shelf body in the current view mode. No sortable header here: a shelf's
+  // order is its own semantic (recency, install state, playlist order).
+  const ShelfGames = (p: { games: Game[] }) => (
+    <Show
+      when={viewMode() === "list"}
+      fallback={
+        <div class="game-grid">
+          <For each={p.games}>
+            {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
+          </For>
+        </div>
+      }
+    >
+      <div class="game-list">
+        <For each={p.games}>
+          {(game) => <GameRow game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
+        </For>
+      </div>
+    </Show>
+  );
+
   const switchCollection = (id: string) => {
     setCollectionFilter(id);
     refreshGenres();
@@ -699,21 +737,10 @@ export function Library() {
               placeholder="Sort by"
             />
           </Show>
-          <div class="view-toggle" role="group" aria-label="View mode">
-            <button
-              class={`view-toggle-btn ${viewMode() === "grid" ? "active" : ""}`}
-              title="Grid view"
-              onClick={() => applyViewMode("grid")}
-            >▦</button>
-            <button
-              class={`view-toggle-btn ${viewMode() === "list" ? "active" : ""}`}
-              title="List view"
-              onClick={() => applyViewMode("list")}
-            >☰</button>
-          </div>
           <Show when={totalGames() > 0}>
             <span class="results-count">{totalGames().toLocaleString()} games</span>
           </Show>
+          <ViewToggle />
         </div>
 
         <Show when={activePlaylist()}>
@@ -824,6 +851,11 @@ export function Library() {
       {/* ── My Library tab ── */}
       <Show when={activeTab() === "library"}>
         <div class={`tab-pane tab-pane-${tabSlideDir()}`}>
+        {/* Not sticky: the shelf titles stick at the tab bar's edge (top:
+            40px) and a sticky toolbar would sit on top of them. */}
+        <div class="library-toolbar library-toolbar-plain">
+          <ViewToggle />
+        </div>
         <Show
           when={libraryHasMatches()}
           fallback={
@@ -853,33 +885,21 @@ export function Library() {
           <Show when={shownRecent().length > 0}>
             <div class="library-section" data-shelf-key="recent">
               <h2 class="section-title">Recently Played <span class="section-count">{shownRecent().length}</span></h2>
-              <div class="game-grid">
-                <For each={shownRecent()}>
-                  {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
-                </For>
-              </div>
+              <ShelfGames games={shownRecent()} />
             </div>
           </Show>
 
           <Show when={shownFavorites().length > 0}>
             <div class="library-section" data-shelf-key="favorites">
               <h2 class="section-title">Favorites <span class="section-count">{shownFavorites().length}</span></h2>
-              <div class="game-grid">
-                <For each={shownFavorites()}>
-                  {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
-                </For>
-              </div>
+              <ShelfGames games={shownFavorites()} />
             </div>
           </Show>
 
           <Show when={shownInstalled().length > 0}>
             <div class="library-section" data-shelf-key="installed">
               <h2 class="section-title">Installed <span class="section-count">{shownInstalled().length}</span></h2>
-              <div class="game-grid">
-                <For each={shownInstalled()}>
-                  {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
-                </For>
-              </div>
+              <ShelfGames games={shownInstalled()} />
             </div>
           </Show>
 
@@ -908,11 +928,7 @@ export function Library() {
                     </div>
                   }
                 >
-                  <div class="game-grid">
-                    <For each={shownPlaylistGames(playlist.id)}>
-                      {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
-                    </For>
-                  </div>
+                  <ShelfGames games={shownPlaylistGames(playlist.id)} />
                 </Show>
               </div>
             )}
