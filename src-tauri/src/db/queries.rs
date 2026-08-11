@@ -307,24 +307,29 @@ fn order_clause(sort_by: &str) -> String {
         ),
         "title_desc" => format!("ORDER BY {TITLE_ORDER} DESC"),
         "genre" => format!("ORDER BY COALESCE(genre, 'zzz') ASC, {TITLE_ORDER} ASC"),
-        // List-view column sorts (#21). NULLIF folds empty strings in with the
-        // NULLs so unknown entries land at the end in either direction.
+        // List-view column sorts (#21). Unknowns last via a leading boolean
+        // key, NOT a text sentinel: NOCASE folds ASCII only and compares
+        // bytes, so multibyte names ("Åkesoft", "Ère Informatique" - both in
+        // the catalogue) collate AFTER any 'zzzz' and ended up stranded
+        // behind the unknown block.
         "developer" => format!(
-            "ORDER BY COALESCE(NULLIF(developer, ''), 'zzzz') COLLATE NOCASE ASC, {TITLE_ORDER} ASC"
+            "ORDER BY (developer IS NULL OR developer = ''), developer COLLATE NOCASE ASC, {TITLE_ORDER} ASC"
         ),
         "developer_desc" => format!(
-            "ORDER BY COALESCE(NULLIF(developer, ''), '') COLLATE NOCASE DESC, {TITLE_ORDER} ASC"
+            "ORDER BY (developer IS NULL OR developer = ''), developer COLLATE NOCASE DESC, {TITLE_ORDER} ASC"
         ),
         "publisher" => format!(
-            "ORDER BY COALESCE(NULLIF(publisher, ''), 'zzzz') COLLATE NOCASE ASC, {TITLE_ORDER} ASC"
+            "ORDER BY (publisher IS NULL OR publisher = ''), publisher COLLATE NOCASE ASC, {TITLE_ORDER} ASC"
         ),
         "publisher_desc" => format!(
-            "ORDER BY COALESCE(NULLIF(publisher, ''), '') COLLATE NOCASE DESC, {TITLE_ORDER} ASC"
+            "ORDER BY (publisher IS NULL OR publisher = ''), publisher COLLATE NOCASE DESC, {TITLE_ORDER} ASC"
         ),
         "size" => format!(
-            "ORDER BY COALESCE(download_size, 9223372036854775807) ASC, {TITLE_ORDER} ASC"
+            "ORDER BY (download_size IS NULL), download_size ASC, {TITLE_ORDER} ASC"
         ),
-        "size_desc" => format!("ORDER BY COALESCE(download_size, -1) DESC, {TITLE_ORDER} ASC"),
+        "size_desc" => format!(
+            "ORDER BY (download_size IS NULL), download_size DESC, {TITLE_ORDER} ASC"
+        ),
         _ => format!("ORDER BY {TITLE_ORDER} ASC"),
     }
 }
@@ -1017,7 +1022,9 @@ mod tests {
     }
 
     /// The list view's column sorts (#21): games without a developer/size
-    /// sort last in BOTH directions instead of clumping at the top.
+    /// sort last in BOTH directions instead of clumping at the top - and a
+    /// multibyte name must not land behind the unknown block (NOCASE compares
+    /// bytes, so a text sentinel like 'zzzz' put "Åkesoft" after it).
     #[test]
     fn column_sorts_put_unknown_values_last() {
         let conn = open_test_db();
@@ -1026,7 +1033,9 @@ mod tests {
         let b = make_game("Beta");
         let mut c = make_game("Gamma");
         c.developer = Some("id Software".to_string());
-        insert_games(&conn, &[a, b, c]).unwrap();
+        let mut d = make_game("Delta");
+        d.developer = Some("Åkesoft".to_string());
+        insert_games(&conn, &[a, b, c, d]).unwrap();
         // download_size is not part of insert_games - it arrives via the
         // torrent-matching UPDATE, so the test writes it the same way.
         conn.execute("UPDATE games SET download_size = 500 WHERE title = 'Alpha'", []).unwrap();
@@ -1041,10 +1050,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        assert_eq!(fetch("developer"), vec!["Gamma", "Alpha", "Beta"]);
-        assert_eq!(fetch("developer_desc"), vec!["Alpha", "Gamma", "Beta"]);
-        assert_eq!(fetch("size"), vec!["Alpha", "Gamma", "Beta"]);
-        assert_eq!(fetch("size_desc"), vec!["Gamma", "Alpha", "Beta"]);
+        assert_eq!(fetch("developer"), vec!["Gamma", "Alpha", "Delta", "Beta"]);
+        assert_eq!(fetch("developer_desc"), vec!["Delta", "Alpha", "Gamma", "Beta"]);
+        assert_eq!(fetch("size"), vec!["Alpha", "Gamma", "Beta", "Delta"]);
+        assert_eq!(fetch("size_desc"), vec!["Gamma", "Alpha", "Beta", "Delta"]);
     }
 
     #[test]
