@@ -148,7 +148,11 @@ export function GameCard(props: GameCardProps) {
   // not always the primary (which would no-op).
   const dlEntry = () => {
     const dl = downloads();
-    if (props.game.id != null && dl[props.game.id]) {
+    // ?.downloading also for the primary: a finished/failed entry lingers in
+    // the store (extras phase, errors are never cleaned up) and would shadow
+    // a variant's LIVE download - and a non-downloading entry is never
+    // rendered here anyway.
+    if (props.game.id != null && dl[props.game.id]?.downloading) {
       return { id: props.game.id, state: dl[props.game.id] };
     }
     for (const v of variants()) {

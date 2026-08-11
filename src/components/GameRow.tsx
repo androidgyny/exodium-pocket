@@ -39,7 +39,11 @@ export function GameRow(props: GameRowProps) {
 
   const dlEntry = () => {
     const dl = downloads();
-    if (props.game.id != null && dl[props.game.id]) {
+    // ?.downloading also for the primary: a finished/failed entry lingers in
+    // the store (extras phase, errors are never cleaned up) and would shadow
+    // a variant's LIVE download - and a non-downloading entry is never
+    // rendered here anyway.
+    if (props.game.id != null && dl[props.game.id]?.downloading) {
       return { id: props.game.id, state: dl[props.game.id] };
     }
     for (const v of variants()) {
@@ -76,7 +80,14 @@ export function GameRow(props: GameRowProps) {
     <div
       class={`game-row ${props.game.installed || props.game.in_library ? "installed" : ""}`}
       data-game-id={props.game.id != null ? String(props.game.id) : undefined}
-      onClick={() => props.onDetail(props.game)}
+      onClick={(e) => {
+        // Solid's delegated clicks walk back through the Portal to this row,
+        // so a click on a context-menu item that does NOT unmount the menu
+        // (the confirm-arming Uninstall/Reset clicks) would open the detail
+        // panel underneath it. Only real DOM descendants count as row clicks.
+        if (!e.currentTarget.contains(e.target as Node)) { return; }
+        props.onDetail(props.game);
+      }}
       onContextMenu={handleContextMenu}
     >
       <Show when={props.game.id != null} fallback={<span class="row-fav" />}>
@@ -108,8 +119,10 @@ export function GameRow(props: GameRowProps) {
         </Show>
         <Show when={!status()}>
           <Show when={isDownloading()}>
-            <span class="card-action-label action-downloading">
-              {(dlState()?.progress ?? 0) > 0 ? `${Math.round((dlState()!.progress) * 100)}%` : "…"}
+            {/* The phase text, same as GameCard - a bare percentage read as a
+                stuck "100%" through the whole extraction phase. */}
+            <span class="card-action-label action-downloading" title={dlState()?.status}>
+              {dlState()?.status}
             </span>
             <button
               class="row-cancel"
