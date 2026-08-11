@@ -618,7 +618,22 @@ export function Library() {
   const sortByColumn = (col: typeof listColumns[number]) => {
     if (!col.asc) { return; }
     const next = sortBy() === col.asc && col.desc ? col.desc : col.asc;
+    // Re-clicking a one-way column (Genre, Rating) is a no-op sort change -
+    // without this guard it still refetched page 1 and threw away the
+    // user's scroll position.
+    if (next === sortBy()) { return; }
     applyFilter(setSortBy)(next);
+  };
+
+  // The grid cannot represent the column-only sorts: its Select has no such
+  // entry (Ark then renders the bare placeholder), groupKey() yields no
+  // sections and the jump bar goes empty. Fall back to the default sort
+  // instead of leaving the grid in an order none of its controls can show.
+  const switchView = (mode: "grid" | "list") => {
+    applyViewMode(mode);
+    if (mode === "grid" && !sortOptions.some((o) => o.value === sortBy())) {
+      applyFilter(setSortBy)("title");
+    }
   };
 
   const columnIndicator = (col: typeof listColumns[number]) => {
@@ -635,12 +650,12 @@ export function Library() {
       <button
         class={`view-toggle-btn ${viewMode() === "grid" ? "active" : ""}`}
         title="Grid view"
-        onClick={() => applyViewMode("grid")}
+        onClick={() => switchView("grid")}
       >▦</button>
       <button
         class={`view-toggle-btn ${viewMode() === "list" ? "active" : ""}`}
         title="List view"
-        onClick={() => applyViewMode("list")}
+        onClick={() => switchView("list")}
       >☰</button>
     </div>
   );
