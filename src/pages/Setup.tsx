@@ -72,7 +72,7 @@ export function Setup(props: SetupProps) {
 
   const handleSelectDataDir = async () => {
     const selected = await open({
-      title: "Select parent directory for game storage",
+      title: "Select Exodium data folder",
       directory: true,
     });
     if (selected) { setDataDir(selected as string); }
@@ -193,16 +193,18 @@ export function Setup(props: SetupProps) {
 
         {/* ── Start from scratch ── */}
         <Show when={phase() === "scratch"}>
-          <p class="setup-subtitle">Where should Exodium store your games?</p>
+          <p class="setup-subtitle">Where should Exodium keep its data?</p>
           <div class="setup-step">
-            <label>Parent directory</label>
+            <label>Data folder</label>
             <div class="path-picker">
               <span class="setting-value">{dataDir() || "Not selected"}</span>
               <Button variant="small" onClick={handleSelectDataDir}>Browse</Button>
             </div>
             <Show when={dataDir()}>
               <div class="setup-preview">
-                Games will be stored in: <strong>{previewPath()}</strong>
+                Exodium creates subfolders here: games go in{" "}
+                <strong>{previewPath()}</strong>, covers and caches in{" "}
+                <strong>content/</strong> next to it.
               </div>
             </Show>
           </div>
