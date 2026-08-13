@@ -666,58 +666,81 @@ fn title_canonical(title: &str) -> String {
 ///
 /// Idempotent: running twice makes no further changes.
 pub fn propagate_lp_thumbnail_keys(conn: &Connection) -> DbResult<()> {
+    // Both passes are family-scoped (§1 in CLAUDE.md): shortcodes AND titles
+    // repeat across pack families (eXoWin9x carries "Gabriel Knight 2 - The
+    // Beast Within"), and an unscoped match hands an LP row a key whose file
+    // only exists in the OTHER family's poster pack - the detail panel then
+    // 404s into the placeholder for that variant.
+    let same = queries::same_group("en", "games");
+
     // Pass 1: shortcode-based - most reliable, catches cases like
     // "Space Quest V - The Next Mutation" (DE) ↔ "Space Quest V: Roger Wilco
     // The Next Mutation" (EN) where the titles diverge too much for canonical
     // matching but the shortcode (SQ5) is shared.
     let shortcode_updated: usize = conn.execute(
-        "UPDATE games SET thumbnail_key = (
-            SELECT en.thumbnail_key FROM games en
-            WHERE en.language = 'EN'
-              AND en.shortcode = games.shortcode
-              AND en.thumbnail_key IS NOT NULL
-            LIMIT 1
-        )
-        WHERE shortcode IS NOT NULL
-          AND language != 'EN'
-          AND EXISTS (
-              SELECT 1 FROM games en
-              WHERE en.language = 'EN'
-                AND en.shortcode = games.shortcode
-                AND en.thumbnail_key IS NOT NULL
-          )",
+        &format!(
+            "UPDATE games SET thumbnail_key = (
+                SELECT en.thumbnail_key FROM games en
+                WHERE en.language = 'EN'
+                  AND {same}
+                  AND en.thumbnail_key IS NOT NULL
+                LIMIT 1
+            )
+            WHERE shortcode IS NOT NULL
+              AND language != 'EN'
+              AND EXISTS (
+                  SELECT 1 FROM games en
+                  WHERE en.language = 'EN'
+                    AND {same}
+                    AND en.thumbnail_key IS NOT NULL
+              )"
+        ),
         [],
     )?;
 
     // Pass 2: canonical-title matching - catches LP games with divergent
-    // shortcodes but recognizably-same titles.
-    // Build canonical→thumbnail_key map from EN games with a hash.
-    let mut en_map: std::collections::HashMap<String, String> =
+    // shortcodes but recognizably-same titles. Keyed per (family, canonical),
+    // and rows pass 1 already matched are excluded: the shortcode link is the
+    // stronger signal, and this pass used to overwrite it on every start.
+    let mut en_map: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
+    let fam = queries::family_expr("games");
     {
-        let mut stmt = conn.prepare(
-            "SELECT title, thumbnail_key FROM games
+        let mut stmt = conn.prepare(&format!(
+            "SELECT title, thumbnail_key, {fam} FROM games
              WHERE language = 'EN' AND thumbnail_key IS NOT NULL",
-        )?;
+        ))?;
         let iter = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
-        for r in iter.flatten() {
-            en_map.entry(title_canonical(&r.0)).or_insert(r.1);
+        for (title, key, family) in iter.flatten() {
+            en_map.entry((family, title_canonical(&title))).or_insert(key);
         }
     }
 
-    // For each LP game, look up canonical title and overwrite thumbnail_key
-    // when an EN match exists and differs.
-    let lp_rows: Vec<(i64, String, Option<String>)> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, title, thumbnail_key FROM games WHERE language != 'EN'",
-        )?;
+    // For each LP game without a shortcode match, look up canonical title and
+    // overwrite thumbnail_key when an EN match exists and differs.
+    let lp_rows: Vec<(i64, String, Option<String>, String)> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, title, thumbnail_key, {fam} FROM games
+             WHERE language != 'EN'
+               AND NOT EXISTS (
+                   SELECT 1 FROM games en
+                   WHERE en.language = 'EN'
+                     AND {same}
+                     AND en.thumbnail_key IS NOT NULL
+               )",
+        ))?;
         let iter = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?;
         iter.flatten().collect()
@@ -727,8 +750,8 @@ pub fn propagate_lp_thumbnail_keys(conn: &Connection) -> DbResult<()> {
     let mut updated = 0usize;
     {
         let mut upd = tx.prepare_cached("UPDATE games SET thumbnail_key = ?1 WHERE id = ?2")?;
-        for (id, title, current) in &lp_rows {
-            if let Some(en_hash) = en_map.get(&title_canonical(title)) {
+        for (id, title, current, family) in &lp_rows {
+            if let Some(en_hash) = en_map.get(&(family.clone(), title_canonical(title))) {
                 if current.as_deref() != Some(en_hash) {
                     upd.execute(rusqlite::params![en_hash, id])?;
                     updated += 1;
@@ -994,5 +1017,37 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(members, vec![installed_delta]);
+    }
+
+    #[test]
+    fn lp_thumbnail_key_propagation_is_family_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, conn) = mk_db(dir.path(), "fam.db");
+        // The Gabriel Knight 2 constellation: the DE row's title canonicalizes
+        // to the Win9x EN row's title, while its shortcode links it to the DOS
+        // family's EN row. Pass 2 used to overwrite pass 1 with the Win9x key,
+        // whose file only exists in the Win9x poster pack.
+        conn.execute_batch(
+            "INSERT INTO games (title, language, shortcode, torrent_source, thumbnail_key) VALUES
+               ('The Beast Within: A Gabriel Knight Mystery', 'EN', 'GK2', 'eXoDOS', 'en_dos_key'),
+               ('Gabriel Knight 2: The Beast Within', 'EN', 'Gabriel Knight 2 - The Beast Within (1995)', 'eXoWin9x', 'win9x_key'),
+               ('Gabriel Knight 2 - The Beast Within', 'DE', 'GK2', 'eXoDOS_GLP', 'own_de_key');",
+        )
+        .unwrap();
+
+        let de_key = || -> String {
+            conn.query_row(
+                "SELECT thumbnail_key FROM games WHERE language = 'DE'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        propagate_lp_thumbnail_keys(&conn).unwrap();
+        assert_eq!(de_key(), "en_dos_key");
+        // Idempotent: the second run (every startup runs one) must not drift.
+        propagate_lp_thumbnail_keys(&conn).unwrap();
+        assert_eq!(de_key(), "en_dos_key");
     }
 }
