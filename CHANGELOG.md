@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.13.0 - 2026-08-14
+
+### Added
+
+- A tabular list view as an alternative to the cover grid, with sortable
+  columns. The grid/list toggle sits at the top right of both tabs, and the
+  My Library shelves follow the chosen view. (#21)
+- Grid sections (letters, genres, years) now close with a divider, so the end
+  of a section reads while scrolling. (#5)
+
+### Changed
+
+- The setup's first step now says plainly that Exodium creates subfolders
+  (games plus covers and caches) under the chosen folder, instead of promising
+  a bare game folder. Thanks to DerMicha75 for the feedback.
+- A preview video that has just finished fetching starts playing right away -
+  the cover already had its screen time during the download. The short pause
+  before the video takes over remains for videos that are already on disk.
+
+### Fixed
+
+- German, Spanish and Polish versions of some games showed no cover in the
+  detail panel, Gabriel Knight 2 among them. Their catalog rows carried a
+  cover key belonging to a same-named game in a different collection (the
+  Windows 9x pack catalogues many of the same titles), and every catalog
+  update re-imported the broken keys from the bundled database. All
+  cross-collection matching is now scoped to the pack family, the bundled
+  catalog is regenerated, and a catalog refresh repairs the cover linkage
+  itself instead of undoing it.
+- The detail panel falls back to the English cover when a language variant's
+  own cover file is missing, instead of showing an empty placeholder.
+- The view toggle in My Library had its bottom edge sliced off by the first
+  shelf title's sticky background.
+
 ## 0.12.2 - 2026-08-08
 
 ### Fixed
