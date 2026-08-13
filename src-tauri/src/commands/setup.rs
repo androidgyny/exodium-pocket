@@ -2541,7 +2541,16 @@ pub async fn setup_from_local(
         // two-step approach as generate_db.rs: exact EN title match first.
         // This is idempotent - rows already having values are unaffected.
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
-        let _ = conn.execute_batch(
+        // Every LP↔EN match is family-scoped (CLAUDE.md §1): titles and
+        // shortcodes repeat across pack families, and an unscoped match hands
+        // an LP row another family's shortcode - which orphans it from its
+        // variant group. There is deliberately NO thumbnail_key copy here:
+        // db::propagate_lp_thumbnail_keys below owns that rule, and a second
+        // copy of it drifted from the first once already.
+        let same = db::queries::same_group("en", "games");
+        let fam_en = db::queries::family_expr("en");
+        let fam_g = db::queries::family_expr("games");
+        let _ = conn.execute_batch(&format!(
             "-- Inherit shortcode from the matching EN game by exact title
              UPDATE games
              SET shortcode = (
@@ -2549,6 +2558,7 @@ pub async fn setup_from_local(
                  WHERE en.language = 'EN'
                    AND en.shortcode IS NOT NULL
                    AND en.title = games.title
+                   AND {fam_en} = {fam_g}
                  LIMIT 1
              )
              WHERE shortcode IS NULL;
@@ -2560,6 +2570,7 @@ pub async fn setup_from_local(
                  SELECT en.shortcode FROM games en
                  WHERE en.language = 'EN'
                    AND en.shortcode IS NOT NULL
+                   AND {fam_en} = {fam_g}
                    AND LOWER(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
                          en.title, ':', ' '), '-', ' '), ',', ''), '.', ''), '  ', ' ')))
                      = LOWER(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
@@ -2572,43 +2583,22 @@ pub async fn setup_from_local(
              UPDATE games
              SET dosbox_conf = (
                  SELECT en.dosbox_conf FROM games en
-                 WHERE en.shortcode = games.shortcode
+                 WHERE {same}
                    AND en.language = 'EN'
                    AND en.dosbox_conf IS NOT NULL
                  LIMIT 1
              )
              WHERE dosbox_conf IS NULL AND shortcode IS NOT NULL;
 
-             -- Propagate has_thumbnail flag from EN variant (same shortcode = same cover art)
+             -- Propagate has_thumbnail flag from EN variant (same group = same cover art)
              UPDATE games
              SET has_thumbnail = 1
-             WHERE shortcode IN (
-                 SELECT shortcode FROM games WHERE language = 'EN' AND has_thumbnail = 1
-             )
-             AND has_thumbnail = 0;
-
-             -- Overwrite LP variants' thumbnail_key with EN's hash so German/
-             -- Polish/Spanish versions share the EN primary's cover art. This
-             -- runs after populate_thumbnail_keys set every row to its own-title
-             -- hash, so LP rows here lose their per-language hash in favor of
-             -- the shared EN hash. Rows without an EN match keep their own.
-             UPDATE games
-             SET thumbnail_key = (
-                 SELECT en.thumbnail_key FROM games en
-                 WHERE en.language = 'EN'
-                   AND en.shortcode = games.shortcode
-                   AND en.thumbnail_key IS NOT NULL
-                 LIMIT 1
-             )
-             WHERE shortcode IS NOT NULL
-               AND language != 'EN'
+             WHERE has_thumbnail = 0
                AND EXISTS (
                    SELECT 1 FROM games en
-                   WHERE en.language = 'EN'
-                     AND en.shortcode = games.shortcode
-                     AND en.thumbnail_key IS NOT NULL
+                   WHERE en.language = 'EN' AND en.has_thumbnail = 1 AND {same}
                );",
-        );
+        ));
         log::info!("LP shortcode/dosbox_conf/has_thumbnail/thumbnail_key backfill complete");
 
         // Pass 3: pull shortcodes for LP-exclusive games from the bundled static DB.
@@ -2626,18 +2616,23 @@ pub async fn setup_from_local(
                 .execute_batch(&format!("ATTACH DATABASE '{path}' AS lp_static;", path = path_esc))
                 .is_ok();
             if attach_ok {
-                let result = conn.execute_batch(
+                // Title matches against the static DB are family-scoped too -
+                // it catalogues every pack, and eXoWin9x shares titles with
+                // the LP rows this pass is meant to serve.
+                let fam_s = db::queries::family_expr("s");
+                let result = conn.execute_batch(&format!(
                     "UPDATE games
                      SET shortcode = (
                          SELECT s.shortcode FROM lp_static.games s
                          WHERE s.title = games.title AND s.shortcode IS NOT NULL
+                           AND {fam_s} = {fam_g}
                          LIMIT 1
                      )
                      WHERE shortcode IS NULL AND language != 'EN';
                      UPDATE games
                      SET has_thumbnail = COALESCE((
                          SELECT s.has_thumbnail FROM lp_static.games s
-                         WHERE s.title = games.title
+                         WHERE s.title = games.title AND {fam_s} = {fam_g}
                          LIMIT 1
                      ), has_thumbnail)
                      WHERE language != 'EN' AND shortcode IS NOT NULL;
@@ -2645,19 +2640,20 @@ pub async fn setup_from_local(
                      SET thumbnail_key = COALESCE((
                          SELECT s.thumbnail_key FROM lp_static.games s
                          WHERE s.title = games.title AND s.thumbnail_key IS NOT NULL
+                           AND {fam_s} = {fam_g}
                          LIMIT 1
                      ), thumbnail_key)
                      WHERE thumbnail_key IS NULL AND language != 'EN';
                      UPDATE games
                      SET dosbox_conf = (
                          SELECT en.dosbox_conf FROM games en
-                         WHERE en.shortcode = games.shortcode
+                         WHERE {same}
                            AND en.language = 'EN'
                            AND en.dosbox_conf IS NOT NULL
                          LIMIT 1
                      )
                      WHERE dosbox_conf IS NULL AND shortcode IS NOT NULL;",
-                );
+                ));
                 let _ = conn.execute_batch("DETACH DATABASE lp_static;");
                 match result {
                     Ok(_) => log::info!("Pass 3: LP-exclusive shortcode backfill from static DB complete"),

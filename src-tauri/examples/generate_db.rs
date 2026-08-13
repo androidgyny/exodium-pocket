@@ -386,14 +386,23 @@ fn main() {
         println!("Dropped {} rows sharing another row's launcher", dupes.len());
     }
 
+    // Every LP↔EN match below is scoped to the pack family: titles AND
+    // shortcodes repeat across families (eXoWin9x catalogues "Gabriel Knight 2
+    // - The Beast Within", eXoDOS/eXoWin3x both use "EarthQue"), and an
+    // unscoped match hands an LP row another family's shortcode or key -
+    // which orphans it from its variant group and 404s its cover.
+    let fam_en = db::queries::family_expr("en");
+    let fam_g = db::queries::family_expr("games");
+
     // Pass 1: Exact title match backfill (same SQL as runtime)
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "UPDATE games SET shortcode = (
             SELECT en.shortcode FROM games en
             WHERE en.language = 'EN' AND en.shortcode IS NOT NULL AND en.title = games.title
+              AND {fam_en} = {fam_g}
             LIMIT 1
         ) WHERE shortcode IS NULL",
-    )
+    ))
     .unwrap();
 
     let null_after_pass1: usize = conn
@@ -401,26 +410,34 @@ fn main() {
         .unwrap();
     println!("\nAfter exact title backfill: {} games still without shortcode", null_after_pass1);
 
-    // Pass 2: Normalized title matching in Rust
-    let mut en_lookup: HashMap<String, String> = HashMap::new();
-    let mut en_ambiguous: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Pass 2: Normalized title matching in Rust, keyed per (family, title)
+    let family_of = |source: Option<&str>| -> String {
+        exodium_lib::collection_base_id(source.unwrap_or("eXoDOS")).to_string()
+    };
+    let mut en_lookup: HashMap<(String, String), String> = HashMap::new();
+    let mut en_ambiguous: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
     {
         let mut stmt = conn
-            .prepare("SELECT title, shortcode FROM games WHERE language = 'EN' AND shortcode IS NOT NULL")
+            .prepare("SELECT title, shortcode, torrent_source FROM games WHERE language = 'EN' AND shortcode IS NOT NULL")
             .unwrap();
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })
             .unwrap();
-        for row in rows.flatten() {
-            let normalized = normalize_title(&row.0);
-            match en_lookup.entry(normalized) {
+        for (title, shortcode, source) in rows.flatten() {
+            let key = (family_of(source.as_deref()), normalize_title(&title));
+            match en_lookup.entry(key) {
                 std::collections::hash_map::Entry::Occupied(e) => {
                     en_ambiguous.insert(e.key().clone());
                 }
                 std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(row.1);
+                    v.insert(shortcode);
                 }
             }
         }
@@ -430,13 +447,13 @@ fn main() {
         en_lookup.remove(key);
     }
 
-    let orphans: Vec<(i64, String)>;
+    let orphans: Vec<(i64, String, Option<String>)>;
     {
         let mut stmt = conn
-            .prepare("SELECT id, title FROM games WHERE shortcode IS NULL")
+            .prepare("SELECT id, title, torrent_source FROM games WHERE shortcode IS NULL")
             .unwrap();
         orphans = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
@@ -449,9 +466,9 @@ fn main() {
             .prepare_cached("UPDATE games SET shortcode = ?1 WHERE id = ?2")
             .unwrap();
 
-        for (id, title) in &orphans {
-            let normalized = normalize_title(title);
-            if let Some(shortcode) = en_lookup.get(&normalized) {
+        for (id, title, source) in &orphans {
+            let key = (family_of(source.as_deref()), normalize_title(title));
+            if let Some(shortcode) = en_lookup.get(&key) {
                 update.execute(params![shortcode, id]).unwrap();
                 pass2_matched += 1;
             }
@@ -508,18 +525,22 @@ fn main() {
     // This ensures thumbnails (which are named by EN shortcode) work for LP games
     let case_fixed = conn
         .execute(
-            "UPDATE games SET shortcode = (
-                SELECT en.shortcode FROM games en
-                WHERE en.language = 'EN' AND en.shortcode IS NOT NULL
-                  AND LOWER(en.shortcode) = LOWER(games.shortcode)
-                LIMIT 1
-            ) WHERE language != 'EN' AND shortcode IS NOT NULL
-              AND EXISTS (
-                SELECT 1 FROM games en
-                WHERE en.language = 'EN' AND en.shortcode IS NOT NULL
-                  AND LOWER(en.shortcode) = LOWER(games.shortcode)
-                  AND en.shortcode != games.shortcode
-            )",
+            &format!(
+                "UPDATE games SET shortcode = (
+                    SELECT en.shortcode FROM games en
+                    WHERE en.language = 'EN' AND en.shortcode IS NOT NULL
+                      AND LOWER(en.shortcode) = LOWER(games.shortcode)
+                      AND {fam_en} = {fam_g}
+                    LIMIT 1
+                ) WHERE language != 'EN' AND shortcode IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1 FROM games en
+                    WHERE en.language = 'EN' AND en.shortcode IS NOT NULL
+                      AND LOWER(en.shortcode) = LOWER(games.shortcode)
+                      AND {fam_en} = {fam_g}
+                      AND en.shortcode != games.shortcode
+                )",
+            ),
             [],
         )
         .unwrap();
@@ -528,13 +549,16 @@ fn main() {
     // Fill missing dosbox_conf from EN counterparts (LP translations share the EN config)
     let dosbox_filled = conn
         .execute(
-            "UPDATE games SET dosbox_conf = (
-                SELECT en.dosbox_conf FROM games en
-                WHERE en.shortcode = games.shortcode AND en.language = 'EN'
-                  AND en.dosbox_conf IS NOT NULL AND en.dosbox_conf != ''
-                LIMIT 1
-            ) WHERE (dosbox_conf IS NULL OR dosbox_conf = '')
-              AND shortcode IS NOT NULL",
+            &format!(
+                "UPDATE games SET dosbox_conf = (
+                    SELECT en.dosbox_conf FROM games en
+                    WHERE {same} AND en.language = 'EN'
+                      AND en.dosbox_conf IS NOT NULL AND en.dosbox_conf != ''
+                    LIMIT 1
+                ) WHERE (dosbox_conf IS NULL OR dosbox_conf = '')
+                  AND shortcode IS NOT NULL",
+                same = db::queries::same_group("en", "games"),
+            ),
             [],
         )
         .unwrap();
@@ -568,20 +592,23 @@ fn main() {
         }
         println!("  thumbnail_key pass 1 (EN own-title): {} games", en_titles.len());
 
-        // Pass 2: LP variants - copy EN's hash where shortcode matches.
+        // Pass 2: LP variants - copy EN's hash where the group matches.
         let pass2 = tx
             .execute(
-                "UPDATE games
-                 SET thumbnail_key = (
-                     SELECT en.thumbnail_key FROM games en
-                     WHERE en.language = 'EN'
-                       AND en.shortcode = games.shortcode
-                       AND en.thumbnail_key IS NOT NULL
-                     LIMIT 1
-                 )
-                 WHERE thumbnail_key IS NULL
-                   AND shortcode IS NOT NULL
-                   AND language != 'EN'",
+                &format!(
+                    "UPDATE games
+                     SET thumbnail_key = (
+                         SELECT en.thumbnail_key FROM games en
+                         WHERE en.language = 'EN'
+                           AND {same}
+                           AND en.thumbnail_key IS NOT NULL
+                         LIMIT 1
+                     )
+                     WHERE thumbnail_key IS NULL
+                       AND shortcode IS NOT NULL
+                       AND language != 'EN'",
+                    same = db::queries::same_group("en", "games"),
+                ),
                 [],
             )
             .unwrap_or(0);

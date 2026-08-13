@@ -181,7 +181,9 @@ pub struct GameFilter<'a> {
 /// the four eXoDOS language packs share one family and a collection with its
 /// own game tree forms its own. Built from COLLECTION_MAP - adding a pack
 /// needs no SQL edit here.
-pub(crate) fn family_expr(alias: &str) -> String {
+/// `pub` (not `pub(crate)`) because the generate_db example builds the bundled
+/// catalog with the same family rule - a private copy there drifted once.
+pub fn family_expr(alias: &str) -> String {
     // Only the packs that resolve elsewhere need an arm; a CASE without a match
     // yields NULL, so COALESCE lets every other collection stand for itself.
     let arms: String = crate::COLLECTION_MAP
@@ -202,7 +204,7 @@ pub(crate) fn family_expr(alias: &str) -> String {
 /// eXoDOS codes for unrelated games ("EarthQue" is Earthquest under DOS and
 /// Eyewitness Earth Quest under Win3x). Pairing on the shortcode alone would
 /// merge those into one card and hide the other game from the catalogue.
-pub(crate) fn same_group(a: &str, b: &str) -> String {
+pub fn same_group(a: &str, b: &str) -> String {
     format!(
         "{a}.shortcode = {b}.shortcode AND {fa} = {fb}",
         a = a,
