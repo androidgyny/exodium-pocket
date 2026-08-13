@@ -13,7 +13,7 @@ import { launchGame, gamePrintingUnavailable, win9xEngineAvailable, win9xMultipl
 import type { Win9xMultiplayerInfo, Win9xSupportStatus } from "../api/tauri";
 import { formatBytes, parseLangEntries, langBadgeClass, performUninstall, performReset } from "../util";
 import { showToast } from "../stores/toasts";
-import { bestThumbnailPath } from "../stores/thumbnails";
+import { bestThumbnailPath, thumbnailCandidates } from "../stores/thumbnails";
 import { downloads, startGameDownload, getDownloadState, cancelGameDownload, watchExtrasIfPending } from "../stores/downloads";
 import { loadGameMetadata } from "../stores/metadata";
 import { isOffline } from "../stores/network";
@@ -514,6 +514,7 @@ export function GameDetailPanel(props: Props) {
       watchExtrasIfPending(g.id, g.title);
     }
     setImgError(false);
+    setThumbIdx(0);
     setStatus("");
     setVariants([]);
     setMetadata(null);
@@ -640,6 +641,7 @@ export function GameDetailPanel(props: Props) {
     // The previous variant's cover may have 404'd; the new one gets a fresh
     // chance rather than inheriting the placeholder.
     setImgError(false);
+    setThumbIdx(0);
     setMetadataLoading(true);
     loadGameMetadata(v.torrent_source, v.title, v.shortcode ?? null, row?.manual_path ?? null)
       .then((m) => { if (selected()?.id === v.id) { setMetadata(m); } })
@@ -696,15 +698,30 @@ export function GameDetailPanel(props: Props) {
     onCleanup(() => window.removeEventListener("keydown", handleKeyDown, true));
   });
 
-  const thumbSrc = () => {
+  // LP rows usually inherit the EN thumbnail_key, but some carry a key with no
+  // file behind it (own-title hash from an old DB). A null key falls through to
+  // the primary row's candidates; a WRONG key only reveals itself as a 404, so
+  // the <img onError> walks this list instead of giving up on the first miss.
+  const thumbCandidates = () => {
     const g = selected() ?? props.game;
-    if (!g) { return null; }
-    // LP rows usually inherit the EN thumbnail_key, but fall back explicitly
-    // for the ones whose key never got propagated.
-    const path = bestThumbnailPath(g.torrent_source, g.thumbnail_key)
-      ?? bestThumbnailPath(props.game?.torrent_source, props.game?.thumbnail_key);
-    if (!path) { return null; }
-    return convertFileSrc(path);
+    if (!g) { return []; }
+    const own = thumbnailCandidates(g.torrent_source, g.thumbnail_key);
+    const p = props.game;
+    const primary = p && p.id !== g.id ? thumbnailCandidates(p.torrent_source, p.thumbnail_key) : [];
+    return [...own, ...primary.filter((c) => !own.includes(c))];
+  };
+  const [thumbIdx, setThumbIdx] = createSignal(0);
+  const thumbSrc = () => {
+    const list = thumbCandidates();
+    const i = thumbIdx();
+    return i < list.length ? convertFileSrc(list[i]) : null;
+  };
+  const handleThumbError = () => {
+    if (thumbIdx() < thumbCandidates().length - 1) {
+      setThumbIdx(thumbIdx() + 1);
+    } else {
+      setImgError(true);
+    }
   };
 
   const handleDownload = (gameId: number, title?: string) => {
@@ -766,6 +783,20 @@ export function GameDetailPanel(props: Props) {
     });
   });
 
+  // Was a fetch phase observed for the current game? Then the user already
+  // spent the wait looking at the cover, and the ready video starts at once.
+  // A cache hit reports "ready" as its first state and keeps the cover beat.
+  const [videoJustFetched, setVideoJustFetched] = createSignal(false);
+  let videoPhaseGame: number | null | undefined;
+  createEffect(() => {
+    const id = selected()?.id;
+    const phase = videoState()?.phase;
+    if (id !== videoPhaseGame) { videoPhaseGame = id; setVideoJustFetched(false); }
+    if (phase === "fetching" || phase === PHASE_PROBING || phase === PHASE_QUEUED) {
+      setVideoJustFetched(true);
+    }
+  });
+
   // Autoplay as soon as it lands, with sound. Autoplay policies only grant
   // that once the document has seen a user gesture, and opening this panel is
   // one - but a preview is worth more than its audio, so a rejected unmuted
@@ -806,7 +837,7 @@ export function GameDetailPanel(props: Props) {
       } catch {
         setVideoPlaying(false);
       }
-    }, VIDEO_START_DELAY_MS);
+    }, videoJustFetched() ? 0 : VIDEO_START_DELAY_MS);
     onCleanup(() => clearTimeout(timer));
   });
 
@@ -1040,7 +1071,7 @@ export function GameDetailPanel(props: Props) {
                 class="game-detail-thumb"
                 src={thumbSrc()!}
                 alt=""
-                onError={() => setImgError(true)}
+                onError={handleThumbError}
                 onClick={() => { setLightboxStart(lightboxIndexOfImage(0)); setLightboxOpen(true); }}
               />
             </Show>
