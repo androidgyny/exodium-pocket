@@ -26,7 +26,9 @@ pub type DbResult<T> = Result<T, DbError>;
 /// 3 = curated playlists shipped in the bundled DB, 4 = eXoWin3x,
 /// 5 = case-insensitive torrent matching (recovers games whose bat and zip
 /// disagree in case, e.g. "I Can be a Dinosaur Finder"), 6 = eXoWin9x,
-/// 7 = rating_votes ("Top rated" orders by vote count inside a star bucket).
+/// 7 = rating_votes ("Top rated" orders by vote count inside a star bucket),
+/// 8 = pack sentinels dropped, family-scoped LP shortcodes/keys, normalized
+/// language codes.
 pub const CATALOG_VERSION: i64 = 8;
 
 /// Open (or create) the Exodium database at the given path.
@@ -229,9 +231,16 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
     // matched across pack families), and the row copy above just wrote them
     // over whatever migrate() fixed at startup. Re-link after every refresh,
     // or the catalog update resurrects the broken covers it was meant to fix.
+    // Log-only: the version stamp is already committed above, so an Err here
+    // would make the caller skip enable_new_collections with no retry on the
+    // next start - and migrate() re-runs both helpers anyway.
     if result.is_ok() {
-        populate_thumbnail_keys(conn)?;
-        propagate_lp_thumbnail_keys(conn)?;
+        if let Err(e) = populate_thumbnail_keys(conn) {
+            log::warn!("post-refresh thumbnail key populate failed: {e}");
+        }
+        if let Err(e) = propagate_lp_thumbnail_keys(conn) {
+            log::warn!("post-refresh LP thumbnail relink failed: {e}");
+        }
     }
     result
 }
