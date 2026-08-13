@@ -27,7 +27,7 @@ pub type DbResult<T> = Result<T, DbError>;
 /// 5 = case-insensitive torrent matching (recovers games whose bat and zip
 /// disagree in case, e.g. "I Can be a Dinosaur Finder"), 6 = eXoWin9x,
 /// 7 = rating_votes ("Top rated" orders by vote count inside a star bucket).
-pub const CATALOG_VERSION: i64 = 7;
+pub const CATALOG_VERSION: i64 = 8;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
@@ -428,6 +428,22 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     // manual_path; if zero, reads all bundled .xml.gz files and updates matching
     // rows by title. Idempotent - subsequent calls find rows populated and skip.
     populate_manual_paths(conn)?;
+
+    // Purge pack sentinel rows ("! eXoDOS" / "! eXoWin9x" with a root-level
+    // Setup bat) that older imports let through - the XML filter only knew the
+    // pathless eXoWin3x shape. They sat at the very top of every sort under
+    // "All Collections". refresh_catalog never deletes rows, so existing
+    // installs need this even after the regenerated catalog drops them.
+    let purged = conn.execute(
+        "DELETE FROM games
+         WHERE sort_title LIKE '!%'
+           AND (application_path IS NULL
+                OR (application_path NOT LIKE '%\\%' AND application_path NOT LIKE '%/%'))",
+        [],
+    )?;
+    if purged > 0 {
+        log::info!("Removed {} pack sentinel rows", purged);
+    }
 
     Ok(())
 }

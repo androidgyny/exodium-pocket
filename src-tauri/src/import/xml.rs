@@ -186,14 +186,20 @@ fn xml_game_to_game(x: XmlGame, shortcode_segment: &str) -> Game {
 /// `shortcode_segment` selects the path component used for shortcode extraction
 /// (e.g. "!dos" for eXoDOS, "!windows" for eXoWin3x).
 /// LaunchBox catalogues carry one entry for the pack itself, pinned to the top
-/// of the list by a `!`-prefixed SortTitle. eXoWin3x's has no ApplicationPath
-/// and no RootFolder, so it would otherwise become a card that cannot launch,
-/// download or show art. Both conditions are required: the three GLP rows that
-/// legitimately lack paths carry no SortTitle at all.
+/// of the list by a `!`-prefixed SortTitle. The shape varies per pack:
+/// eXoWin3x's has no ApplicationPath at all, eXoDOS's and eXoWin9x's point at
+/// a root-level "Setup <pack>.bat". What they share is the artificial sort
+/// prefix and the absence of a real game path (every launchable game lives
+/// under `eXo\...`, so its path has a directory separator). The GLP rows that
+/// legitimately lack paths carry no SortTitle at all and stay in.
 fn is_pack_sentinel(g: &Game) -> bool {
-    g.application_path.is_none()
-        && g.dosbox_conf.is_none()
-        && g.sort_title.as_deref().is_some_and(|s| s.starts_with('!'))
+    // No dosbox_conf guard: the eXoDOS/eXoWin9x sentinels DO carry a
+    // RootFolder ("..\"), which the field mapping turns into a junk conf path.
+    let pathless_or_root = match g.application_path.as_deref() {
+        None => true,
+        Some(p) => !p.contains('\\') && !p.contains('/'),
+    };
+    pathless_or_root && g.sort_title.as_deref().is_some_and(|s| s.starts_with('!'))
 }
 
 pub fn parse_games_xml<R: BufRead>(reader: R, shortcode_segment: &str) -> ImportResult<Vec<Game>> {
@@ -361,5 +367,33 @@ mod tests {
         let de = games.iter().find(|g| g.language == "DE").unwrap();
         assert_eq!(de.title, "Space Quest V DE");
         assert_eq!(de.shortcode.as_deref(), Some("SQ5"));
+    }
+
+    // Pack sentinels come in two shapes: pathless (eXoWin3x) and pointing at a
+    // root-level Setup bat (eXoDOS, eXoWin9x). Both must be dropped; a real
+    // game with a directory path stays even if someone gave it a SortTitle.
+    #[test]
+    fn parse_games_xml_drops_both_sentinel_shapes() {
+        let xml = r#"<?xml version="1.0"?>
+<LaunchBox>
+  <Game>
+    <Title>eXoDOS</Title>
+    <SortTitle>! eXoDOS</SortTitle>
+    <ApplicationPath>Setup eXoDOS.bat</ApplicationPath>
+    <RootFolder>..\</RootFolder>
+  </Game>
+  <Game>
+    <Title>eXoWin3x</Title>
+    <SortTitle>! eXoWin3x</SortTitle>
+  </Game>
+  <Game>
+    <Title>Space Quest V</Title>
+    <SortTitle>!Pinned But Real</SortTitle>
+    <ApplicationPath>eXo\eXoDOS\!dos\SQ5\dosbox.conf</ApplicationPath>
+  </Game>
+</LaunchBox>"#;
+        let games = parse_games_xml(BufReader::new(xml.as_bytes()), "!dos").unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].title, "Space Quest V");
     }
 }
