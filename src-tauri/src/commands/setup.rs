@@ -2300,6 +2300,30 @@ pub fn game_name_from_app_path(app_path: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// Names to look for in a torrent, best first.
+///
+/// eXo names every zip `<Title> (<Year>).zip`, and the launcher bat repeats
+/// that name - so the path is the reliable source. Three GLP games are
+/// catalogued with no ApplicationPath at all (issue #26); for those the plain
+/// title misses the year suffix, leaving them unmatched and therefore
+/// undownloadable, so reconstruct the eXo name from title + year as a
+/// fallback. Both matchers (runtime and generate_db) use this.
+pub fn torrent_search_names(
+    title: &str,
+    app_path: Option<&str>,
+    year: Option<i64>,
+) -> Vec<String> {
+    if let Some(from_path) = app_path.and_then(game_name_from_app_path) {
+        return vec![from_path];
+    }
+    let mut names = Vec::with_capacity(2);
+    if let Some(y) = year {
+        names.push(format!("{title} ({y})"));
+    }
+    names.push(title.to_string());
+    names
+}
+
 /// Match imported games to their torrent file indices.
 /// `torrent_source` identifies which torrent file this is.
 fn match_torrent_indices(
@@ -2312,10 +2336,14 @@ fn match_torrent_indices(
 
     // Only match games that don't already have a torrent index
     let mut stmt = conn
-        .prepare("SELECT id, title, application_path FROM games WHERE game_torrent_index IS NULL")
+        .prepare(
+            "SELECT id, title, application_path, year FROM games WHERE game_torrent_index IS NULL",
+        )
         .map_err(|e| e.to_string())?;
-    let games: Vec<(i64, String, Option<String>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+    let games: Vec<(i64, String, Option<String>, Option<i64>)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -2329,13 +2357,12 @@ fn match_torrent_indices(
             )
             .map_err(|e| e.to_string())?;
 
-        for (id, title, app_path) in &games {
-            let search_name = app_path
-                .as_deref()
-                .and_then(game_name_from_app_path)
-                .unwrap_or_else(|| title.clone());
-
-            let (game_entry, gamedata_entry) = index.find_game_files(&search_name);
+        for (id, title, app_path, year) in &games {
+            let (game_entry, gamedata_entry) = torrent_search_names(title, app_path.as_deref(), *year)
+                .iter()
+                .map(|name| index.find_game_files(name))
+                .find(|(game, _)| game.is_some())
+                .unwrap_or((None, None));
 
             if let Some(game) = game_entry {
                 let gamedata_idx = gamedata_entry.map(|g| g.index as i64);
@@ -3081,6 +3108,38 @@ fn bundled_torrent_path(filename: &str) -> Result<PathBuf, String> {
         filename,
         dev_path.display()
     ))
+}
+
+#[cfg(test)]
+mod search_name_tests {
+    use super::*;
+
+    #[test]
+    fn app_path_wins_and_is_the_only_candidate() {
+        let names = torrent_search_names(
+            "Capitalism",
+            Some(r"eXo\eXoDOS\!dos\captlsm\Capitalism (1995).bat"),
+            Some(1995),
+        );
+        assert_eq!(names, vec!["Capitalism (1995)".to_string()]);
+    }
+
+    #[test]
+    fn pathless_row_reconstructs_the_exo_zip_name_from_title_and_year() {
+        // The three GLP games without an ApplicationPath (issue #26): their
+        // zip is "<Title> (<Year>).zip", so the bare title never matches.
+        let names = torrent_search_names("Kathedrale, Die", None, Some(1991));
+        assert_eq!(names[0], "Kathedrale, Die (1991)");
+        assert_eq!(names[1], "Kathedrale, Die");
+    }
+
+    #[test]
+    fn pathless_row_without_a_year_still_tries_the_title() {
+        assert_eq!(
+            torrent_search_names("Some Game", None, None),
+            vec!["Some Game".to_string()]
+        );
+    }
 }
 
 #[cfg(test)]

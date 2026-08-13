@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::params;
 
 use exodium_lib::db;
-use exodium_lib::game_name_from_app_path;
+use exodium_lib::torrent_search_names;
 use exodium_lib::import::xml::parse_games_xml;
 use exodium_lib::torrent::TorrentIndex;
 use exodium_lib::COLLECTION_MAP;
@@ -134,10 +134,14 @@ fn match_torrent_indices(
     let mut unmatched = 0usize;
 
     let mut stmt = conn
-        .prepare("SELECT id, title, application_path FROM games WHERE game_torrent_index IS NULL")
+        .prepare(
+            "SELECT id, title, application_path, year FROM games WHERE game_torrent_index IS NULL",
+        )
         .unwrap();
-    let games: Vec<(i64, String, Option<String>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+    let games: Vec<(i64, String, Option<String>, Option<i64>)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();
@@ -151,13 +155,14 @@ fn match_torrent_indices(
             )
             .unwrap();
 
-        for (id, title, app_path) in &games {
-            let search_name = app_path
-                .as_deref()
-                .and_then(game_name_from_app_path)
-                .unwrap_or_else(|| title.clone());
-
-            let (game_entry, gamedata_entry) = index.find_game_files(&search_name);
+        for (id, title, app_path, year) in &games {
+            let search_names = torrent_search_names(title, app_path.as_deref(), *year);
+            let search_name = search_names[0].clone();
+            let (game_entry, gamedata_entry) = search_names
+                .iter()
+                .map(|name| index.find_game_files(name))
+                .find(|(game, _)| game.is_some())
+                .unwrap_or((None, None));
 
             if let Some(game) = game_entry {
                 let gamedata_idx = gamedata_entry.map(|g| g.index as i64);

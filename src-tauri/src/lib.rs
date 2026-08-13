@@ -7,6 +7,7 @@ pub mod vhd;
 
 // Re-export utilities used by the generate_db binary and integration tests
 pub use commands::game_name_from_app_path;
+pub use commands::torrent_search_names;
 pub use commands::{collection_base_id, collection_data_dir, CollectionDef, COLLECTION_MAP};
 
 use std::path::Path;
