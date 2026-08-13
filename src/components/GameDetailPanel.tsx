@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, For, onCleanup, onMount } from "solid-js";
+import { createSignal, createEffect, on, Show, For, onCleanup, onMount } from "solid-js";
 import { Portal } from "solid-js/web";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { AutoProgress } from "./ProgressBar";
@@ -514,7 +514,6 @@ export function GameDetailPanel(props: Props) {
       watchExtrasIfPending(g.id, g.title);
     }
     setImgError(false);
-    setThumbIdx(0);
     setStatus("");
     setVariants([]);
     setMetadata(null);
@@ -639,9 +638,10 @@ export function GameDetailPanel(props: Props) {
     setMetadata(null);
     setBrokenImages(new Set<number>());
     // The previous variant's cover may have 404'd; the new one gets a fresh
-    // chance rather than inheriting the placeholder.
+    // chance rather than inheriting the placeholder. (The walk itself resets
+    // via the keyed effect above - doing it here too restarted a completed
+    // fallback at settle time.)
     setImgError(false);
-    setThumbIdx(0);
     setMetadataLoading(true);
     loadGameMetadata(v.torrent_source, v.title, v.shortcode ?? null, row?.manual_path ?? null)
       .then((m) => { if (selected()?.id === v.id) { setMetadata(m); } })
@@ -711,12 +711,26 @@ export function GameDetailPanel(props: Props) {
     return [...own, ...primary.filter((c) => !own.includes(c))];
   };
   const [thumbIdx, setThumbIdx] = createSignal(0);
+  // Same reset rule as GameCard: a new row OR a changed tier list starts the
+  // walk over. Keyed on the value so the settle-time re-run of the metadata
+  // effect below cannot restart a walk that already fell through to Tier 0.
+  createEffect(on(
+    () => `${selected()?.id}|${thumbCandidates().join("|")}`,
+    () => { setImgError(false); setThumbIdx(0); },
+    { defer: true },
+  ));
   const thumbSrc = () => {
     const list = thumbCandidates();
-    const i = thumbIdx();
-    return i < list.length ? convertFileSrc(list[i]) : null;
+    if (list.length === 0) { return null; }
+    // Clamp: the reset effect lands a frame after a shrinking list, and an
+    // out-of-range index would show the placeholder over a valid cover.
+    return convertFileSrc(list[thumbIdx()] ?? list[list.length - 1]);
   };
-  const handleThumbError = () => {
+  const handleThumbError = (e: Event) => {
+    // The <img> survives row switches (only its src changes), so a 404 still
+    // in flight when the panel moves on would advance the NEW row's walk.
+    const failed = (e.currentTarget as HTMLImageElement).getAttribute("src");
+    if (failed !== thumbSrc()) { return; }
     if (thumbIdx() < thumbCandidates().length - 1) {
       setThumbIdx(thumbIdx() + 1);
     } else {
@@ -801,13 +815,28 @@ export function GameDetailPanel(props: Props) {
   // that once the document has seen a user gesture, and opening this panel is
   // one - but a preview is worth more than its audio, so a rejected unmuted
   // play retries muted rather than leaving the cover sitting there.
+  // Latched on the row, NOT re-armed per effect run: `videoState()` reads the
+  // whole videos store, which every background fetch rewrites once per poll.
+  // Re-running the timer on those writes replayed a running preview from 0:00
+  // every 700 ms (and, with the old fixed delay, postponed it forever).
+  let autoplayTimer: number | undefined;
+  let autoplayFor: number | null | undefined;
+  onCleanup(() => { if (autoplayTimer) { clearTimeout(autoplayTimer); } });
   createEffect(() => {
-    if (!videoReady()) { return; }
+    const id = selected()?.id;
+    if (id !== autoplayFor) {
+      // Row changed - drop a start still pending for the previous one.
+      if (autoplayTimer) { clearTimeout(autoplayTimer); autoplayTimer = undefined; }
+      autoplayFor = undefined;
+    }
+    if (!videoReady() || id == null || id === autoplayFor) { return; }
+    autoplayFor = id;
     // Let the cover have the panel first. Opening a game and being met by a
     // trailer mid-motion reads as an ad; two seconds is long enough to take in
     // the box art, and the fade then belongs to the video rather than to the
     // panel opening. Cleared on close and on switching games.
-    const timer = window.setTimeout(() => {
+    autoplayTimer = window.setTimeout(() => {
+      autoplayTimer = undefined;
       const el = heroVideoRef;
       if (!el) { return; }
       try {
@@ -838,7 +867,6 @@ export function GameDetailPanel(props: Props) {
         setVideoPlaying(false);
       }
     }, videoJustFetched() ? 0 : VIDEO_START_DELAY_MS);
-    onCleanup(() => clearTimeout(timer));
   });
 
   /** Toggling mute mid-playback also un-mutes a fallback-muted video, since
