@@ -225,6 +225,14 @@ pub fn refresh_catalog(conn: &mut Connection, bundled_db: &Path) -> DbResult<(us
     })();
 
     let _ = conn.execute("DETACH DATABASE cat", []);
+    // The bundled artefact can carry stale LP thumbnail keys (its generator
+    // matched across pack families), and the row copy above just wrote them
+    // over whatever migrate() fixed at startup. Re-link after every refresh,
+    // or the catalog update resurrects the broken covers it was meant to fix.
+    if result.is_ok() {
+        populate_thumbnail_keys(conn)?;
+        propagate_lp_thumbnail_keys(conn)?;
+    }
     result
 }
 
@@ -1017,6 +1025,42 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(members, vec![installed_delta]);
+    }
+
+    #[test]
+    fn refresh_catalog_relinks_lp_thumbnail_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, mut installed) = mk_db(dir.path(), "installed.db");
+        installed
+            .execute_batch(
+                "INSERT INTO games (title, language, shortcode, torrent_source, thumbnail_key) VALUES
+                   ('The Beast Within: A Gabriel Knight Mystery', 'EN', 'GK2', 'eXoDOS', 'en_dos_key'),
+                   ('Gabriel Knight 2 - The Beast Within', 'DE', 'GK2', 'eXoDOS_GLP', 'en_dos_key');",
+            )
+            .unwrap();
+
+        // The bundled DB carries a cross-family key for the DE row - the row
+        // copy writes it into the installed DB, and the refresh has to repair
+        // that itself or every catalog update breaks the LP covers again.
+        let (bundled_path, bundled) = mk_db(dir.path(), "bundled.db");
+        bundled
+            .execute_batch(
+                "INSERT INTO games (title, language, shortcode, torrent_source, thumbnail_key) VALUES
+                   ('The Beast Within: A Gabriel Knight Mystery', 'EN', 'GK2', 'eXoDOS', 'en_dos_key'),
+                   ('Gabriel Knight 2 - The Beast Within', 'DE', 'GK2', 'eXoDOS_GLP', 'win9x_key');",
+            )
+            .unwrap();
+        drop(bundled);
+
+        refresh_catalog(&mut installed, &bundled_path).unwrap();
+        let de_key: String = installed
+            .query_row(
+                "SELECT thumbnail_key FROM games WHERE language = 'DE'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(de_key, "en_dos_key");
     }
 
     #[test]
