@@ -445,6 +445,22 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         log::info!("Removed {} pack sentinel rows", purged);
     }
 
+    // Normalize spelled-out language names left by older imports (the main
+    // eXoDOS catalog writes "Language: Japanese" where the packs write codes).
+    // Mirrors import::xml::normalize_language; a catalog refresh also carries
+    // the corrected values, but a DB already stamped current never refreshes.
+    conn.execute_batch(
+        "UPDATE games SET language = CASE language
+            WHEN 'ENGLISH' THEN 'EN' WHEN 'GERMAN' THEN 'DE'
+            WHEN 'SPANISH' THEN 'ES' WHEN 'POLISH' THEN 'PL'
+            WHEN 'FRENCH' THEN 'FR' WHEN 'ITALIAN' THEN 'IT'
+            WHEN 'DUTCH' THEN 'NL' WHEN 'FINNISH' THEN 'FI'
+            WHEN 'JAPANESE' THEN 'JA' WHEN 'CHINESE' THEN 'ZH'
+            ELSE language END
+         WHERE language IN ('ENGLISH','GERMAN','SPANISH','POLISH','FRENCH',
+                            'ITALIAN','DUTCH','FINNISH','JAPANESE','CHINESE')",
+    )?;
+
     Ok(())
 }
 

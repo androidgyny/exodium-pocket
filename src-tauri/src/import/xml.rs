@@ -105,6 +105,11 @@ fn extract_year(date_str: &Option<String>) -> Option<i32> {
 
 /// Extract language code from the Series field.
 /// e.g. "Language: DE" → "DE", "Playlist: Roland MT-32; Language: FR" → "FR"
+///
+/// The source data has no standard: the language packs write ISO-style codes,
+/// the main eXoDOS catalog spells the language out ("Language: Japanese").
+/// Normalize the spelled-out names so the badges read uniformly - unknown
+/// values pass through verbatim rather than being guessed at.
 fn extract_language(series: &Option<String>) -> String {
     if let Some(s) = series {
         for part in s.split(';') {
@@ -112,12 +117,29 @@ fn extract_language(series: &Option<String>) -> String {
             if let Some(lang) = trimmed.strip_prefix("Language:") {
                 let code = lang.trim().to_uppercase();
                 if !code.is_empty() {
-                    return code;
+                    return normalize_language(&code);
                 }
             }
         }
     }
     "EN".to_string()
+}
+
+fn normalize_language(code: &str) -> String {
+    match code {
+        "ENGLISH" => "EN",
+        "GERMAN" => "DE",
+        "SPANISH" => "ES",
+        "POLISH" => "PL",
+        "FRENCH" => "FR",
+        "ITALIAN" => "IT",
+        "DUTCH" => "NL",
+        "FINNISH" => "FI",
+        "JAPANESE" => "JA",
+        "CHINESE" => "ZH",
+        other => other,
+    }
+    .to_string()
 }
 
 /// Convert a raw XML game record to our Game model.
@@ -299,6 +321,14 @@ mod tests {
     }
 
     // ── extract_language ────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_language_normalizes_spelled_out_names() {
+        assert_eq!(extract_language(&Some("Language: German".to_string())), "DE");
+        assert_eq!(extract_language(&Some("Language: Japanese".to_string())), "JA");
+        // Unknown values pass through instead of being guessed at.
+        assert_eq!(extract_language(&Some("Language: Klingon".to_string())), "KLINGON");
+    }
 
     #[test]
     fn extract_language_de() {
