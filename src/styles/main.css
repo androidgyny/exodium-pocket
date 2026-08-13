@@ -1046,7 +1046,10 @@ body {
 
 .library-toolbar-plain {
   position: static;
-  padding: 14px 0 4px;
+  /* ≥12px bottom clearance: the shelf title below carries an opaque 12px
+     upward box-shadow and is positioned (sticky), so it paints over this
+     static toolbar - with less clearance it slices the toggle's bottom off. */
+  padding: 14px 0 16px;
 }
 
 .view-toggle-btn {
