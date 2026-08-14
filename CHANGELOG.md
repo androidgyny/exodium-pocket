@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Spanish and Polish games that exist only in their language pack could be
+  downloaded but not started - they had no DOSBox configuration, because the
+  English catalog has no counterpart to borrow one from. Both packs' own
+  configurations now ship with Exodium, which makes almost all of them
+  playable. A handful remain for which eXo ships no configuration either.
+- Many Spanish and Polish games appeared as their own card next to the English
+  version of the same game. They are now language variants on one card, like
+  the German ones, and use their own configuration when launched.
+
 - Two entries for the collections themselves ("eXoDOS", "eXoWin9x") were listed
   as if they were games, and sorted to the very top of every list under All
   Collections. They come from eXo's own catalogs, which pin them there for the

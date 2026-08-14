@@ -261,6 +261,18 @@ pnpm tauri dev
 
 `init-dev` chains `get-dosbox` + thumbnail generation. Each step is idempotent - already-downloaded files are skipped. When run interactively without pack flags it prompts whether to download LP metadata. `XODOSMetadata.zip` is only used for thumbnails - the game catalogue comes from the bundled `.xml.gz` files. Downloaded ZIPs are cached under `~/.exodium-dev/` (override with `XDO_DEV_DATA=/your/path`).
 
+**Raise `CATALOG_VERSION` BEFORE running `pnpm run gen-db`, never after.**
+`gen-db` writes the constant into the artefact, and `refresh_catalog` stamps an
+installed DB with the ARTEFACT's value (deliberately - a stale bundled catalog
+must not mark itself current). So regenerating twice under one number leaves
+every machine that already took the first build stamped current and the newer
+rows never arrive ("my fix does nothing"), while bumping without regenerating
+afterwards makes every start refresh and re-stamp the old number - an endless
+loop, visible as `Catalog refreshed vN -> vN+1` at every launch. Verify with
+`sqlite3 metadata/exodium.db "SELECT value FROM config WHERE key='catalog_version'"`.
+A dev machine stranded by the first case is unstuck by setting its own
+`catalog_version` one lower and restarting.
+
 **Before pushing Rust changes, run what CI runs:**
 
 ```bash
