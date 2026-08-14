@@ -29,8 +29,10 @@ pub type DbResult<T> = Result<T, DbError>;
 /// 7 = rating_votes ("Top rated" orders by vote count inside a star bucket),
 /// 8 = pack sentinels dropped, family-scoped LP shortcodes/keys, normalized
 /// language codes, 9 = LP rows linked to their EN game by canonical title
-/// (they inherit its dosbox.conf and could not launch without it).
-pub const CATALOG_VERSION: i64 = 9;
+/// (they inherit its dosbox.conf and could not launch without it),
+/// 10 = Spanish/Polish rows carry eXo's own directory code and config path,
+/// which also merges them into their English game's card.
+pub const CATALOG_VERSION: i64 = 10;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {

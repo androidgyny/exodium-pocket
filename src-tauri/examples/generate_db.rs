@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::params;
 
 use exodium_lib::db;
+use exodium_lib::game_name_from_app_path;
 use exodium_lib::torrent_search_names;
 use exodium_lib::import::xml::parse_games_xml;
 use exodium_lib::torrent::TorrentIndex;
@@ -389,6 +390,59 @@ fn main() {
             conn.execute("DELETE FROM games WHERE id = ?1", params![id]).unwrap();
         }
         println!("Dropped {} rows sharing another row's launcher", dupes.len());
+    }
+
+    // eXo's own layout for the Spanish and Polish packs, read from the
+    // bundled config archives: `!dos/<lang>/<code>/` holds the game's
+    // dosbox.conf next to a launcher named after the game, and `<code>` is
+    // also the directory the game ZIP extracts to. Those two XMLs carry no
+    // shortcode and no RootFolder, so this file is the only link between a
+    // catalogue row and the config it launches with - without it, 363
+    // LP-exclusive games were downloadable but had nothing to run.
+    for (pack, lang) in [("SLP", "!spanish"), ("PLP", "!polish")] {
+        let map_path = metadata_dir.join(format!("{pack}_confdirs.txt"));
+        let Ok(content) = std::fs::read_to_string(&map_path) else {
+            eprintln!("Warning: {} not found - skipping", map_path.display());
+            continue;
+        };
+        let by_bat: HashMap<&str, &str> = content
+            .lines()
+            .filter_map(|l| l.split_once(':'))
+            .collect();
+        let source = format!("eXoDOS_{pack}");
+        let rows: Vec<(i64, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, application_path FROM games WHERE torrent_source = ?1")
+                .unwrap();
+            stmt.query_map(params![&source], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        let mut linked = 0usize;
+        {
+            let mut update = tx
+                .prepare_cached("UPDATE games SET shortcode = ?1, dosbox_conf = ?2 WHERE id = ?3")
+                .unwrap();
+            for (id, app_path) in &rows {
+                let Some(stem) = app_path.as_deref().and_then(game_name_from_app_path) else {
+                    continue;
+                };
+                let Some(code) = by_bat.get(stem.as_str()) else {
+                    continue;
+                };
+                // Windows separators, like every other row's stored path.
+                let conf = format!("eXo\\eXoDOS\\!dos\\{lang}\\{code}/dosbox.conf");
+                update.execute(params![code, conf, id]).unwrap();
+                linked += 1;
+            }
+        }
+        tx.commit().unwrap();
+        println!(
+            "{pack}: {linked}/{} rows linked to eXo's config directory",
+            rows.len()
+        );
     }
 
     // Every LP↔EN match below is scoped to the pack family: titles AND
