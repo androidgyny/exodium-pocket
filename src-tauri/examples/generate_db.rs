@@ -484,6 +484,118 @@ fn main() {
 
     println!("After normalized matching: {} more matched to EN shortcodes", pass2_matched);
 
+    // Pass 2b: canonical-title matching, the same fingerprint the cover
+    // propagation uses (article/numeral/punctuation drift). `normalize_title`
+    // above keeps LaunchBox's sort form ("Elder Scrolls, The - Arena") apart
+    // from eXo's natural one ("The Elder Scrolls: Arena"), which left 23 LP
+    // games without an EN link - and therefore without the EN dosbox.conf they
+    // launch with. Ambiguous fingerprints are skipped: a wrong link merges two
+    // games into one card and hides one of them.
+    let mut canon_lookup: HashMap<(String, String), String> = HashMap::new();
+    let mut canon_ambiguous: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT title, shortcode, torrent_source FROM games
+                 WHERE language = 'EN' AND shortcode IS NOT NULL
+                   AND dosbox_conf IS NOT NULL AND dosbox_conf != ''",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .unwrap();
+        for (title, shortcode, source) in rows.flatten() {
+            let key = (family_of(source.as_deref()), db::title_canonical(&title));
+            match canon_lookup.entry(key) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    canon_ambiguous.insert(e.key().clone());
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(shortcode);
+                }
+            }
+        }
+    }
+    for key in &canon_ambiguous {
+        canon_lookup.remove(key);
+    }
+
+    // One language may occupy a group only once - a group is "one game per
+    // language" and the UI shows a single chip per language. Spanish ships
+    // three rows that all canonicalize onto King's Quest I (AGI original, SCI
+    // remake, and a duplicate); linking them all would leave two of them
+    // unreachable behind one chip. First row by id wins, the rest keep their
+    // own generated shortcode and stay separate cards.
+    let mut occupied: std::collections::HashSet<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT torrent_source, shortcode, language FROM games WHERE shortcode IS NOT NULL",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((
+                family_of(row.get::<_, Option<String>>(0)?.as_deref()),
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    let canon_orphans: Vec<(i64, String, Option<String>, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, torrent_source, language FROM games
+                 WHERE shortcode IS NULL ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+    let mut pass2b_matched = 0usize;
+    let mut pass2b_skipped = 0usize;
+    {
+        let tx = conn.unchecked_transaction().unwrap();
+        let mut update = tx
+            .prepare_cached("UPDATE games SET shortcode = ?1 WHERE id = ?2")
+            .unwrap();
+        for (id, title, source, language) in &canon_orphans {
+            let family = family_of(source.as_deref());
+            let Some(shortcode) = canon_lookup.get(&(family.clone(), db::title_canonical(title)))
+            else {
+                continue;
+            };
+            let slot = (family, shortcode.clone(), language.clone());
+            if occupied.contains(&slot) {
+                println!("  canonical link skipped (slot taken): \"{title}\" -> {shortcode}");
+                pass2b_skipped += 1;
+                continue;
+            }
+            update.execute(params![shortcode, id]).unwrap();
+            occupied.insert(slot);
+            pass2b_matched += 1;
+        }
+        drop(update);
+        tx.commit().unwrap();
+    }
+    println!(
+        "After canonical matching: {pass2b_matched} more matched to EN shortcodes \
+         ({pass2b_skipped} skipped, language slot already taken)"
+    );
+
     // Pass 3: Generate shortcodes for remaining LP-exclusive games
     // These have no EN counterpart, so they get a new unique shortcode derived from their title
     let existing_shortcodes: std::collections::HashSet<String> = {

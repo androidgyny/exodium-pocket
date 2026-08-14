@@ -28,8 +28,9 @@ pub type DbResult<T> = Result<T, DbError>;
 /// disagree in case, e.g. "I Can be a Dinosaur Finder"), 6 = eXoWin9x,
 /// 7 = rating_votes ("Top rated" orders by vote count inside a star bucket),
 /// 8 = pack sentinels dropped, family-scoped LP shortcodes/keys, normalized
-/// language codes.
-pub const CATALOG_VERSION: i64 = 8;
+/// language codes, 9 = LP rows linked to their EN game by canonical title
+/// (they inherit its dosbox.conf and could not launch without it).
+pub const CATALOG_VERSION: i64 = 9;
 
 /// Open (or create) the Exodium database at the given path.
 pub fn open(path: &Path) -> DbResult<Connection> {
@@ -631,7 +632,7 @@ fn title_thumbnail_key(title: &str) -> String {
 ///
 /// Only the leading article is stripped (not every occurrence) so subtitles
 /// like "The Hand of Fate" inside a longer title stay intact.
-fn title_canonical(title: &str) -> String {
+pub fn title_canonical(title: &str) -> String {
     let t = title.trim().to_lowercase();
 
     // Word-number and Roman-numeral substitutions. Applied token-by-token so
