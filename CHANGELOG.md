@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.13.1 - 2026-08-14
+
+### Fixed
+
+- Two entries for the collections themselves ("eXoDOS", "eXoWin9x") were listed
+  as if they were games, and sorted to the very top of every list under All
+  Collections. They come from eXo's own catalogs, which pin them there for the
+  LaunchBox setup; existing libraries drop them on the next start.
+- Language badges read as a mix of codes and full names, so the same language
+  could appear as both "DE" and "GERMAN". The language packs write codes, the
+  main eXoDOS catalog spells them out - all of them are now codes.
+- Three German games (Sherlock Holmes: Serrated Scalpel, CyberMage, Die
+  Kathedrale) offered no way to install them. Their catalog entries carry no
+  file path, which is what the download normally keys on; they are now found by
+  title and year instead.
+- A preview video restarted from the beginning every second or so while another
+  game's video was still downloading in the background. The same cause could
+  keep an already-downloaded video from ever starting.
+- The detail panel could show the placeholder instead of the cover when
+  clicking quickly through games with a poster pack installed.
+
 ## 0.13.0 - 2026-08-14
 
 ### Added
