@@ -274,6 +274,30 @@ export async function setConfig(key: string, value: string): Promise<void> {
   return invoke("set_config", { key, value });
 }
 
+export interface AndroidStoragePermissionStatus {
+  platform: string;
+  sdkInt: number;
+  granted: boolean;
+  legacyGranted: boolean;
+  allFilesGranted: boolean;
+  canRequestRuntime: boolean;
+  needsSettings: boolean;
+  detail: string;
+}
+
+export interface AndroidStoragePermissionRequestResult {
+  openedSettings: boolean;
+  status: AndroidStoragePermissionStatus;
+}
+
+export async function androidStorageStatus(): Promise<AndroidStoragePermissionStatus> {
+  return invoke("android_storage_status");
+}
+
+export async function requestAndroidStoragePermissions(): Promise<AndroidStoragePermissionRequestResult> {
+  return invoke("request_android_storage_permissions");
+}
+
 // Opens a manual in the system viewer. Path validation happens in Rust
 // (must be under the data dir), so no broad opener capability is needed.
 export async function openManual(path: string): Promise<void> {

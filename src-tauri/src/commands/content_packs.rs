@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::RwLock;
 
 use crate::db::queries;
@@ -319,7 +319,6 @@ pub(crate) async fn start_pack_install(
     collection: &str,
     pack_id: &str,
 ) -> Result<(), String> {
-    use tauri::Manager;
     let db_state: State<'_, DbState> = app.state();
     let pack_state: State<'_, ContentPackState> = app.state();
     let collection = collection.to_string();
@@ -528,6 +527,18 @@ fn commit_staging(staging_dir: &Path, install_dir: &Path) -> Result<(), String> 
     Ok(())
 }
 
+fn content_pack_work_dir(app_handle: &AppHandle, key: &str) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("Cannot resolve app cache dir: {}", e))?
+        .join("content-downloads")
+        .join(key.replace(':', "_"));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Cannot create temporary downloads dir: {}", e))?;
+    Ok(dir)
+}
+
 /// Resolve the install dir for a given pack_id, checking the manifest for its
 /// install_path. Falls back to a conventional path if the pack isn't in the manifest.
 fn resolve_pack_install_dir(
@@ -564,7 +575,6 @@ async fn do_install_full(
             log::info!("Removing superseded pack '{}' before installing '{}'", superseded, pack_info.display_name);
             std::fs::remove_dir_all(&install_path)
                 .map_err(|e| format!("Failed to remove superseded pack: {}", e))?;
-            use tauri::Manager;
             if let Ok(conn) = app_handle.state::<DbState>().0.lock() {
                 let _ = mark_pack_uninstalled(&conn, collection, superseded);
             }
@@ -573,7 +583,10 @@ async fn do_install_full(
 
     // ── Pre-flight: check disk space ─────────────────────────────────────────
     let required = (pack_info.size_bytes as f64 * 2.2) as u64;
-    let available = fs2::available_space(data_dir)
+    let data_root = Path::new(data_dir);
+    std::fs::create_dir_all(data_root)
+        .map_err(|e| format!("Cannot create data directory: {}", e))?;
+    let available = fs2::available_space(data_root)
         .map_err(|e| format!("Cannot query disk space: {}", e))?;
     if available < required {
         return Err(format!(
@@ -595,7 +608,6 @@ async fn do_install_full(
     // over HTTP would still be a download the user just declined - the promise
     // of the mode is what matters, not which protocol carries the bytes.
     let offline = {
-        use tauri::Manager;
         let db: State<DbState> = app_handle.state();
         crate::commands::setup::is_offline(&db.0)
     };
@@ -610,7 +622,7 @@ async fn do_install_full(
     if pack_info.torrent_file_path.is_some() {
         do_install_torrent(jobs, app_handle, data_dir, collection, pack_info, key, cancel).await
     } else {
-        do_install(jobs, data_dir, pack_info, key, cancel).await
+        do_install(jobs, app_handle, data_dir, pack_info, key, cancel).await
     }
 }
 
@@ -628,8 +640,6 @@ async fn do_install_torrent(
     key: &str,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    use tauri::Manager;
-
     let torrent_file_path = pack_info
         .torrent_file_path
         .as_ref()
@@ -711,9 +721,7 @@ async fn do_install_torrent(
         .ok_or("Cannot resolve downloaded file path")?;
 
     let install_dir = safe_join(Path::new(data_dir), &pack_info.install_path)?;
-    let staging_dir = Path::new(data_dir)
-        .join(".content-downloads")
-        .join(format!("{}.staging", key.replace(':', "_")));
+    let staging_dir = content_pack_work_dir(app_handle, key)?.join("staging");
 
     // Clean stale staging.
     let _ = std::fs::remove_dir_all(&staging_dir);
@@ -756,6 +764,7 @@ async fn do_install_torrent(
 /// The actual download → verify → extract → commit pipeline.
 async fn do_install(
     jobs: &Arc<RwLock<HashMap<String, ContentPackJob>>>,
+    app_handle: &AppHandle,
     data_dir: &str,
     pack_info: &ContentPackInfo,
     key: &str,
@@ -765,12 +774,10 @@ async fn do_install(
     use sha2::{Digest, Sha256};
     
 
-    let downloads_dir = Path::new(data_dir).join(".content-downloads");
-    std::fs::create_dir_all(&downloads_dir)
-        .map_err(|e| format!("Cannot create downloads dir: {}", e))?;
+    let downloads_dir = content_pack_work_dir(app_handle, key)?;
 
-    let tmp_file = downloads_dir.join(format!("{}.tar.gz.tmp", key.replace(':', "_")));
-    let staging_dir = downloads_dir.join(format!("{}.staging", key.replace(':', "_")));
+    let tmp_file = downloads_dir.join("download.tar.gz.tmp");
+    let staging_dir = downloads_dir.join("staging");
     let install_dir = safe_join(Path::new(data_dir), &pack_info.install_path)?;
 
     // Clean up any stale leftovers from a previous attempt.

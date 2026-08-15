@@ -69,6 +69,9 @@ fn materialize_android_resources(root: &Path) -> Result<(), String> {
 }
 
 use tauri::Manager;
+use tauri_plugin_android_storage_permissions::{
+    AndroidStoragePermissionsExt, StoragePermissionRequestResult, StoragePermissionStatus,
+};
 use tokio::sync::RwLock;
 
 use commands::{
@@ -91,6 +94,20 @@ use commands::{
     validate_exodos_dir,
     ContentPackState, DbState, TorrentState,
 };
+
+#[tauri::command]
+fn android_storage_status(
+    app: tauri::AppHandle,
+) -> Result<StoragePermissionStatus, String> {
+    app.android_storage_permissions().status()
+}
+
+#[tauri::command]
+fn request_android_storage_permissions(
+    app: tauri::AppHandle,
+) -> Result<StoragePermissionRequestResult, String> {
+    app.android_storage_permissions().request()
+}
 
 /// Raise the file-descriptor soft limit as high as the platform allows.
 /// librqbit's filesystem storage opens EVERY file of a torrent read/write
@@ -689,6 +706,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_android_storage_permissions::init())
         .plugin(tauri_plugin_dialog::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -878,6 +896,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_games,
+            android_storage_status,
+            request_android_storage_permissions,
             get_game,
             get_installed_games,
             get_game_variants,

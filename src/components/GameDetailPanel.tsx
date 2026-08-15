@@ -154,6 +154,7 @@ export function GameDetailPanel(props: Props) {
     if (v === "x98") { return "DOSBox-X"; }
     if (v === "pcbox") { return "PCBox (not shipped)"; }
     if (v?.startsWith("86box")) { return "86Box"; }
+    if (navigator.userAgent.includes("Android")) { return "DOSBox Pure"; }
     if (v?.startsWith("ece")) { return isWindows ? "DOSBox ECE" : "DOSBox Staging"; }
     return "DOSBox Staging";
   };
@@ -318,8 +319,8 @@ export function GameDetailPanel(props: Props) {
     if (!isWindows && v?.startsWith("ece")) {
       return {
         key: "ece",
-        text: "This game is tuned for DOSBox ECE, which only exists on Windows. Exodium runs "
-          + "it with DOSBox Staging - the experience may vary slightly.",
+        text: "This game is tuned for DOSBox ECE, which only exists on Windows. Exodium Pocket will "
+          + "launch it through RetroArch / DOSBox Pure - the experience may vary slightly.",
       };
     }
     if (v === "x98") {
@@ -771,6 +772,13 @@ export function GameDetailPanel(props: Props) {
   // localhost HTTP URL from media_url; macOS/Windows answer null and keep
   // convertFileSrc). Async, so the URL lives in a signal the effect fills.
   const [videoSrc, setVideoSrc] = createSignal<string | null>(null);
+  const stopVideoElement = (el: HTMLVideoElement | undefined) => {
+    if (!el) { return; }
+    el.pause();
+    el.removeAttribute("src");
+    el.load();
+    setVideoPlaying(false);
+  };
   createEffect(() => {
     const p = videoState()?.path;
     if (!p) {
@@ -783,6 +791,26 @@ export function GameDetailPanel(props: Props) {
       .catch(() => { if (!stale) { setVideoSrc(convertFileSrc(p)); } });
     onCleanup(() => { stale = true; });
   });
+  const HeroPreviewVideo = (videoProps: { src: string }) => {
+    let el: HTMLVideoElement | undefined;
+    onCleanup(() => {
+      stopVideoElement(el);
+      if (heroVideoRef === el) { heroVideoRef = undefined; }
+    });
+    return (
+      <video
+        ref={(node) => { el = node; heroVideoRef = node; }}
+        class={`game-detail-hero-video${videoPlaying() ? " is-visible" : ""}`}
+        src={videoProps.src}
+        playsinline
+        preload="auto"
+        onEnded={() => setVideoPlaying(false)}
+        onPause={() => setVideoPlaying(false)}
+        onPlay={() => setVideoPlaying(true)}
+        onClick={() => { setLightboxStart(0); setLightboxOpen(true); }}
+      />
+    );
+  };
 
   // Start the fetch a beat after the panel settles on a game. The delay is the
   // point: clicking through the grid would otherwise queue a torrent read per
@@ -826,20 +854,22 @@ export function GameDetailPanel(props: Props) {
   // Re-running the timer on those writes replayed a running preview from 0:00
   // every 700 ms (and, with the old fixed delay, postponed it forever).
   let autoplayTimer: number | undefined;
-  let autoplayFor: number | null | undefined;
+  let autoplayFor: string | undefined;
   onCleanup(() => { if (autoplayTimer) { clearTimeout(autoplayTimer); } });
   createEffect(() => {
     const id = selected()?.id;
-    if (id !== autoplayFor) {
-      // Row changed - drop a start still pending for the previous one.
+    const src = videoSrc();
+    const autoplayKey = id != null && src ? `${id}:${src}` : undefined;
+    if (autoplayKey !== autoplayFor) {
+      // Row/source changed - drop a start still pending for the previous one.
       if (autoplayTimer) {
         clearTimeout(autoplayTimer);
         autoplayTimer = undefined;
       }
       autoplayFor = undefined;
     }
-    if (!videoReady() || id == null || id === autoplayFor) { return; }
-    autoplayFor = id;
+    if (!videoReady() || !autoplayKey || autoplayKey === autoplayFor) { return; }
+    autoplayFor = autoplayKey;
     // Let the cover have the panel first. Opening a game and being met by a
     // trailer mid-motion reads as an ad; two seconds is long enough to take in
     // the box art, and the fade then belongs to the video rather than to the
@@ -847,7 +877,10 @@ export function GameDetailPanel(props: Props) {
     autoplayTimer = window.setTimeout(() => {
       autoplayTimer = undefined;
       const el = heroVideoRef;
-      if (!el) { return; }
+      if (!el || el.getAttribute("src") !== src) {
+        autoplayFor = undefined;
+        return;
+      }
       try {
         el.currentTime = 0;
         el.muted = previewMuted();
@@ -1122,18 +1155,8 @@ export function GameDetailPanel(props: Props) {
 
             {/* The preview takes the cover's place while it runs, then fades
                 back out - it stays reachable in the lightbox afterwards. */}
-            <Show when={videoSrc()}>
-              <video
-                ref={heroVideoRef}
-                class={`game-detail-hero-video${videoPlaying() ? " is-visible" : ""}`}
-                src={videoSrc()!}
-                playsinline
-                preload="auto"
-                onEnded={() => setVideoPlaying(false)}
-                onPause={() => setVideoPlaying(false)}
-                onPlay={() => setVideoPlaying(true)}
-                onClick={() => { setLightboxStart(0); setLightboxOpen(true); }}
-              />
+            <Show when={videoSrc()} keyed>
+              {(src) => <HeroPreviewVideo src={src} />}
             </Show>
 
             {/* Status while the bytes are still coming over the torrent. */}

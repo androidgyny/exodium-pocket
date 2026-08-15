@@ -1,14 +1,14 @@
-import { createSignal, onMount, Show } from "solid-js";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Progress } from "@ark-ui/solid/progress";
 import {
-  setupFromLocal,
-  validateExodosDir,
+  androidStorageStatus,
   getDefaultDataDir,
   getAvailableCollections,
   setConfig,
   initDownloadManager,
-  type ExodosValidation,
+  requestAndroidStoragePermissions,
+  type AndroidStoragePermissionStatus,
 } from "../api/tauri";
 import type { NetworkMode } from "../stores/network";
 import { Button } from "../components/Button";
@@ -19,22 +19,11 @@ interface SetupProps {
   onComplete: () => void;
 }
 
-type Phase = "mode" | "scratch" | "import" | "network" | "importing" | "starting";
-
-/** Which route the user took to get to the network step - it decides whether
- *  "offline" is even on the table (a from-scratch install has nothing to play
- *  without downloading it first). */
-type Source = "scratch" | "import";
+type Phase = "permissions" | "mode" | "scratch" | "network" | "starting";
 
 const IconDownload = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
     <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-  </svg>
-);
-
-const IconImport = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
   </svg>
 );
 
@@ -46,30 +35,73 @@ const IconBack = () => (
 
 export function Setup(props: SetupProps) {
   const isAndroid = /Android/i.test(navigator.userAgent);
-  const [phase, setPhase] = createSignal<Phase>("mode");
+  const [phase, setPhase] = createSignal<Phase>(isAndroid ? "permissions" : "mode");
   const [error, setError] = createSignal("");
+  const [storagePermission, setStoragePermission] =
+    createSignal<AndroidStoragePermissionStatus | null>(null);
+  const [permissionBusy, setPermissionBusy] = createSignal(false);
 
   // "scratch" phase state
   const [dataDir, setDataDir] = createSignal("");
 
-  // "import" phase state
-  const [exodosDir, setExodosDir] = createSignal("");
-  const [validation, setValidation] = createSignal<ExodosValidation | null>(null);
-  const [validating, setValidating] = createSignal(false);
-
   // "network" phase state. The seeding box is pre-checked - sharing keeps the
   // swarm alive - but it is shown with its implications spelled out and can be
   // unchecked before setup finishes, so nobody uploads without having seen it.
-  const [source, setSource] = createSignal<Source>("scratch");
   const [netMode, setNetMode] = createSignal<NetworkMode>("live");
   const [seeding, setSeeding] = createSignal(true);
+
+  const refreshAndroidStoragePermission = async () => {
+    if (!isAndroid) { return true; }
+    try {
+      const status = await androidStorageStatus();
+      setStoragePermission(status);
+      if (status.granted && phase() === "permissions") {
+        setPhase("mode");
+      }
+      return status.granted;
+    } catch (e) {
+      setError(`Could not check Android storage access: ${e}`);
+      return false;
+    }
+  };
+
+  const handleStoragePermissionRequest = async () => {
+    setPermissionBusy(true);
+    setError("");
+    try {
+      const result = await requestAndroidStoragePermissions();
+      setStoragePermission(result.status);
+      if (result.status.granted) {
+        setPhase("mode");
+      } else if (result.openedSettings) {
+        setError("Turn on storage access in Android Settings, then return to Exodium Pocket.");
+      } else {
+        setError("Storage access is still off. Exodium Pocket needs it to create downloads and artwork.");
+      }
+    } catch (e) {
+      setError(`Could not request Android storage access: ${e}`);
+    } finally {
+      setPermissionBusy(false);
+    }
+  };
 
   onMount(async () => {
     try {
       const dir = await getDefaultDataDir();
       if (dir) { setDataDir(dir); }
     } catch {}
+    await refreshAndroidStoragePermission();
   });
+
+  if (isAndroid) {
+    const recheck = () => { void refreshAndroidStoragePermission(); };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    onCleanup(() => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    });
+  }
 
   const handleSelectDataDir = async () => {
     const selected = await open({
@@ -79,31 +111,7 @@ export function Setup(props: SetupProps) {
     if (selected) { setDataDir(selected as string); }
   };
 
-  const handleSelectExodosDir = async () => {
-    const selected = await open({
-      title: "Select your eXoDOS folder",
-      directory: true,
-    });
-    if (!selected) { return; }
-    const path = selected as string;
-    setExodosDir(path);
-    setValidation(null);
-    setValidating(true);
-    try {
-      const result = await validateExodosDir(path);
-      setValidation(result);
-    } catch (e) {
-      setValidation({ valid: false, hint: String(e) });
-    } finally {
-      setValidating(false);
-    }
-  };
-
-  /** Both routes converge here: the network answers must be persisted before
-   *  any backend call that might spin up a torrent session, because that is
-   *  where Rust reads them (same invariant as `collections`). */
-  const goToNetwork = (from: Source) => {
-    setSource(from);
+  const goToNetwork = () => {
     setNetMode("live");
     setError("");
     setPhase("network");
@@ -119,11 +127,7 @@ export function Setup(props: SetupProps) {
       setError(`Failed to save network settings: ${e}`);
       return;
     }
-    if (source() === "scratch") {
-      await runScratchSetup();
-    } else {
-      await runImport();
-    }
+    await runScratchSetup();
   };
 
   const runScratchSetup = async () => {
@@ -147,22 +151,6 @@ export function Setup(props: SetupProps) {
     }
   };
 
-  const runImport = async () => {
-    if (!exodosDir() || !validation()?.valid) { return; }
-    setPhase("importing");
-    try {
-      await setupFromLocal(exodosDir());
-      // Re-initialize download managers via the standard path so DOSBox configs
-      // are extracted and all collections get a robust manager setup. In
-      // offline mode this only extracts the configs - no session is created.
-      await initDownloadManager();
-      props.onComplete();
-    } catch (e) {
-      setError(`Import failed: ${e}`);
-      setPhase("network");
-    }
-  };
-
   const previewPath = () => {
     const dir = dataDir();
     if (!dir) { return ""; }
@@ -180,19 +168,46 @@ export function Setup(props: SetupProps) {
           <div class="error" style="margin-bottom:12px">{error()}</div>
         </Show>
 
+        {/* Android storage access */}
+        <Show when={phase() === "permissions"}>
+          <p class="setup-subtitle">Exodium Pocket needs storage access before it can create downloads and artwork.</p>
+          <div class="setup-step">
+            <label>Storage access</label>
+            <div class="setup-preview">
+              <Show when={storagePermission()?.needsSettings} fallback={
+                <>Android will ask for storage access. Allow it to continue setup.</>
+              }>
+                Android will open Exodium Pocket's storage settings. Turn on file access there, then come back.
+              </Show>
+            </div>
+            <Show when={storagePermission()?.detail}>
+              <p class="setup-note">{storagePermission()!.detail}</p>
+            </Show>
+          </div>
+          <div class="setup-actions" style="margin-top:20px">
+            <div style="display:flex;gap:8px">
+              <Button variant="secondary" onClick={() => void refreshAndroidStoragePermission()} disabled={permissionBusy()}>
+                Check Again
+              </Button>
+              <Button variant="primary" style="flex:1" onClick={handleStoragePermissionRequest} disabled={permissionBusy()}>
+                {permissionBusy()
+                  ? "Checking..."
+                  : storagePermission()?.needsSettings
+                    ? "Open Android Settings"
+                    : "Allow Storage Access"}
+              </Button>
+            </div>
+          </div>
+        </Show>
+
         {/* ── Mode selection ── */}
         <Show when={phase() === "mode"}>
-          <p class="setup-subtitle">How do you want to get started?</p>
+          <p class="setup-subtitle">Download DOS games on demand from the eXoDOS torrents.</p>
           <div class="setup-mode-grid">
             <button class="setup-mode-btn" onClick={() => { setPhase("scratch"); setError(""); }}>
               <span class="setup-mode-icon"><IconDownload /></span>
-              <span class="setup-mode-title">Start from scratch</span>
-              <span class="setup-mode-desc">Download games on demand from the eXoDOS torrents</span>
-            </button>
-            <button class="setup-mode-btn" onClick={() => { setPhase("import"); setError(""); }}>
-              <span class="setup-mode-icon"><IconImport /></span>
-              <span class="setup-mode-title">Import eXoDOS Installation</span>
-              <span class="setup-mode-desc">Use your existing eXoDOS collection - nothing will be modified</span>
+              <span class="setup-mode-title">Get Started</span>
+              <span class="setup-mode-desc">Choose where Exodium Pocket stores downloads and artwork</span>
             </button>
           </div>
         </Show>
@@ -235,41 +250,7 @@ export function Setup(props: SetupProps) {
               <Button variant="secondary" onClick={() => setPhase("mode")}>
                 <IconBack /> Back
               </Button>
-              <Button variant="primary" style="flex:1" onClick={() => goToNetwork("scratch")} disabled={!dataDir()}>
-                Continue
-              </Button>
-            </div>
-          </div>
-        </Show>
-
-        {/* ── Import eXoDOS ── */}
-        <Show when={phase() === "import"}>
-          <p class="setup-subtitle">Select your eXoDOS folder. Exodium will only read from it - your files are never modified.</p>
-          <div class="setup-step">
-            <label>eXoDOS folder</label>
-            <div class="path-picker">
-              <span class="setting-value">{exodosDir() || "Not selected"}</span>
-              <Button variant="small" onClick={handleSelectExodosDir}>Browse</Button>
-            </div>
-            <Show when={validating()}>
-              <div class="setup-validation setup-validation--checking">Checking...</div>
-            </Show>
-            <Show when={validation() && !validating()}>
-              <div class={`setup-validation ${validation()!.valid ? "setup-validation--ok" : "setup-validation--err"}`}>
-                {validation()!.valid ? "✓" : "✗"} {validation()!.hint}
-              </div>
-            </Show>
-          </div>
-          <div class="setup-actions" style="margin-top:20px">
-            <div style="display:flex;gap:8px">
-              <Button variant="secondary" onClick={() => setPhase("mode")}>
-                <IconBack /> Back
-              </Button>
-              <Button variant="primary"
-                style="flex:1"
-                onClick={() => goToNetwork("import")}
-                disabled={!validation()?.valid}
-              >
+              <Button variant="primary" style="flex:1" onClick={goToNetwork} disabled={!dataDir()}>
                 Continue
               </Button>
             </div>
@@ -279,32 +260,6 @@ export function Setup(props: SetupProps) {
         {/* ── Network mode + seeding consent ── */}
         <Show when={phase() === "network"}>
           <p class="setup-subtitle">How should Exodium use the network?</p>
-
-          {/* Offline only makes sense with games already on disk, so it is
-              offered on the import route only. */}
-          <Show when={source() === "import"}>
-            <div class="setup-mode-grid">
-              <button
-                class={`setup-mode-btn${netMode() === "live" ? " is-selected" : ""}`}
-                onClick={() => setNetMode("live")}
-              >
-                <span class="setup-mode-title">Online</span>
-                <span class="setup-mode-desc">
-                  Download games you don't have yet from the eXoDOS torrents.
-                </span>
-              </button>
-              <button
-                class={`setup-mode-btn${netMode() === "offline" ? " is-selected" : ""}`}
-                onClick={() => setNetMode("offline")}
-              >
-                <span class="setup-mode-title">Offline</span>
-                <span class="setup-mode-desc">
-                  Launcher only. No torrent client is started and nothing is
-                  downloaded or shared.
-                </span>
-              </button>
-            </div>
-          </Show>
 
           <Show when={netMode() === "live"}>
             <div style="margin-top:16px">
@@ -323,11 +278,11 @@ export function Setup(props: SetupProps) {
 
           <div class="setup-actions" style="margin-top:20px">
             <div style="display:flex;gap:8px">
-              <Button variant="secondary" onClick={() => setPhase(source())}>
+              <Button variant="secondary" onClick={() => setPhase("scratch")}>
                 <IconBack /> Back
               </Button>
               <Button variant="primary" style="flex:1" onClick={handleNetworkContinue}>
-                {source() === "import" ? "Import" : "Continue"}
+                Continue
               </Button>
             </div>
           </div>
@@ -345,17 +300,6 @@ export function Setup(props: SetupProps) {
           </div>
         </Show>
 
-        {/* ── Importing ── */}
-        <Show when={phase() === "importing"}>
-          <p class="setup-subtitle">Importing from local directory...</p>
-          <div class="setup-step">
-            <Progress.Root class="ark-progress">
-              <Progress.Track class="ark-progress-track">
-                <Progress.Range class="ark-progress-range indeterminate" />
-              </Progress.Track>
-            </Progress.Root>
-          </div>
-        </Show>
       </div>
     </div>
   );

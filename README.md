@@ -31,7 +31,9 @@ By default the app launches package `com.retroarch`, activity `com.retroarch.bro
 
 Exodium Pocket currently expects Android 10-style, filesystem-oriented storage access: a normal app-writable games folder with paths the app and RetroArch can both resolve. It is not yet adapted for scoped-storage-only or Storage Access Framework-only file management on newer Android releases.
 
-On Android 11 and later, device firmware, file-manager policy, or missing broad file access can prevent the app from seeing or launching downloaded games even when the files exist. For now, use an Android 10-compatible environment or a device setup that still exposes a regular writable folder for the game library.
+On Android 11 and later, device firmware, file-manager policy, or missing broad file access can prevent the app from seeing or launching downloaded games even when the files exist. Personal sideloaded builds therefore request broad file-management access so the app can use `/storage/emulated/0/ExodiumPocket` and similar shared folders. After installing an APK, grant Exodium Pocket "All files access" in Android settings.
+
+For now, use an Android 10-compatible environment or a device setup that still exposes a regular writable folder for the game library.
 
 ## What Is Included
 
@@ -73,6 +75,15 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 Build/run with the Tauri Android workflow appropriate for your local SDK setup.
+
+For a local sideloadable Android APK:
+
+```bash
+pnpm android:init
+pnpm android:build:apk
+```
+
+The Android project under `src-tauri/gen/android` is generated and not published. The APK build script patches the generated manifest so the local APK requests the broad storage permission needed by the current filesystem-based Android workflow.
 
 ## Upstream
 

@@ -107,6 +107,38 @@ describe("GameDetailPanel", () => {
     dispose(); host.remove();
   });
 
+  it("waits for the playable video URL before spending autoplay", async () => {
+    vi.useFakeTimers();
+    const play = vi.spyOn(window.HTMLMediaElement.prototype, "play")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        this.dispatchEvent(new Event("play"));
+        return Promise.resolve();
+      });
+    vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    vi.spyOn(window.HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "get_game_metadata") { return EMPTY_META; }
+      if (cmd === "get_game_variants") { return []; }
+      if (cmd === "start_game_video") { return VIDEO_READY; }
+      if (cmd === "get_video_status") { return VIDEO_READY; }
+      if (cmd === "media_url") {
+        return new Promise((resolve) => setTimeout(() => resolve("http://127.0.0.1:49152/m/video"), 1000));
+      }
+      return null;
+    });
+
+    const { host, dispose } = mount(makeGame({ id: 43, shortcode: "VID43" }));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(play).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(700);
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(host.ownerDocument.querySelector("video.game-detail-hero-video")?.getAttribute("src"))
+      .toContain("127.0.0.1");
+
+    dispose(); host.remove();
+  });
+
   it("renders a single-language game without throwing", async () => {
     const { host, dispose } = mount(makeGame());
     await Promise.resolve();
