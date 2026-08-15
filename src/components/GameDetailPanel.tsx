@@ -180,6 +180,9 @@ export function GameDetailPanel(props: Props) {
    *  a launch that cannot work, then a feature that is missing, then what
    *  merely differs from a DOS game. Null when there is nothing to say. */
   const rawNote = (): PanelNote | null => {
+    if (navigator.userAgent.includes("Android") && isWin9x(selected() ?? props.game)) {
+      return null;
+    }
     const v = selected()?.dosbox_variant ?? props.game?.dosbox_variant;
     if (v === "pcbox") {
       return {
@@ -531,7 +534,7 @@ export function GameDetailPanel(props: Props) {
     }
     setWin9xEngineMissing(false);
     setMpInfo(null);
-    if (isWin9x(g)) {
+    if (!navigator.userAgent.includes("Android") && isWin9x(g)) {
       const id = g.id;
       win9xEngineAvailable(g.dosbox_variant ?? null)
         .then((ok) => { if (props.game?.id === id) { setWin9xEngineMissing(!ok); } })
@@ -564,7 +567,7 @@ export function GameDetailPanel(props: Props) {
     installedPacks();
     if (!panelSettled()) { return; }
     const g = props.game;
-    if (!isWin9x(g)) { return; }
+    if (navigator.userAgent.includes("Android") || !isWin9x(g)) { return; }
     const id = g?.id;
     win9xEngineAvailable(g?.dosbox_variant ?? null)
       .then((ok) => { if (props.game?.id === id) { setWin9xEngineMissing(!ok); } })
@@ -583,7 +586,7 @@ export function GameDetailPanel(props: Props) {
   // "failed" is terminal until a restart re-arms the watcher.
   createEffect(() => {
     const g = props.game;
-    if (!isWin9x(g) || isOffline()) { setSupportStatus(null); return; }
+    if (navigator.userAgent.includes("Android") || !isWin9x(g) || isOffline()) { setSupportStatus(null); return; }
     // Polling can wait for the slide-in - the note it feeds is secondary.
     if (!panelSettled()) { return; }
     const variant = g?.dosbox_variant ?? null;
@@ -805,7 +808,10 @@ export function GameDetailPanel(props: Props) {
   createEffect(() => {
     const id = selected()?.id;
     const phase = videoState()?.phase;
-    if (id !== videoPhaseGame) { videoPhaseGame = id; setVideoJustFetched(false); }
+    if (id !== videoPhaseGame) {
+      videoPhaseGame = id;
+      setVideoJustFetched(false);
+    }
     if (phase === "fetching" || phase === PHASE_PROBING || phase === PHASE_QUEUED) {
       setVideoJustFetched(true);
     }
@@ -826,7 +832,10 @@ export function GameDetailPanel(props: Props) {
     const id = selected()?.id;
     if (id !== autoplayFor) {
       // Row changed - drop a start still pending for the previous one.
-      if (autoplayTimer) { clearTimeout(autoplayTimer); autoplayTimer = undefined; }
+      if (autoplayTimer) {
+        clearTimeout(autoplayTimer);
+        autoplayTimer = undefined;
+      }
       autoplayFor = undefined;
     }
     if (!videoReady() || id == null || id === autoplayFor) { return; }
@@ -897,6 +906,10 @@ export function GameDetailPanel(props: Props) {
    *  state where the question would be noise. */
   const handleLaunch = async (gameId: number) => {
     if (launchingId() != null) { return; }
+    if (navigator.userAgent.includes("Android")) {
+      void startLaunch(gameId);
+      return;
+    }
     try {
       const info = await win9xMultiplayerInfo(gameId);
       setMpInfo(info);
@@ -1500,7 +1513,7 @@ export function GameDetailPanel(props: Props) {
             remembered - a question that only goes quiet when accepted is not
             a question. */}
         <ConfirmDialog
-          open={netPromptFor() != null}
+          open={!navigator.userAgent.includes("Android") && netPromptFor() != null}
           title="Play online?"
           message="This game can play online against others who own the collection, over a community-run IPX gateway. That needs one-time permission from your system to bridge the emulated network card; you can also play on your own without it."
           confirmLabel="Set up now…"

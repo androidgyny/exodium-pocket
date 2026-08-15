@@ -1,0 +1,24 @@
+{
+  "productName": "Exodium Pocket",
+  "identifier": "app.exodiumpocket",
+  "app": {
+    "windows": [
+      {
+        "title": "Exodium Pocket",
+        "decorations": true,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "externalBin": [],
+    "resources": {
+      "../metadata": "metadata",
+      "../torrents": "torrents",
+      "../manifest.json": "manifest.json",
+      "resources/dosbox-glshaders": null,
+      "resources/dosbox-bin": null
+    }
+  }
+}

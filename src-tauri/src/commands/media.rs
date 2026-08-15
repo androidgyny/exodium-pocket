@@ -50,7 +50,6 @@ pub struct VideoStatus {
     pub path: Option<String>,
     pub error: Option<String>,
 }
-
 impl VideoStatus {
     fn phase(phase: &str) -> Self {
         Self {
@@ -675,9 +674,9 @@ mod tests {
 /// Token -> file map plus the lazily-started server's port. The map sits
 /// behind its own Arc because the axum router holds a clone of it.
 pub struct MediaServerState {
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
     port: std::sync::Mutex<Option<u16>>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
     tokens: std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>,
 }
 
@@ -701,21 +700,21 @@ impl Default for MediaServerState {
 /// falls back to convertFileSrc then.
 #[tauri::command]
 pub async fn media_url(
-    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] db_state: State<
+    #[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(unused_variables))] db_state: State<
         '_,
         crate::DbState,
     >,
-    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] server: State<
+    #[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(unused_variables))] server: State<
         '_,
         MediaServerState,
     >,
-    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] path: String,
+    #[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(unused_variables))] path: String,
 ) -> Result<Option<String>, String> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
         Ok(None)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let data_dir = {
             let conn = db_state.0.lock().map_err(|e| e.to_string())?;
@@ -760,7 +759,7 @@ pub async fn media_url(
 }
 
 /// Opaque, non-guessable token: file path hashed with a per-process salt.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn media_token(path: &Path) -> String {
     use std::hash::{Hash, Hasher};
     use std::sync::OnceLock;
@@ -778,7 +777,7 @@ fn media_token(path: &Path) -> String {
     format!("{:016x}", h.finish())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn start_media_server(
     tokens: std::sync::Arc<std::sync::Mutex<HashMap<String, PathBuf>>>,
 ) -> Result<u16, String> {

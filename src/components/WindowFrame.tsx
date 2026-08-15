@@ -9,8 +9,11 @@ const win = getCurrentWindow();
 const isMacOS = typeof navigator !== "undefined"
   && /Mac/i.test(navigator.platform || navigator.userAgent || "");
 
+const isAndroid = typeof navigator !== "undefined"
+  && /Android/i.test(navigator.userAgent || "");
+
 export function WindowFrame() {
-  if (isMacOS) { return null; }
+  if (isMacOS || isAndroid) { return null; }
 
   const [maximized, setMaximized] = createSignal(false);
 

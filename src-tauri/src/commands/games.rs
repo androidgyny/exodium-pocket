@@ -15,7 +15,6 @@ static RETRY_STATE: OnceLock<
 fn retry_state() -> &'static Mutex<std::collections::HashMap<i64, (std::time::Instant, u32)>> {
     RETRY_STATE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
-
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::State;
@@ -259,7 +258,9 @@ pub async fn open_manual(
 /// update pill for them instead of offering a download that can't install.
 #[tauri::command]
 pub fn update_check_supported() -> bool {
-    if cfg!(target_os = "linux") {
+    if cfg!(target_os = "android") || cfg!(target_os = "ios") {
+        false
+    } else if cfg!(target_os = "linux") {
         std::env::var("APPIMAGE").is_ok()
     } else {
         true
@@ -2910,6 +2911,72 @@ pub fn prune_launch_confs(app: &AppHandle) {
     }
 }
 
+
+
+#[cfg(target_os = "android")]
+fn launch_game_android(
+    app: &AppHandle,
+    db_state: &State<'_, DbState>,
+    game: &Game,
+    data_dir: &str,
+) -> Result<String, String> {
+    use tauri_plugin_retroarch_launcher::{LaunchRequest, RetroArchLauncherExt};
+
+    let source = game.torrent_source.as_deref().unwrap_or("eXoDOS");
+    if crate::commands::setup::collection_def(source).is_some_and(|c| c.year_subdirs) {
+        return Err("Exodium Pocket MVP does not launch eXoWin9x yet.".to_string());
+    }
+
+    let game_name = game
+        .application_path
+        .as_deref()
+        .and_then(crate::commands::setup::game_name_from_app_path)
+        .unwrap_or_else(|| game.title.clone());
+    let torrent_root = crate::commands::setup::game_root(data_dir);
+    let zip = torrent_root.join(collection_rel_zip(
+        source,
+        &game_name,
+        game.application_path.as_deref(),
+    ));
+    if !zip.is_file() {
+        return Err(format!(
+            "Downloaded game archive was not found at {}",
+            zip.display()
+        ));
+    }
+
+    let (package_name, activity_name, libretro, config_file) = {
+        let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        let read = |key: &str| -> Option<String> {
+            queries::get_config(&conn, key).ok().flatten().filter(|v| !v.trim().is_empty())
+        };
+        let package_name = read("android_retroarch_package")
+            .unwrap_or_else(|| "com.retroarch".to_string());
+        let activity_name = read("android_retroarch_activity")
+            .unwrap_or_else(|| "com.retroarch.browser.retroactivity.RetroActivityFuture".to_string());
+        let libretro = read("android_dosbox_pure_core").unwrap_or_else(|| {
+            format!(
+                "/data/data/{}/cores/dosbox_pure_libretro_android.so",
+                package_name
+            )
+        });
+        let config_file = read("android_retroarch_config").or_else(|| {
+            Some(format!("/storage/emulated/0/Android/data/{}/files/retroarch.cfg", package_name))
+        });
+        (package_name, activity_name, libretro, config_file)
+    };
+
+    app.retroarch_launcher().launch(LaunchRequest {
+        package_name,
+        activity_name,
+        rom: zip.to_string_lossy().into_owned(),
+        libretro,
+        config_file,
+    })?;
+
+    Ok(format!("Launched {} in RetroArch / DOSBox Pure", game.title))
+}
+
 #[tauri::command]
 pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) -> Result<String, String> {
     // Serialize against uninstall/download of the same game (see game_op_lock).
@@ -2941,6 +3008,13 @@ pub async fn launch_game(app: AppHandle, db_state: State<'_, DbState>, id: i64) 
 
     if !game.installed {
         return Err(format!("{} is not installed. Download it first.", game.title));
+    }
+    #[cfg(target_os = "android")]
+    {
+        // Android deliberately stops here: DOSBox Pure consumes the downloaded
+        // game ZIP directly, so none of Exodium's desktop DOSBox-Staging launch
+        // and auto-extraction machinery is needed for the MVP.
+        return launch_game_android(&app, &db_state, &game, &data_dir);
     }
 
     // Refuse a second launch while the game is still running. Two emulator

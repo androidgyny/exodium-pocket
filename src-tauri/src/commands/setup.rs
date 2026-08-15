@@ -23,7 +23,6 @@ pub(crate) static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub fn init_resource_dir(dir: PathBuf) {
     let _ = RESOURCE_DIR.set(dir);
 }
-
 /// Called once from lib.rs' setup closure with the resolved app log directory.
 pub fn init_log_dir(dir: PathBuf) {
     let _ = LOG_DIR.set(dir);
@@ -672,6 +671,11 @@ pub async fn open_log_folder(app: AppHandle) -> Result<(), String> {
     let result = std::process::Command::new("open").arg(&dir).spawn();
     #[cfg(target_os = "linux")]
     let result = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    #[cfg(target_os = "android")]
+    let result: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Opening the log folder is not supported on Android",
+    ));
     result
         .map(|_| ())
         .map_err(|e| format!("Failed to open log folder {}: {e}", dir.display()))
@@ -1882,10 +1886,19 @@ fn extract_manual_from_gamedata(
 /// The eXoDOS folder will be created inside this directory by the torrent engine.
 #[tauri::command]
 pub async fn get_default_data_dir() -> Result<String, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "Cannot determine home directory".to_string())?;
-    Ok(home)
+    #[cfg(target_os = "android")]
+    {
+        // MVP default for the target Pimax Portal. The setup screen leaves this
+        // editable so another Android device/volume can use a different path.
+        return Ok("/storage/emulated/0/ExodiumPocket".to_string());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map_err(|_| "Cannot determine home directory".to_string())?;
+        Ok(home)
+    }
 }
 
 /// Whether a directory holds nothing Exodium would recognise as game data.
@@ -2001,38 +2014,56 @@ pub const COLLECTION_MAP: &[CollectionDef] = &[
 ];
 
 /// Resolve bundled metadata directory.
-///
-/// Dev mode reads straight from the repo tree via CARGO_MANIFEST_DIR. Prod
-/// mode looks inside the Tauri resource_dir cached by `init_resource_dir`
-/// at app startup. current_exe().parent() is NOT used because on macOS
-/// that's Contents/MacOS/ while bundled resources live in Contents/Resources/.
 pub fn bundled_metadata_dir() -> Result<PathBuf, String> {
-    let dev_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("metadata"))
-        .unwrap_or_default();
-    if dev_path.exists() {
-        return Ok(dev_path);
-    }
+    #[cfg(target_os = "android")]
+    {
+        let res_dir = RESOURCE_DIR
+            .get()
+            .ok_or_else(|| "Android RESOURCE_DIR is uninitialized".to_string())?;
 
-    if let Some(res_dir) = RESOURCE_DIR.get() {
-        let prod_path = res_dir.join("metadata");
-        if prod_path.exists() {
-            return Ok(prod_path);
+        let path = res_dir.join("metadata");
+
+        if path.is_dir() {
+            return Ok(path);
         }
+
         return Err(format!(
-            "Bundled metadata not found in resource dir {} (dev path also missing: {})",
-            res_dir.display(),
-            dev_path.display()
+            "Android bundled metadata not found at {}",
+            path.display()
         ));
     }
 
-    Err(format!(
-        "Bundled metadata not found: resource_dir uninitialized and dev path {} missing",
-        dev_path.display()
-    ))
-}
+    #[cfg(not(target_os = "android"))]
+    {
+        let dev_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("metadata"))
+            .unwrap_or_default();
 
+        if dev_path.exists() {
+            return Ok(dev_path);
+        }
+
+        if let Some(res_dir) = RESOURCE_DIR.get() {
+            let prod_path = res_dir.join("metadata");
+
+            if prod_path.exists() {
+                return Ok(prod_path);
+            }
+
+            return Err(format!(
+                "Bundled metadata not found in resource dir {} (dev path also missing: {})",
+                res_dir.display(),
+                dev_path.display()
+            ));
+        }
+
+        Err(format!(
+            "Bundled metadata not found: resource_dir uninitialized and dev path {} missing",
+            dev_path.display()
+        ))
+    }
+}
 /// Get info about the bundled torrent without starting anything.
 #[tauri::command]
 pub async fn get_torrent_info() -> Result<TorrentInfo, String> {
@@ -2142,8 +2173,10 @@ pub async fn get_setup_status(
             let (has_data_dir, count) = {
                 let conn = db_state.0.lock().map_err(|e| e.to_string())?;
                 load_root_folder(&conn);
-                let dir = queries::get_config(&conn, "data_dir").map_err(|e| e.to_string())?;
-                let count = queries::count_games(&conn, "").map_err(|e| e.to_string())?;
+                let dir =
+                    queries::get_config(&conn, "data_dir").map_err(|e| e.to_string())?;
+                let count =
+                    queries::count_games(&conn, "").map_err(|e| e.to_string())?;
                 (dir.is_some(), count)
             };
             let ready = has_data_dir && count > 0;
@@ -2181,7 +2214,6 @@ pub async fn get_setup_status(
         .map(|p| p.finished)
         .unwrap_or(false);
 
-    // Check if games are already imported
     let games_imported = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         queries::count_games(&conn, "").map_err(|e| e.to_string())?
@@ -2205,7 +2237,6 @@ pub async fn get_setup_status(
         ready: games_imported > 0,
     })
 }
-
 /// After metadata ZIP is downloaded, extract and import games.
 #[tauri::command]
 pub async fn setup_import(
@@ -2882,7 +2913,7 @@ fn scan_installed_games_with_db(
     // may share English titles with eXoDOS games; including them in the HashMap would cause
     // title collisions where an EN ZIP incorrectly marks an LP game as installed.
     // LP games are only considered installed when their extracted directory exists (Pass 1).
-    if game_base.is_dir() {
+    if !cfg!(target_os = "android") && game_base.is_dir() {
         // Build lookup: zip_stem → game_id, restricted to non-LP collections.
         let lp_sources: Vec<String> = COLLECTION_MAP
             .iter()
@@ -3086,30 +3117,51 @@ pub async fn validate_exodos_dir(path: String) -> Result<ExodosValidation, Strin
 
 /// Resolve bundled torrent file path.
 fn bundled_torrent_path(filename: &str) -> Result<PathBuf, String> {
-    // Dev mode reads from the repo tree.
-    let dev_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("torrents").join(filename))
-        .unwrap_or_default();
-    if dev_path.exists() {
-        return Ok(dev_path);
-    }
+    #[cfg(target_os = "android")]
+    {
+        let res_dir = RESOURCE_DIR
+            .get()
+            .ok_or_else(|| "Android RESOURCE_DIR is uninitialized".to_string())?;
 
-    // Production reads from the Tauri resource_dir (cached at startup).
-    if let Some(res_dir) = RESOURCE_DIR.get() {
-        let prod_path = res_dir.join("torrents").join(filename);
-        if prod_path.exists() {
-            return Ok(prod_path);
+        let path = res_dir.join("torrents").join(filename);
+
+        if path.is_file() {
+            return Ok(path);
         }
+
+        return Err(format!(
+            "Android bundled torrent '{}' not found at {}",
+            filename,
+            path.display()
+        ));
     }
 
-    Err(format!(
-        "Bundled torrent '{}' not found (dev path: {})",
-        filename,
-        dev_path.display()
-    ))
-}
+    #[cfg(not(target_os = "android"))]
+    {
+        let dev_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("torrents").join(filename))
+            .unwrap_or_default();
 
+        if dev_path.exists() {
+            return Ok(dev_path);
+        }
+
+        if let Some(res_dir) = RESOURCE_DIR.get() {
+            let prod_path = res_dir.join("torrents").join(filename);
+
+            if prod_path.exists() {
+                return Ok(prod_path);
+            }
+        }
+
+        Err(format!(
+            "Bundled torrent '{}' not found (dev path: {})",
+            filename,
+            dev_path.display()
+        ))
+    }
+}
 #[cfg(test)]
 mod search_name_tests {
     use super::*;

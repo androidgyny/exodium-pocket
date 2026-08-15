@@ -628,14 +628,15 @@ body {
 }
 
 .collection-cover {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 74px;
   height: 96px;
   border-radius: 5px;
-  object-fit: cover;
 }
 
-/* "All" card: 2x2 mosaic of the shelf's own covers. */
+/* "All" card: 2x2 mosaic using generated collection tiles. */
 .collection-cover-all {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -645,19 +646,19 @@ body {
   background: linear-gradient(160deg, #2a2a34, #17171d);
 }
 
-.collection-cover-all img {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  object-fit: cover;
-  border-radius: 2px;
-}
-
-/* Future collection without bundled art: initials box in the accent tint. */
-.collection-cover-fallback {
+.collection-cover-all span {
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--card-accent) 35%, #15151b);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Generated initials box in the collection accent tint. */
+.collection-cover-fallback {
   font-size: 18px;
   font-weight: 700;
   color: rgba(255, 255, 255, 0.85);
@@ -4762,4 +4763,26 @@ body {
 html.soft-render * {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+}
+
+/* Android legacy WebView fallback:
+   keep game cards 3:4 even when :has()/aspect-ratio are unavailable. */
+@supports not (aspect-ratio: 3 / 4) {
+  .game-card-art {
+    position: relative;
+    height: 0;
+    padding-top: 133.333333%;
+  }
+
+  .game-card-thumb,
+  .game-card-thumb-base {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
 }

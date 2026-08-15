@@ -8,6 +8,13 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [solid()],
 
+  // Exodium Pocket must run on older Android WebViews.
+  // Transpile modern JS syntax such as optional chaining/nullish coalescing.
+  build: {
+    target: "chrome64",
+    cssTarget: "chrome64",
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

@@ -1,7 +1,7 @@
 {
-  "name": "exodium",
+  "name": "exodium-pocket",
   "version": "0.13.1",
-  "description": "Cross-platform launcher for the eXoDOS collections",
+  "description": "Unofficial Android fork of the Exodium eXoDOS launcher",
   "type": "module",
   "scripts": {
     "start": "vite",
@@ -20,6 +20,10 @@
     "test:all": "cargo test --manifest-path src-tauri/Cargo.toml && vitest run"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/androidgyny/exodium-pocket.git"
+  },
   "dependencies": {
     "@ark-ui/solid": "^5.35.0",
     "@tauri-apps/api": "^2",

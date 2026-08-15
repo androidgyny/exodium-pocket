@@ -1,236 +1,87 @@
-<p align="center">
-  <img src="src-tauri/icons/128x128@2x.png" width="128" alt="Exodium" />
-</p>
+# Exodium Pocket
 
-<h1 align="center">Exodium</h1>
+Exodium Pocket is an unofficial Android fork of [Thomas Vollstädt's Exodium](https://github.com/tvollstaedt/exodium), a Tauri/SolidJS launcher for the eXoDOS collections.
 
-<p align="center">
-  A cross-platform launcher for the <a href="https://www.retro-exo.com/exodos.html">eXoDOS</a> collections. Browse, download, and play DOS, Windows 3.x, and Windows 9x games on Linux, macOS, and Windows.
-</p>
+This fork targets Android handhelds and launches installed DOS games through a separately installed RetroArch app with the DOSBox Pure core. It is based on upstream Exodium commit `c815d5143bdbf0b8023115b1210f4b7c32e8fffc`.
 
-<p align="center">
-  <a href="https://github.com/tvollstaedt/exodium/releases/latest"><img src="https://img.shields.io/github/v/release/tvollstaedt/exodium" alt="Latest release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue" alt="Platform" />
-  <img src="https://img.shields.io/badge/built%20with-Tauri-blueviolet" alt="Built with Tauri" />
-  <img src="https://img.shields.io/badge/language-Rust%20%2B%20TypeScript-orange" alt="Rust + TypeScript" />
-</p>
+## Project Expectations
 
-<p align="center">
-  <img src="docs/screenshots/library.png" width="820" alt="Browse view with the collection shelf, cover-art grid, and a download in progress" />
-</p>
+Exodium Pocket is a vibe-coded personal project, built to make Exodium usable on my own Android device. I am publishing the source in case it is useful to others, but it should be treated as an unpolished personal fork rather than a supported product.
 
----
+There is no guarantee of compatibility, support, releases, fixes, documentation updates, or future improvements. Expect sharp edges.
 
-## Quick start
+## Status
 
-1. **Download** the latest release for your platform:
-   [Windows (.exe)](https://github.com/tvollstaedt/exodium/releases/latest/download/Exodium-windows-x64-setup.exe) ·
-   [macOS (.dmg)](https://github.com/tvollstaedt/exodium/releases/latest/download/Exodium-macos-aarch64.dmg) ·
-   [Linux (.AppImage)](https://github.com/tvollstaedt/exodium/releases/latest/download/Exodium-linux-x86_64.AppImage) ·
-   [all downloads](https://github.com/tvollstaedt/exodium/releases/latest)
-2. **Install and launch** - see [Installation](#installation) for platform notes.
-3. **Pick a games folder** in the setup wizard - this is where downloaded games are stored.
-4. **Browse and play** - hit download on any game; it streams from the eXoDOS torrent and launches in the bundled DOSBox Staging.
+Exodium Pocket is an MVP Android port. It keeps the upstream catalog, torrent download flow, library UI, and installed-game tracking, while adding Android resource handling and a small native bridge that asks RetroArch to launch downloaded game ZIPs.
 
----
+The current Android support is focused on DOS/eXoDOS games. Windows 3.x and Windows 9x desktop launch paths remain in the codebase for upstream compatibility, but the Android MVP does not launch those collections.
 
-## A tribute to eXoDOS
+## External Requirements
 
-Exodium would not exist without the extraordinary work of the [eXoDOS project](https://www.retro-exo.com/exodos.html) and its creator, **eXo**. Over many years, eXo and the eXoDOS community have painstakingly collected, configured, and preserved over 9,000 DOS games, each one pre-configured to run out of the box. The result is an irreplaceable archive of gaming history.
+Exodium Pocket does not bundle emulators, games, ROMs, or media packs.
 
-Exodium is a frontend client for that collection. It does not host or distribute any game files; it uses the eXoDOS torrents that you seed yourself. If you find value in Exodium, please consider supporting the eXoDOS project directly at [retro-exo.com](https://www.retro-exo.com).
+Install these separately on the Android device:
 
----
+- RetroArch for Android.
+- The DOSBox Pure libretro core inside RetroArch.
 
-## What it does
+By default the app launches package `com.retroarch`, activity `com.retroarch.browser.retroactivity.RetroActivityFuture`, and core path `/data/data/com.retroarch/cores/dosbox_pure_libretro_android.so`. These values are stored in app config so device-specific builds can override them.
 
-eXoDOS ships with a Windows-only LaunchBox frontend and requires downloading the full ~500 GB torrent to browse the catalogue. Exodium replaces that frontend with a small native app for Linux, macOS, and Windows.
+## Android Storage Limitation
 
-### Available now
-- ✅ Browse the eXoDOS catalogue alongside the German, Spanish, and Polish language packs
-- ✅ The Windows collections as well: eXoWin3x runs under DOSBox Staging, eXoWin9x boots a real Windows 95/98
-- ✅ Stream individual games on demand - no full collection download required
-- ✅ Launch via bundled DOSBox Staging with no external dependencies
-- ✅ MT-32 and General MIDI music - Roland ROMs and the SoundCanvas soundfont are fetched from the collection and eXoDOS' DOSBox-ECE configs are translated for DOSBox Staging automatically
-- ✅ Game manuals and per-game media galleries - box scans, in-game screenshots, and ads
-- ✅ Preview videos read straight out of the collection's archives, without downloading the game first
-- ✅ Per-game settings - CRT shader, fullscreen, CPU cycles, and a free-form DOSBox config editor
-- ✅ Favorites, playlists, and a personal library of installed games
+Exodium Pocket currently expects Android 10-style, filesystem-oriented storage access: a normal app-writable games folder with paths the app and RetroArch can both resolve. It is not yet adapted for scoped-storage-only or Storage Access Framework-only file management on newer Android releases.
 
-> **Compatibility note:** DOS and Windows 3.x games run under the bundled DOSBox Staging. A handful are tuned for DOSBox-ECE specials such as 3dfx Voodoo settings or the GunStick light gun and may look or behave slightly differently than under the original Windows eXoDOS setup. Windows 9x games need DOSBox-X or 86Box, which Exodium fetches with your first Windows 9x download.
+On Android 11 and later, device firmware, file-manager policy, or missing broad file access can prevent the app from seeing or launching downloaded games even when the files exist. For now, use an Android 10-compatible environment or a device setup that still exposes a regular writable folder for the game library.
 
-### Planned
-- 🔲 Pausing and resuming downloads, and a history of what has been fetched
-- 🔲 Support for other eXo collections - eXoScummVM, eXoDREAMM, eXoIF, and future releases
+## What Is Included
 
----
+- Android-specific Tauri configuration for the `app.exodiumpocket` package.
+- A small `tauri-plugin-retroarch-launcher` bridge that sends `ROM`, `LIBRETRO`, and RetroArch path extras to RetroArch.
+- Bundled catalog metadata and torrent files needed to browse and selectively download supported eXoDOS content.
+- The upstream MIT license and attribution.
 
-## Screenshots
+## What Is Not Included
 
-<p align="center">
-  <img src="docs/screenshots/cover.png" width="820" alt="Game detail panel for DOOM with cover art, metadata, and language variants" />
-</p>
-
-<p align="center"><em>Game detail panel with description, metadata, and one download size per available language.</em></p>
-
-<p align="center">
-  <img src="docs/screenshots/gallery.png" width="820" alt="Media gallery lightbox showing a magazine ad, with a thumbnail strip below it" />
-</p>
-
-<p align="center"><em>Per-game media gallery. Flip through original box scans, magazine ads, and in-game shots.</em></p>
-
-<p align="center">
-  <img src="docs/screenshots/downloads.png" width="820" alt="Downloads sheet with three games in progress, peer count, and sharing status" />
-</p>
-
-<p align="center"><em>Several games download at once, straight from the eXoDOS torrents, with the peer count and how much you have shared back.</em></p>
-
----
-
-## Installation
-
-Download the binary for your platform from the [latest release](https://github.com/tvollstaedt/exodium/releases/latest).
-
-### macOS
-
-Because Exodium is not yet signed with an Apple Developer ID, macOS Gatekeeper will block it on first launch with "Exodium is damaged and cannot be opened". To bypass this, run the following once after dragging the app to Applications:
-
-```bash
-xattr -cr /Applications/Exodium.app
-```
-
-This removes the quarantine attribute that macOS adds to downloaded files. The app is otherwise unmodified - the binary itself is built and distributed directly from this repo's CI pipeline.
-
-### Linux
-
-Install the `.deb` (Debian/Ubuntu) or run the `.AppImage` directly (any distro). The AppImage needs `chmod +x` first.
-
-### Windows
-
-One installer is provided: `Exodium_<version>_x64-setup.exe` (NSIS). It is currently **unsigned**, so Windows will block it by default. Trusted code signing is planned for a future release. (Releases up to v0.8.3 also shipped an `.msi`; it was dropped because the auto-updater delivers NSIS updates, and Windows cannot cleanly update an MSI install with an NSIS installer.)
-
-**Install: NSIS `.exe` + Unblock-File**
-
-1. Download `Exodium_<version>_x64-setup.exe`.
-2. Open PowerShell and unblock the downloaded file:
-
-   ```powershell
-   Unblock-File "$HOME\Downloads\Exodium_<version>_x64-setup.exe"
-   ```
-3. Run the installer normally. SmartScreen may still show a warning - click "More info" → "Run anyway".
-
-If `Unblock-File` is unavailable, right-click the `.exe` → Properties → tick "Unblock" at the bottom of the General tab → OK.
-
-**If downloads are stuck at 0%**: check `%APPDATA%\Exodium\logs\exodium.log` for error details. Firewall issues are one possible cause - allow both "Private" and "Public" networks for Exodium under Windows Security → Firewall & network protection → Allow an app through firewall.
-
----
-
-## Tech stack
-
-| Layer | Technology |
-|-------|-----------|
-| Shell | [Tauri v2](https://tauri.app) (frameless window, `decorations: false`) |
-| Frontend | [SolidJS](https://solidjs.com) + TypeScript + Vite |
-| UI Components | [Ark UI](https://ark-ui.com) headless (`@ark-ui/solid`) |
-| Backend | Rust |
-| Database | SQLite via `rusqlite` (WAL mode, pre-built and shipped with the app) |
-| Torrent | [librqbit](https://github.com/ikatson/rqbit) with selective file downloads |
-
----
+- Generated Android build output.
+- APKs or Android App Bundles.
+- JNI/native build artifacts.
+- Downloaded game archives.
+- Downloaded screenshots, videos, poster packs, thumbnails, or preview JPEGs.
+- DOSBox, RetroArch, DOSBox Pure, BIOS/ROM images, Roland ROMs, or copyrighted game/media assets.
 
 ## Development
 
-### Prerequisites
+Prerequisites:
 
-- [pnpm](https://pnpm.io)
-- [Rust toolchain](https://rustup.rs) - bootstrapped automatically by `pnpm tauri dev` if not present
-- [aria2](https://aria2.github.io) - for `init-dev` only (`brew install aria2` / `apt install aria2`)
-- Python 3 + [Pillow](https://python-pillow.org) - for `init-dev` only (`pip3 install Pillow`)
+- pnpm
+- Rust toolchain
+- Android SDK/NDK configured for Tauri Android builds
+- RetroArch and DOSBox Pure installed on the target Android device for runtime launch testing
 
-> DOSBox Staging is downloaded automatically by `init-dev`. No manual installation needed.
-
-### First-time setup
+Install dependencies:
 
 ```bash
 pnpm install
-
-# Download thumbnails and the DOSBox binary (one-time, ~2-5 GB depending on language packs)
-pnpm run init-dev
-
-pnpm tauri dev
 ```
 
-`init-dev` is idempotent - already-downloaded files and existing thumbnails are skipped. Use `--force` to regenerate thumbnails. Data is cached at `~/.exodium-dev/` (override with `XDO_DEV_DATA=/your/path`).
-
-Language pack options:
+Run checks:
 
 ```bash
-pnpm run init-dev --glp     # German Language Pack (~23 GB)
-pnpm run init-dev --slp     # Spanish Language Pack (~3.8 GB)
-pnpm run init-dev --plp     # Polish Language Pack (~800 MB)
-pnpm run init-dev --all-packs
+pnpm test
+pnpm run typecheck
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-### Useful scripts
+Build/run with the Tauri Android workflow appropriate for your local SDK setup.
 
-| Command | Description |
-|---------|-------------|
-| `pnpm tauri dev` | Start the app in development mode |
-| `pnpm run init-dev` | First-time setup: DOSBox binary + thumbnails |
-| `pnpm run get-dosbox` | Download DOSBox Staging binary only |
-| `pnpm test` | Run frontend tests (Vitest) |
-| `pnpm run test:all` | Frontend + Rust tests |
+## Upstream
 
-### Regenerating the game database
+Exodium Pocket is not affiliated with or endorsed by upstream Exodium, RetroArch, DOSBox Pure, DOSBox, libretro, eXoDOS, or the eXo project.
 
-The pre-built SQLite database (`metadata/exodium.db.gz`) ships with the app. To regenerate it from the bundled XML sources:
+Upstream Exodium remains available at [tvollstaedt/exodium](https://github.com/tvollstaedt/exodium). Please direct Exodium Pocket issues to [androidgyny/exodium-pocket](https://github.com/androidgyny/exodium-pocket).
 
-```bash
-cd src-tauri
-cargo run --example generate_db
-gzip -k ../metadata/exodium.db
-```
+## Legal
 
----
+The application code is MIT licensed. See [LICENSE](LICENSE), [NOTICE.md](NOTICE.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Project structure
-
-```
-exodium/
-├── src/                    SolidJS frontend
-│   ├── api/tauri.ts        Typed invoke() wrappers
-│   ├── components/         GameCard, GameDetailPanel, SearchBar, WindowFrame, ...
-│   ├── pages/              Intro, Setup, Library
-│   └── stores/             games, downloads, thumbnails
-├── src-tauri/
-│   └── src/
-│       ├── examples/       generate_db build tool (not shipped)
-│       ├── commands/       Tauri commands (games, setup, updates)
-│       ├── db/             SQLite schema + queries
-│       ├── import/         LaunchBox XML parser
-│       └── torrent/        librqbit download manager
-├── metadata/               Bundled XML sources + pre-built DB (.gz)
-├── scripts/
-│   ├── init-dev.sh         First-time dev setup
-│   └── gen_thumbnails.py   Resize + rename box art from XODOSMetadata.zip
-├── manifest.json           Update-check manifest (torrent infohashes + thumbnail pack info)
-├── thumbnails/eXoDOS/      Shortcode-keyed game thumbnails (gitignored, generated by init-dev)
-└── torrents/               .torrent files for every collection
-```
-
----
-
-## Support
-
-Found a bug or have a question? Open an [issue](https://github.com/tvollstaedt/exodium/issues) - include `exodium.log` from the app's log folder (Settings → Open log folder) for download or launch problems.
-
-If Exodium is useful to you, consider donating via [GitHub Sponsors](https://github.com/sponsors/tvollstaedt) or [Ko-fi](https://ko-fi.com/tvollstaedt). Donations go toward OS code-signing certificates (Apple Developer ID, Windows signing) so the install warnings on macOS and Windows can go away.
-
----
-
-## License
-
-MIT - see [LICENSE](LICENSE).
-
-Exodium does not include any game files, ROM images, or copyrighted eXoDOS assets. All game data is downloaded via the official eXoDOS torrents.
+Exodium Pocket does not grant rights to download, distribute, or play any third-party game or media content. Users are responsible for complying with applicable laws and licenses for any external content, emulator, core, BIOS/ROM, soundfont, or game files they install or download.

@@ -21,7 +21,6 @@ function dirForCollection(
 ): string | null {
   return dirs[collectionId ?? "eXoDOS"] ?? null;
 }
-
 /** Return the Tier 0 preview dir for a collection (bundled, always available). */
 export function previewDirForCollection(collectionId: string | null | undefined): string | null {
   return dirForCollection(previewDirs(), collectionId);
@@ -86,7 +85,23 @@ export function thumbnailCandidates(
 /** Called on app startup and after content-pack state changes. */
 export async function loadThumbnailDir() {
   try {
-    const available = await getAvailableCollections();
+    // Android MVP: only the downloaded eXoDOS poster tier is used.
+    // Do not wait on desktop-oriented bundled-preview resolution.
+    if (navigator.userAgent.includes("Android")) {
+      try {
+        const dir = await getPosterDir("eXoDOS");
+        setPreviewDirs({});
+        setPosterDirs({ eXoDOS: dir });
+      } catch {
+        setPreviewDirs({});
+        setPosterDirs({});
+      }
+      return;
+    }
+
+    const available = navigator.userAgent.includes("Android")
+      ? [{ id: "eXoDOS" }]
+      : await getAvailableCollections();
 
     // Resolve Tier 0 preview dirs.
     const previews: Record<string, string> = {};

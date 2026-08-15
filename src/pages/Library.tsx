@@ -58,7 +58,6 @@ function mergeShelfList(prev: Game[], fresh: Game[]): Game[] {
     return f;
   });
 }
-
 type Section = { label: string; games: Game[]; index: number };
 
 const sortOptions = [
@@ -109,6 +108,38 @@ export function Library() {
   const [favoriteGames, setFavoriteGames] = createSignal<Game[]>([]);
   const [collections, setCollections] = createSignal<{id: string, label: string, count: number, sub?: string}[]>([]);
   const [detailGame, setDetailGame] = createSignal<Game | null>(null);
+
+  // Android: make the detail panel a real browser-history step so the
+  // hardware/system Back button returns to the library instead of exiting.
+  const isAndroid = navigator.userAgent.includes("Android");
+
+  const openDetail = (game: Game) => {
+    if (isAndroid && !detailGame()) {
+      window.history.pushState({ exodiumDetail: true }, "");
+    }
+    setDetailGame(game);
+  };
+
+  const closeDetail = () => {
+    if (isAndroid && detailGame() && window.history.state?.exodiumDetail) {
+      window.history.back();
+    } else {
+      setDetailGame(null);
+    }
+  };
+
+  onMount(() => {
+    if (!isAndroid) { return; }
+
+    const handlePopState = () => {
+      if (detailGame()) {
+        setDetailGame(null);
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    onCleanup(() => window.removeEventListener("popstate", handlePopState));
+  });
 
   // Keep detailGame in sync with the games store so installed/in_library flags stay current
   createEffect(() => {
@@ -668,14 +699,14 @@ export function Library() {
       fallback={
         <div class="game-grid">
           <For each={p.games}>
-            {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
+            {(game) => <GameCard game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={openDetail} />}
           </For>
         </div>
       }
     >
       <div class="game-list">
         <For each={p.games}>
-          {(game) => <GameRow game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={setDetailGame} />}
+          {(game) => <GameRow game={game} onFavoriteChanged={handleFavoriteChanged} onDetail={openDetail} />}
         </For>
       </div>
     </Show>
@@ -823,7 +854,7 @@ export function Library() {
                         <GameCard
                           game={game}
                           onFavoriteChanged={handleFavoriteChanged}
-                          onDetail={setDetailGame}
+                          onDetail={openDetail}
                         />
                       )}
                     </For>
@@ -854,7 +885,7 @@ export function Library() {
                 <GameRow
                   game={game}
                   onFavoriteChanged={handleFavoriteChanged}
-                  onDetail={setDetailGame}
+                  onDetail={openDetail}
                 />
               )}
             </For>
@@ -1043,7 +1074,7 @@ export function Library() {
         ↑ Top
       </button>
 
-      <GameDetailPanel game={detailGame()} onClose={() => setDetailGame(null)} onDownloadStart={scrollToGame} />
+      <GameDetailPanel game={detailGame()} onClose={closeDetail} onDownloadStart={scrollToGame} />
     </div>
   );
 }

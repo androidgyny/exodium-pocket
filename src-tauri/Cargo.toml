@@ -1,10 +1,13 @@
 [package]
 name = "exodium"
 version = "0.13.1"
-description = "Cross-platform eXoDOS game launcher"
-authors = ["redfox"]
+description = "Unofficial Android fork of the Exodium eXoDOS launcher"
+authors = ["Thomas Vollstädt", "Exodium Pocket contributors"]
 edition = "2021"
 default-run = "exodium"
+license = "MIT"
+repository = "https://github.com/androidgyny/exodium-pocket"
+readme = "../README.md"
 
 [lib]
 name = "exodium_lib"
@@ -53,7 +56,7 @@ lava_torrent = "0.11"
 # 9.0.0-rc.0 from crates.io (was a git-pinned beta.2): keeps the v9 NTFS
 # sparse-file fix and picks up months of initializing/check fixes, without a
 # git-pin supply-chain dependency.
-librqbit = "9.0.0-rc.0"
+librqbit = { version = "9.0.0-rc.0", default-features = false, features = ["rust-tls", "http-api-client"] }
 
 # HTTP client (content pack downloads)
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
@@ -84,10 +87,7 @@ log = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-log = "0.2"
-tauri-plugin-single-instance = "2.4.2"
 fs4 = "1.1.0"
-tauri-plugin-updater = "2.10.1"
-tauri-plugin-process = "2.3.1"
 
 [target.'cfg(windows)'.dependencies]
 # Directory junctions for the LP overlay mount - unlike symlinks they need
@@ -102,7 +102,7 @@ libc = "0.2.189"
 # so <video> sources are served over 127.0.0.1 HTTP with Range support
 # instead. All three crates are already in the tree via librqbit - this adds
 # no new compilation units beyond tower-http's "fs" service.
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
@@ -114,3 +114,12 @@ pretty_assertions = "1"
 # instantly instead of actually waiting for it.
 tokio = { version = "1", features = ["fs", "sync", "macros", "rt", "test-util", "time"] }
 
+# Exodium Pocket: desktop integrations stay desktop-only; Android uses a tiny
+# native bridge to launch RetroArch/DOSBox Pure.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2.4.2"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-retroarch-launcher = { path = "../tauri-plugin-retroarch-launcher" }

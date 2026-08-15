@@ -45,6 +45,7 @@ const IconBack = () => (
 );
 
 export function Setup(props: SetupProps) {
+  const isAndroid = /Android/i.test(navigator.userAgent);
   const [phase, setPhase] = createSignal<Phase>("mode");
   const [error, setError] = createSignal("");
 
@@ -129,8 +130,13 @@ export function Setup(props: SetupProps) {
     if (!dataDir()) { return; }
     setPhase("starting");
     try {
-      const available = await getAvailableCollections();
-      const collectionsCSV = available.map((c) => c.id).join(",");
+      let collectionsCSV: string;
+      if (isAndroid) {
+        collectionsCSV = "eXoDOS";
+      } else {
+        const available = await getAvailableCollections();
+        collectionsCSV = available.map((c) => c.id).join(",");
+      }
       await setConfig("data_dir", dataDir());
       await setConfig("collections", collectionsCSV);
       await initDownloadManager();
@@ -197,8 +203,20 @@ export function Setup(props: SetupProps) {
           <div class="setup-step">
             <label>Data folder</label>
             <div class="path-picker">
-              <span class="setting-value">{dataDir() || "Not selected"}</span>
-              <Button variant="small" onClick={handleSelectDataDir}>Browse</Button>
+              <Show when={isAndroid} fallback={
+                <>
+                  <span class="setting-value">{dataDir() || "Not selected"}</span>
+                  <Button variant="small" onClick={handleSelectDataDir}>Browse</Button>
+                </>
+              }>
+                <input
+                  class="setting-value"
+                  style="flex:1;min-width:0;background:transparent;color:inherit;border:1px solid var(--border, #555);padding:7px"
+                  value={dataDir()}
+                  onInput={(e) => setDataDir(e.currentTarget.value)}
+                  aria-label="Exodium data directory"
+                />
+              </Show>
             </div>
             <Show when={dataDir()}>
               <div class="setup-preview">

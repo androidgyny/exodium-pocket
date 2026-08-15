@@ -133,6 +133,11 @@ function App() {
     if (navigator.userAgent.includes("Linux")) {
       document.documentElement.classList.add("soft-render");
     }
+    // Android can mount the WebView before Rust setup() has finished.
+    // Give Tauri time to register managed backend state before the first IPC call.
+    if (navigator.userAgent.includes("Android")) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 3000));
+    }
     // Before anything else: the backend can start pack installs on its own
     // (Win9x emulator auto-queue), and only this listener makes them visible.
     initContentPackEvents().catch(() => {});
@@ -346,7 +351,9 @@ function App() {
   const openSettings = () => {
     loadGameDefaults();
     loadNetworkMode();
-    loadWin9xNetwork();
+    if (!navigator.userAgent.includes("Android")) {
+      loadWin9xNetwork();
+    }
     // Reports the folders even after a "not now", so the row below can offer
     // the merge later.
     pendingLayoutMigration()
@@ -482,10 +489,8 @@ function App() {
     // whatever was behind the dialog (Library or Setup).
     setShowSettings(false);
     setResetting(true);
-    console.log("[reset] calling factoryReset, deleteGameData=", doDelete);
     try {
       await factoryReset(doDelete);
-      console.log("[reset] factoryReset succeeded, switching to setup");
       setPhase("setup");
       setDataDir("");
     } catch (e) {
@@ -626,22 +631,24 @@ function App() {
                         </Show>
                       </section>
 
-                      <section class="settings-section">
-                        <h3 class="settings-section-title">Game Defaults</h3>
-                        <p class="settings-section-hint">Applied as a last-wins DOSBox config on every launch. Overrides per-game settings without modifying eXoDOS's bundled configs.</p>
-                        <Toggle
-                          checked={crtAuto()}
-                          onChange={handleToggleCrtAuto}
-                          label="Auto CRT shaders"
-                          hint="DOSBox Staging picks a CRT shader matched to each game's video mode and your display resolution."
-                        />
-                        <Toggle
-                          checked={defaultFullscreen()}
-                          onChange={handleToggleFullscreen}
-                          label="Launch in fullscreen"
-                          hint="Start every game fullscreen instead of windowed. Alt+Enter still toggles at runtime."
-                        />
-                      </section>
+                      <Show when={!navigator.userAgent.includes("Android")}>
+                        <section class="settings-section">
+                          <h3 class="settings-section-title">Game Defaults</h3>
+                          <p class="settings-section-hint">Applied as a last-wins DOSBox config on every launch. Overrides per-game settings without modifying eXoDOS's bundled configs.</p>
+                          <Toggle
+                            checked={crtAuto()}
+                            onChange={handleToggleCrtAuto}
+                            label="Auto CRT shaders"
+                            hint="DOSBox Staging picks a CRT shader matched to each game's video mode and your display resolution."
+                          />
+                          <Toggle
+                            checked={defaultFullscreen()}
+                            onChange={handleToggleFullscreen}
+                            label="Launch in fullscreen"
+                            hint="Start every game fullscreen instead of windowed. Alt+Enter still toggles at runtime."
+                          />
+                        </section>
+                      </Show>
 
                       <section class="settings-section">
                         <h3 class="settings-section-title">Network</h3>
@@ -678,7 +685,7 @@ function App() {
                             settings above: this is about the emulated PC's
                             network card, and the grant is a system-wide one,
                             so the row says what it costs before asking. */}
-                        <Show when={netStatus()}>
+                        <Show when={!navigator.userAgent.includes("Android") ? netStatus() : null}>
                           {(st) => (
                             <div class="setting-card">
                               <div class="setting-card-info">
@@ -741,18 +748,20 @@ function App() {
                         </Show>
                       </section>
 
-                      <section class="settings-section">
-                        <h3 class="settings-section-title">Diagnostics</h3>
-                        <p class="settings-section-hint">If a download stalls or the app misbehaves, share <code>exodium.log</code> from the folder.</p>
-                        <div class="setting-row">
-                          <span class="setting-label">Log folder</span>
-                          <span class="setting-hint">Open in your file explorer</span>
-                          <Button variant="small" onClick={handleOpenLogFolder}>Open</Button>
-                        </div>
-                        <Show when={logOpenError()}>
-                          <div class="error" style="margin-top:6px">{logOpenError()}</div>
-                        </Show>
-                      </section>
+                      <Show when={!navigator.userAgent.includes("Android")}>
+                        <section class="settings-section">
+                          <h3 class="settings-section-title">Diagnostics</h3>
+                          <p class="settings-section-hint">If a download stalls or the app misbehaves, share <code>exodium.log</code> from the folder.</p>
+                          <div class="setting-row">
+                            <span class="setting-label">Log folder</span>
+                            <span class="setting-hint">Open in your file explorer</span>
+                            <Button variant="small" onClick={handleOpenLogFolder}>Open</Button>
+                          </div>
+                          <Show when={logOpenError()}>
+                            <div class="error" style="margin-top:6px">{logOpenError()}</div>
+                          </Show>
+                        </section>
+                      </Show>
 
                       <section class="settings-section">
                         <h3 class="settings-section-title">Support Exodium</h3>

@@ -13,6 +13,61 @@ pub use commands::{collection_base_id, collection_data_dir, CollectionDef, COLLE
 use std::path::Path;
 use std::sync::Mutex;
 
+#[cfg(target_os = "android")]
+fn materialize_android_resources(root: &Path) -> Result<(), String> {
+    let metadata = root.join("metadata");
+    let torrents = root.join("torrents");
+
+    std::fs::create_dir_all(&metadata)
+        .map_err(|e| format!("creating Android metadata dir: {e}"))?;
+    std::fs::create_dir_all(&torrents)
+        .map_err(|e| format!("creating Android torrents dir: {e}"))?;
+
+    let write = |path: &Path, bytes: &[u8]| -> Result<(), String> {
+        let already_ok = std::fs::metadata(path)
+            .map(|m| m.len() == bytes.len() as u64)
+            .unwrap_or(false);
+
+        if !already_ok {
+            std::fs::write(path, bytes)
+                .map_err(|e| format!("writing {}: {e}", path.display()))?;
+        }
+        Ok(())
+    };
+
+    write(
+        &metadata.join("exodium.db.gz"),
+        include_bytes!("../../metadata/exodium.db.gz"),
+    )?;
+
+    write(
+        &metadata.join("MS-DOS.xml.gz"),
+        include_bytes!("../../metadata/MS-DOS.xml.gz"),
+    )?;
+
+    write(
+        &metadata.join("eXoDOS_configs.zip"),
+        include_bytes!("../../metadata/eXoDOS_configs.zip"),
+    )?;
+
+    write(
+        &metadata.join("dosbox.txt"),
+        include_bytes!("../../metadata/dosbox.txt"),
+    )?;
+
+    write(
+        &torrents.join("eXoDOS.torrent"),
+        include_bytes!("../../torrents/eXoDOS.torrent"),
+    )?;
+
+    write(
+        &root.join("manifest.json"),
+        include_bytes!("../../manifest.json"),
+    )?;
+
+    Ok(())
+}
+
 use tauri::Manager;
 use tokio::sync::RwLock;
 
@@ -632,9 +687,13 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     apply_render_path();
 
-    tauri::Builder::default()
-        // A second instance would contend on the SQLite DB and corrupt the
-        // torrent session; focus the existing window instead.
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder
+        // A second desktop instance would contend on SQLite/torrent state.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             use tauri::Manager;
             if let Some(win) = app.get_webview_window("main") {
@@ -642,11 +701,13 @@ pub fn run() {
                 let _ = win.set_focus();
             }
         }))
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .setup(|app| {
+        .plugin(tauri_plugin_process::init());
+
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_retroarch_launcher::init());
+
+    builder.setup(|app| {
             // Initialize the logger as early as possible so later setup steps' log
             // output is captured. `app_log_dir()` resolves to platform conventions:
             //   Windows:  %APPDATA%\com.redfox.exodium\logs
@@ -666,10 +727,37 @@ pub fn run() {
 
             // Cache the resource_dir BEFORE any code tries to read bundled metadata,
             // torrents, or shaders - the sync helpers in setup.rs rely on this.
-            if let Ok(res_dir) = app.path().resource_dir() {
-                init_resource_dir(res_dir);
-            } else {
-                log::warn!("resource_dir() unavailable; bundled assets may not be found");
+            #[cfg(target_os = "android")]
+            {
+                match app.path().app_data_dir() {
+                    Ok(data_dir) => {
+                        let bundled_root = data_dir.join("bundled");
+                        match materialize_android_resources(&bundled_root) {
+                            Ok(()) => {
+                                log::info!(
+                                    "Android resources materialized at {}",
+                                    bundled_root.display()
+                                );
+                                init_resource_dir(bundled_root);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to materialize Android resources: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Could not resolve Android app data directory: {}", e);
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                if let Ok(res_dir) = app.path().resource_dir() {
+                    init_resource_dir(res_dir);
+                } else {
+                    log::warn!("resource_dir() unavailable; bundled assets may not be found");
+                }
             }
 
             // Any failure from here on is fatal but must be VISIBLE: a panic

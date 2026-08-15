@@ -1,10 +1,4 @@
 import { For, Show } from "solid-js";
-import exodosCover from "../assets/collections/exodos.jpg";
-import glpCover from "../assets/collections/glp.jpg";
-import plpCover from "../assets/collections/plp.jpg";
-import slpCover from "../assets/collections/slp.jpg";
-import exowin3xCover from "../assets/collections/exowin3x.jpg";
-import exowin9xCover from "../assets/collections/exowin9x.jpg";
 
 export interface ShelfCollection {
   id: string;
@@ -21,17 +15,6 @@ interface Props {
   onSelect: (id: string) => void;
 }
 
-/** eXo's official box art per collection (retro-exo.com section covers),
- *  bundled at 132px - the shelf renders them 62px wide. */
-const COVER_ART: Record<string, string> = {
-  eXoDOS: exodosCover,
-  eXoDOS_GLP: glpCover,
-  eXoDOS_PLP: plpCover,
-  eXoDOS_SLP: slpCover,
-  eXoWin3x: exowin3xCover,
-  eXoWin9x: exowin9xCover,
-};
-
 /** Dominant box color per collection - drives the card's ambient glow and the
  *  active ring, so each collection lights up in its own tint. */
 const ACCENT: Record<string, string> = {
@@ -47,36 +30,35 @@ const ACCENT: Record<string, string> = {
  *  Pack" carries no information "German" doesn't. */
 const shortLabel = (label: string) => label.replace(" Language Pack", "");
 
-/** The "All" card (empty id = backend's no-collection-filter) gets a 2x2
- *  mosaic of the shelf's own covers instead of a single box. */
-const ALL_MOSAIC = [exodosCover, glpCover, slpCover, exowin3xCover];
+const initials = (label: string) =>
+  shortLabel(label)
+    .split(/[\s-]+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 3)
+    .toUpperCase();
+
+const ALL_TILES = ["DOS", "GLP", "SLP", "9X"];
 
 const cover = (col: ShelfCollection) => {
   if (col.id === "") {
     return (
       <span class="collection-cover collection-cover-all">
-        <For each={ALL_MOSAIC}>{(src) => <img src={src} alt="" draggable={false} />}</For>
+        <For each={ALL_TILES}>{(tile) => <span>{tile}</span>}</For>
       </span>
     );
   }
   return (
-    <Show
-      when={COVER_ART[col.id]}
-      fallback={
-        <span class="collection-cover collection-cover-fallback">
-          {shortLabel(col.label).slice(0, 2)}
-        </span>
-      }
-    >
-      <img class="collection-cover" src={COVER_ART[col.id]} alt="" draggable={false} />
-    </Show>
+    <span class="collection-cover collection-cover-fallback">
+      {initials(col.label)}
+    </span>
   );
 };
 
 /** Horizontal rail of collection boxes above the Browse grid - one card per
- *  collection: eXo's box art, name, game count. The active box is lit in its
- *  own accent color and lifted off the shelf; a future collection without
- *  bundled art falls back to an initials box in the accent tint. */
+ *  collection. The active box is lit in its own accent color and lifted off
+ *  the shelf. */
 export function CollectionShelf(props: Props) {
   return (
     <div class="collection-shelf" role="group" aria-label="Collections">

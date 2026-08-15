@@ -37,7 +37,6 @@ export interface GameActionsMenuProps {
    *  cancel it first, and offering both side by side is confusing. */
   downloading?: boolean;
 }
-
 /** What this menu is currently showing. "Add to playlist…" and "Game
  *  settings…" replace the list rather than closing it, so the host must keep
  *  the component mounted until everything is finished - hence `done`. */
@@ -64,7 +63,7 @@ export function GameActionsMenu(props: GameActionsMenuProps) {
   });
 
   const id = () => props.game.id;
-  const canSettings = () => props.game.installed && id() != null;
+  const canSettings = () => !navigator.userAgent.includes("Android") && props.game.installed && id() != null;
   const canReset = () => props.game.installed && id() != null;
   const canUninstall = () =>
     !props.downloading && (props.game.installed || props.game.in_library) && id() != null;
