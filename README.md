@@ -20,10 +20,12 @@ The current Android support is focused on DOS/eXoDOS games. Windows 3.x and Wind
 
 Exodium Pocket does not bundle emulators, games, ROMs, or media packs.
 
-Install these separately on the Android device:
+Install these separately on the Android device before opening Exodium Pocket:
 
-- RetroArch for Android.
+- RetroArch for Android: download it from the [RetroArch platforms page](https://www.retroarch.com/?page=platforms). On Android, use the plain Android download, not the ones labeled 32-bit or 64-bit.
 - The DOSBox Pure libretro core inside RetroArch.
+
+Some devices may not complete first-run setup cleanly until RetroArch is installed. Treat RetroArch and the DOSBox Pure core as required parts of the Exodium Pocket setup, not optional extras.
 
 By default the app launches package `com.retroarch`, activity `com.retroarch.browser.retroactivity.RetroActivityFuture`, and core path `/data/data/com.retroarch/cores/dosbox_pure_libretro_android.so`. These values are stored in app config so device-specific builds can override them.
 
