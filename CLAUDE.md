@@ -1,6 +1,8 @@
-# Exodium - Project Guide for Claude
+# Exodium - Agent Project Guide
 
-This file is the handover document for future Claude sessions working on **Exodium**, a cross-platform eXoDOS game launcher. Read it first before touching the code.
+This file is a handover document for future AI coding-agent sessions working on **Exodium**, a cross-platform eXoDOS game launcher. Read it first before touching the code.
+
+Exodium Pocket note: the fork-specific Android publication work is a vibe-coded personal project done with ChatGPT/Codex.
 
 ## What is Exodium?
 

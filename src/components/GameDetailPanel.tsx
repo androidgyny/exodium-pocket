@@ -779,6 +779,14 @@ export function GameDetailPanel(props: Props) {
     el.load();
     setVideoPlaying(false);
   };
+  const stopPreviewPlayback = () => {
+    if (autoplayTimer) {
+      clearTimeout(autoplayTimer);
+      autoplayTimer = undefined;
+    }
+    setLightboxOpen(false);
+    stopVideoElement(heroVideoRef);
+  };
   createEffect(() => {
     const p = videoState()?.path;
     if (!p) {
@@ -955,6 +963,7 @@ export function GameDetailPanel(props: Props) {
   };
 
   const startLaunch = async (gameId: number) => {
+    stopPreviewPlayback();
     setLaunchingId(gameId);
     setStatus("");
     const startedAt = Date.now();
@@ -1214,7 +1223,14 @@ export function GameDetailPanel(props: Props) {
                   // fallback-muted video gets its sound back here - but only
                   // if the user has not asked for silence. Forcing muted=false
                   // outright made Replay override the mute button.
-                  if (heroVideoRef) { heroVideoRef.muted = previewMuted(); }
+                  if (heroVideoRef) {
+                    const src = videoSrc();
+                    if (src && heroVideoRef.getAttribute("src") !== src) {
+                      heroVideoRef.src = src;
+                      heroVideoRef.load();
+                    }
+                    heroVideoRef.muted = previewMuted();
+                  }
                   heroVideoRef?.play();
                 }}
               >▶</button>

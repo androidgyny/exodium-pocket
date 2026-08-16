@@ -1353,6 +1353,67 @@ pub async fn get_preview_dir(collection: String) -> Result<String, String> {
 
 /// Get the Tier 1 poster content-pack directory for a collection.
 /// Returns <data_dir>/content/posters/<collection> if it exists.
+fn is_poster_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+        .unwrap_or(false)
+}
+
+fn has_direct_poster_images(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        !is_os_metadata(&path)
+            && entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+            && is_poster_image(&path)
+    })
+}
+
+fn usable_poster_dir(dir: &Path) -> Option<PathBuf> {
+    if has_direct_poster_images(dir) {
+        return Some(dir.to_path_buf());
+    }
+    let target = dir.file_name()?;
+    // Repair lookup for installs that accidentally nested the payload under
+    // the manifest path, or under a repeated collection wrapper. Returning the
+    // usable inner dir makes old art reappear without a risky filesystem move.
+    let nested_candidates = [
+        dir.join("content").join("posters").join(target),
+        dir.join(target),
+    ];
+    nested_candidates
+        .into_iter()
+        .find(|candidate| has_direct_poster_images(candidate))
+}
+
+#[cfg(test)]
+mod poster_dir_tests {
+    use super::*;
+
+    #[test]
+    fn finds_posters_nested_under_a_repeated_manifest_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path().join("content/posters/eXoDOS");
+        let inner = outer.join("content/posters/eXoDOS");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("abc.jpg"), b"jpg").unwrap();
+
+        assert_eq!(usable_poster_dir(&outer), Some(inner));
+    }
+
+    #[test]
+    fn finds_posters_nested_under_a_repeated_collection_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path().join("content/posters/eXoDOS");
+        let inner = outer.join("eXoDOS");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("abc.jpg"), b"jpg").unwrap();
+
+        assert_eq!(usable_poster_dir(&outer), Some(inner));
+    }
+}
+
 #[tauri::command]
 pub async fn get_poster_dir(
     db_state: State<'_, DbState>,
@@ -1366,12 +1427,12 @@ pub async fn get_poster_dir(
     // Check collection-specific dir first, fall back to eXoDOS.
     // All poster thumbnails live in the eXoDOS pack; LP collections share them.
     let poster_path = base.join(&collection);
-    if poster_path.exists() {
-        return Ok(path_to_fwd_slash(&poster_path));
+    if let Some(usable) = usable_poster_dir(&poster_path) {
+        return Ok(path_to_fwd_slash(&usable));
     }
     if let Some(fallback) = asset_fallback(&collection).map(|c| base.join(c)) {
-        if fallback.exists() {
-            return Ok(path_to_fwd_slash(&fallback));
+        if let Some(usable) = usable_poster_dir(&fallback) {
+            return Ok(path_to_fwd_slash(&usable));
         }
     }
     Err("Poster directory not found".to_string())

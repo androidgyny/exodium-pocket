@@ -68,6 +68,16 @@ function mount(game: Game) {
 describe("GameDetailPanel", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
+    vi.spyOn(window.HTMLMediaElement.prototype, "play")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        this.dispatchEvent(new Event("play"));
+        return Promise.resolve();
+      });
+    vi.spyOn(window.HTMLMediaElement.prototype, "pause")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        this.dispatchEvent(new Event("pause"));
+      });
+    vi.spyOn(window.HTMLMediaElement.prototype, "load").mockImplementation(() => {});
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === "get_game_metadata") { return EMPTY_META; }
       if (cmd === "get_game_variants") { return []; }
@@ -109,13 +119,7 @@ describe("GameDetailPanel", () => {
 
   it("waits for the playable video URL before spending autoplay", async () => {
     vi.useFakeTimers();
-    const play = vi.spyOn(window.HTMLMediaElement.prototype, "play")
-      .mockImplementation(function (this: HTMLMediaElement) {
-        this.dispatchEvent(new Event("play"));
-        return Promise.resolve();
-      });
-    vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
-    vi.spyOn(window.HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const play = vi.mocked(window.HTMLMediaElement.prototype.play);
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === "get_game_metadata") { return EMPTY_META; }
       if (cmd === "get_game_variants") { return []; }
@@ -137,6 +141,50 @@ describe("GameDetailPanel", () => {
       .toContain("127.0.0.1");
 
     dispose(); host.remove();
+  });
+
+  it("stops the preview video before launching a game", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(window.navigator, "userAgent", "get")
+      .mockReturnValue("Mozilla/5.0 (Linux; Android 10)");
+    const pause = vi.mocked(window.HTMLMediaElement.prototype.pause);
+    const load = vi.mocked(window.HTMLMediaElement.prototype.load);
+
+    let host: HTMLElement | undefined;
+    let previewSrcAtLaunch: string | null | undefined;
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "get_game_metadata") { return EMPTY_META; }
+      if (cmd === "get_game_variants") { return []; }
+      if (cmd === "start_game_video") { return VIDEO_READY; }
+      if (cmd === "get_video_status") { return VIDEO_READY; }
+      if (cmd === "launch_game") {
+        previewSrcAtLaunch = host?.ownerDocument
+          .querySelector("video.game-detail-hero-video")
+          ?.getAttribute("src");
+        return "ok";
+      }
+      return null;
+    });
+
+    const mounted = mount(makeGame({ id: 44, installed: true, shortcode: "VID44" }));
+    host = mounted.host;
+    await vi.advanceTimersByTimeAsync(3200);
+
+    const video = host.ownerDocument.querySelector("video.game-detail-hero-video");
+    expect(video?.getAttribute("src") ?? "").toContain("videocache");
+
+    const playButton = [...host.ownerDocument.querySelectorAll("button")]
+      .find((b) => (b.textContent ?? "").includes("Play")) as HTMLButtonElement | undefined;
+    expect(playButton, "installed games should show Play").toBeTruthy();
+
+    playButton!.click();
+    await Promise.resolve();
+
+    expect(previewSrcAtLaunch).toBeNull();
+    expect(pause).toHaveBeenCalled();
+    expect(load).toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith("launch_game", { id: 44 });
+    mounted.dispose(); host.remove();
   });
 
   it("renders a single-language game without throwing", async () => {

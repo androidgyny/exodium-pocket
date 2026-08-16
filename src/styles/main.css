@@ -16,6 +16,10 @@
   --danger: #e94560;
   --border-radius: 8px;
   --border-radius-lg: 12px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --touch-edge-rail: 0px;
 }
 
 * {
@@ -34,6 +38,7 @@ body {
 
 #root {
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1297,6 +1302,37 @@ body {
 .jump-bar-item:hover {
   color: var(--accent-hover);
   background: var(--accent-glow);
+}
+
+@media (orientation: landscape) and (any-pointer: coarse) {
+  :root {
+    /* Odin-class Android handhelds can keep a gesture/navigation strip at the
+       right edge even when immersive mode is requested. Reserve that space for
+       fixed controls and scroll targets without shrinking desktop layouts. */
+    --touch-edge-rail: 88px;
+  }
+
+  .top-bar {
+    padding-right: calc(12px + var(--safe-right) + var(--touch-edge-rail));
+  }
+
+  .library {
+    padding-right: calc(20px + var(--safe-right) + var(--touch-edge-rail));
+  }
+
+  .download-sheet {
+    right: calc(12px + var(--safe-right) + var(--touch-edge-rail));
+  }
+
+  .jump-bar {
+    top: max(104px, calc(var(--safe-top) + 72px));
+    right: calc(12px + var(--safe-right));
+    bottom: max(16px, calc(var(--safe-bottom) + 16px));
+    transform: none;
+    max-height: none;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* ============================================
@@ -3073,6 +3109,59 @@ body {
 .game-detail-scroll::-webkit-scrollbar { width: 4px; }
 .game-detail-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 2px; }
 .game-detail-scroll::-webkit-scrollbar-track { background: transparent; }
+
+@media (orientation: landscape) and (any-pointer: coarse) {
+  .game-detail-backdrop {
+    inset: var(--safe-top) var(--safe-right) var(--safe-bottom) 0;
+  }
+
+  .game-detail-panel {
+    top: var(--safe-top);
+    right: var(--safe-right);
+    bottom: var(--safe-bottom);
+    width: min(58vw, calc(100vw - var(--safe-right) - 64px));
+  }
+
+  .game-detail-thumb,
+  .game-detail-hero-video {
+    max-height: min(30vh, 220px);
+  }
+
+  .game-detail-body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: max(16px, calc(var(--safe-bottom) + 16px));
+  }
+
+  .game-detail-actions {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 6px 0 8px;
+    margin: -6px 0 0;
+    background: linear-gradient(
+      180deg,
+      var(--bg-secondary) 0%,
+      var(--bg-secondary) 76%,
+      rgba(18, 18, 26, 0) 100%
+    );
+  }
+
+  .game-detail-scroll {
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow: visible;
+    overscroll-behavior: auto;
+    touch-action: auto;
+  }
+
+  .game-detail-description {
+    font-size: 13px;
+    line-height: 1.55;
+  }
+}
 
 /* A compatibility note is an aside, not an alarm. The accent bar down one
    edge made every one of them read as a system warning and pulled the eye off

@@ -6,7 +6,7 @@ This fork targets Android handhelds and launches installed DOS games through a s
 
 ## Project Expectations
 
-Exodium Pocket is a vibe-coded personal project, built to make Exodium usable on my own Android device. I am publishing the source in case it is useful to others, but it should be treated as an unpolished personal fork rather than a supported product.
+Exodium Pocket is a vibe-coded personal project, built with ChatGPT to make Exodium usable on my own Android device. I am publishing the source in case it is useful to others, but it should be treated as an unpolished personal fork rather than a supported product.
 
 There is no guarantee of compatibility, support, releases, fixes, documentation updates, or future improvements. Expect sharp edges.
 
@@ -27,13 +27,13 @@ Install these separately on the Android device:
 
 By default the app launches package `com.retroarch`, activity `com.retroarch.browser.retroactivity.RetroActivityFuture`, and core path `/data/data/com.retroarch/cores/dosbox_pure_libretro_android.so`. These values are stored in app config so device-specific builds can override them.
 
-## Android Storage Limitation
+## Android Storage Requirement
 
-Exodium Pocket currently expects Android 10-style, filesystem-oriented storage access: a normal app-writable games folder with paths the app and RetroArch can both resolve. It is not yet adapted for scoped-storage-only or Storage Access Framework-only file management on newer Android releases.
+Exodium Pocket requires Android "All files access" so it can create and manage a shared game library folder that both Exodium Pocket and RetroArch can resolve.
 
-On Android 11 and later, device firmware, file-manager policy, or missing broad file access can prevent the app from seeing or launching downloaded games even when the files exist. Personal sideloaded builds therefore request broad file-management access so the app can use `/storage/emulated/0/ExodiumPocket` and similar shared folders. After installing an APK, grant Exodium Pocket "All files access" in Android settings.
+The current Android port still uses old-school filesystem paths rather than a fully scoped-storage or Storage Access Framework workflow. In practice, that means the app needs permission to use `/storage/emulated/0/ExodiumPocket` and similar shared folders for downloads, artwork, and RetroArch launches.
 
-For now, use an Android 10-compatible environment or a device setup that still exposes a regular writable folder for the game library.
+After installing an APK, grant Exodium Pocket "All files access" in Android settings. Without it, downloads, artwork installation, disk-space checks, or game launches may fail even when ordinary storage permissions appear to be enabled.
 
 ## What Is Included
 
@@ -83,7 +83,7 @@ pnpm android:init
 pnpm android:build:apk
 ```
 
-The Android project under `src-tauri/gen/android` is generated and not published. The APK build script patches the generated manifest so the local APK requests the broad storage permission needed by the current filesystem-based Android workflow.
+The Android project under `src-tauri/gen/android` is generated and not published. The APK build script patches the generated manifest so the local APK requests the All Files Access permission needed by the current filesystem-based Android workflow.
 
 ## Upstream
 

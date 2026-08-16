@@ -2945,36 +2945,47 @@ fn launch_game_android(
         ));
     }
 
-    let (package_name, activity_name, libretro, config_file) = {
+    let (package_names, activity_name, configured_libretro, configured_config) = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         let read = |key: &str| -> Option<String> {
             queries::get_config(&conn, key).ok().flatten().filter(|v| !v.trim().is_empty())
         };
-        let package_name = read("android_retroarch_package")
-            .unwrap_or_else(|| "com.retroarch".to_string());
+        let package_names = read("android_retroarch_package")
+            .map(|p| vec![p])
+            .unwrap_or_else(|| vec!["com.retroarch".to_string(), "com.retroarch.aarch64".to_string()]);
         let activity_name = read("android_retroarch_activity")
             .unwrap_or_else(|| "com.retroarch.browser.retroactivity.RetroActivityFuture".to_string());
-        let libretro = read("android_dosbox_pure_core").unwrap_or_else(|| {
+        (package_names, activity_name, read("android_dosbox_pure_core"), read("android_retroarch_config"))
+    };
+
+    let rom = zip.to_string_lossy().into_owned();
+    let mut errors = Vec::new();
+    for package_name in package_names {
+        let libretro = configured_libretro.clone().unwrap_or_else(|| {
             format!(
                 "/data/data/{}/cores/dosbox_pure_libretro_android.so",
                 package_name
             )
         });
-        let config_file = read("android_retroarch_config").or_else(|| {
+        let config_file = configured_config.clone().or_else(|| {
             Some(format!("/storage/emulated/0/Android/data/{}/files/retroarch.cfg", package_name))
         });
-        (package_name, activity_name, libretro, config_file)
-    };
+        match app.retroarch_launcher().launch(LaunchRequest {
+            package_name: package_name.clone(),
+            activity_name: activity_name.clone(),
+            rom: rom.clone(),
+            libretro,
+            config_file,
+        }) {
+            Ok(()) => return Ok(format!("Launched {} in RetroArch / DOSBox Pure", game.title)),
+            Err(e) => errors.push(format!("{}: {}", package_name, e)),
+        }
+    }
 
-    app.retroarch_launcher().launch(LaunchRequest {
-        package_name,
-        activity_name,
-        rom: zip.to_string_lossy().into_owned(),
-        libretro,
-        config_file,
-    })?;
-
-    Ok(format!("Launched {} in RetroArch / DOSBox Pure", game.title))
+    Err(format!(
+        "Could not launch RetroArch / DOSBox Pure. Tried: {}",
+        errors.join("; ")
+    ))
 }
 
 #[tauri::command]

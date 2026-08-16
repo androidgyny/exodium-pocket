@@ -13,6 +13,7 @@ Fork attribution:
 
 - Exodium Pocket: https://github.com/androidgyny/exodium-pocket
 - Android port and fork-specific changes by Exodium Pocket contributors
+- Fork-specific vibe-coding and publication cleanup performed with ChatGPT/Codex
 - License: MIT
 
 The upstream MIT license text is preserved in [LICENSE](LICENSE). This fork is not affiliated with or endorsed by Thomas Vollstädt, RetroArch, libretro, DOSBox Pure, DOSBox, eXoDOS, or the eXo project.

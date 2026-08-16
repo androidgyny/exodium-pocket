@@ -361,9 +361,20 @@ pub(crate) async fn start_pack_install(
 
     let key = format!("{}:{}", collection, pack_id);
 
-    // Resolve data_dir (fast DB read, lock released immediately).
+    // Resolve data_dir and adopt any kept-on-disk pack before deciding to
+    // download. Reinstalling an already-current poster pack can only add risk:
+    // the grid is already using it, so the right answer is "nothing to do."
     let data_dir = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
+        adopt_packs_on_disk(&conn, &collection, col);
+        let installed = read_installed_packs(&conn);
+        if installed
+            .get(&collection)
+            .and_then(|packs| packs.get(&pack_id))
+            .is_some_and(|pack| pack.version >= pack_info.version)
+        {
+            return Ok(());
+        }
         queries::get_config(&conn, "data_dir")
             .map_err(|e| e.to_string())?
             .ok_or("Data directory not configured. Run setup first.")?
@@ -479,6 +490,9 @@ pub(crate) async fn start_pack_install(
 /// writes them as ordinary files, so staging held two entries and the wrapper
 /// went unrecognised: `content/posters/eXoDOS/eXoDOS/`, and every cover 404'd.
 fn unwrapped_source(staging_dir: &Path, install_dir: &Path) -> PathBuf {
+    if let Some(nested) = staged_install_path_source(staging_dir, install_dir) {
+        return nested;
+    }
     let Some(target_name) = install_dir.file_name() else {
         return staging_dir.to_path_buf();
     };
@@ -502,6 +516,65 @@ fn unwrapped_source(staging_dir: &Path, install_dir: &Path) -> PathBuf {
     }
 }
 
+fn staged_install_path_source(staging_dir: &Path, install_dir: &Path) -> Option<PathBuf> {
+    let mut tail = Vec::new();
+    let mut seen_content = false;
+    for component in install_dir.components() {
+        let std::path::Component::Normal(part) = component else { continue };
+        if seen_content {
+            tail.push(part);
+        } else if part == "content" {
+            seen_content = true;
+            tail.push(part);
+        }
+    }
+    if tail.is_empty() {
+        return None;
+    }
+    let nested = tail.iter().fold(staging_dir.to_path_buf(), |path, part| path.join(part));
+    (nested.is_dir() && payload_has_files(&nested, |_| true)).then_some(nested)
+}
+
+fn is_poster_install_dir(install_dir: &Path) -> bool {
+    install_dir
+        .components()
+        .any(|c| matches!(c, std::path::Component::Normal(part) if part == "posters"))
+}
+
+fn is_supported_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+        .unwrap_or(false)
+}
+
+fn payload_has_files(source_dir: &Path, accepts: impl Fn(&Path) -> bool + Copy) -> bool {
+    let Ok(entries) = std::fs::read_dir(source_dir) else { return false };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if crate::commands::setup::is_os_metadata(&path) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else { continue };
+        if file_type.is_dir() {
+            if payload_has_files(&path, accepts) {
+                return true;
+            }
+        } else if accepts(&path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn staging_payload_is_usable(source_dir: &Path, install_dir: &Path) -> bool {
+    if is_poster_install_dir(install_dir) {
+        payload_has_files(source_dir, is_supported_image)
+    } else {
+        payload_has_files(source_dir, |_| true)
+    }
+}
+
 /// Move a finished staging tree into its install dir.
 ///
 /// Shared by both install routes (HTTP tarball and torrent zip), which had a
@@ -512,12 +585,18 @@ fn commit_staging(staging_dir: &Path, install_dir: &Path) -> Result<(), String> 
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Cannot create install parent dir: {}", e))?;
     }
+    let source_dir = unwrapped_source(staging_dir, install_dir);
+    if !staging_payload_is_usable(&source_dir, install_dir) {
+        return Err(format!(
+            "Downloaded pack did not contain usable files for {}",
+            install_dir.display()
+        ));
+    }
     // Whatever a previous version left there goes: packs are replaced whole.
     if install_dir.exists() {
         std::fs::remove_dir_all(install_dir)
             .map_err(|e| format!("Cannot remove old install: {}", e))?;
     }
-    let source_dir = unwrapped_source(staging_dir, install_dir);
     // Atomic rename; fall back to copy on EXDEV (staging and install can sit
     // on different filesystems).
     if std::fs::rename(&source_dir, install_dir).is_err() {
@@ -1415,6 +1494,20 @@ mod adopt_tests {
         assert_eq!(unwrapped_source(staging.path(), install), staging.path());
     }
 
+    /// Some archive tools preserve the manifest path itself. If staging holds
+    /// `content/posters/eXoDOS/*.jpg`, installing staging wholesale would put
+    /// those files under `content/posters/eXoDOS/content/posters/eXoDOS/` and
+    /// every cover would vanish.
+    #[test]
+    fn unwraps_an_archive_that_repeats_the_manifest_install_path() {
+        let staging = staging_with(&[("content/posters/eXoDOS/a.jpg", false)]);
+        let install = Path::new("/data/content/posters/eXoDOS");
+        assert_eq!(
+            unwrapped_source(staging.path(), install),
+            staging.path().join("content/posters/eXoDOS")
+        );
+    }
+
     /// A lone directory is only a wrapper if it repeats the target's name -
     /// otherwise it is the payload, and unwrapping would discard its siblings'
     /// structure (a metadata pack that ships only `Images/`).
@@ -1423,5 +1516,53 @@ mod adopt_tests {
         let staging = staging_with(&[("Images", true)]);
         let install = Path::new("/data/content/metadata/eXoWin9x");
         assert_eq!(unwrapped_source(staging.path(), install), staging.path());
+    }
+
+    #[test]
+    fn refuses_to_replace_working_posters_with_an_empty_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join("staging");
+        let install = tmp.path().join("data/content/posters/eXoDOS");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("old.jpg"), b"old").unwrap();
+
+        let err = commit_staging(&staging, &install).expect_err("empty staging must fail");
+
+        assert!(err.contains("usable files"));
+        assert!(install.join("old.jpg").exists(), "old posters must survive");
+    }
+
+    #[test]
+    fn refuses_to_replace_working_posters_with_non_images() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join("staging");
+        let install = tmp.path().join("data/content/posters/eXoDOS");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("readme.txt"), b"not art").unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("old.jpg"), b"old").unwrap();
+
+        let err = commit_staging(&staging, &install).expect_err("poster payload needs images");
+
+        assert!(err.contains("usable files"));
+        assert!(install.join("old.jpg").exists(), "old posters must survive");
+    }
+
+    #[test]
+    fn commits_a_nested_manifest_path_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join("staging");
+        let install = tmp.path().join("data/content/posters/eXoDOS");
+        std::fs::create_dir_all(staging.join("content/posters/eXoDOS")).unwrap();
+        std::fs::write(staging.join("content/posters/eXoDOS/new.jpg"), b"new").unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("old.jpg"), b"old").unwrap();
+
+        commit_staging(&staging, &install).expect("valid nested payload should install");
+
+        assert!(install.join("new.jpg").exists());
+        assert!(!install.join("old.jpg").exists());
+        assert!(!install.join("content").exists(), "manifest path must not be nested under install dir");
     }
 }

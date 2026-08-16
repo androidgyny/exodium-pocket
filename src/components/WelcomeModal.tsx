@@ -25,7 +25,13 @@ export function WelcomeModal(props: Props) {
     setSelected(null);
     listContentPacks("eXoDOS")
       .then((result) => {
-        setPacks(result);
+        const installable = result.filter((pack) => pack.available && !pack.installed);
+        if (installable.length === 0) {
+          void setConfig("welcome_seen", "1");
+          props.onClose();
+          return;
+        }
+        setPacks(installable);
         setLoading(false);
       })
       .catch((e) => {
