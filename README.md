@@ -1,5 +1,9 @@
 # Exodium Pocket
 
+<p align="center">
+  <img src="docs/art/exodium-pocket-handheld.png" alt="Exodium Pocket handheld artwork" width="360">
+</p>
+
 Exodium Pocket is an unofficial Android fork of [Thomas Vollstädt's Exodium](https://github.com/tvollstaedt/exodium), a Tauri/SolidJS launcher for the eXoDOS collection.
 
 This fork targets Android handhelds and launches installed DOS games through a separately installed RetroArch app with the DOSBox Pure core. It is based on upstream Exodium commit `c815d5143bdbf0b8023115b1210f4b7c32e8fffc`.
