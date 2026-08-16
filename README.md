@@ -14,6 +14,16 @@ Exodium Pocket is a vibe-coded personal project, built with ChatGPT to make Exod
 
 There is no guarantee of compatibility, support, releases, fixes, documentation updates, or future improvements. Expect sharp edges.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/detail-view-jill.png" alt="Exodium Pocket game detail view" width="720">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/browse-list-view.png" alt="Exodium Pocket browse list view" width="720">
+</p>
+
 ## Status
 
 Exodium Pocket is an MVP Android port. It keeps the upstream catalog, torrent download flow, library UI, and installed-game tracking, while adding Android resource handling and a small native bridge that asks RetroArch to launch downloaded game ZIPs.
