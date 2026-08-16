@@ -1,6 +1,6 @@
 # Exodium Pocket
 
-Exodium Pocket is an unofficial Android fork of [Thomas Vollstädt's Exodium](https://github.com/tvollstaedt/exodium), a Tauri/SolidJS launcher for the eXoDOS collections.
+Exodium Pocket is an unofficial Android fork of [Thomas Vollstädt's Exodium](https://github.com/tvollstaedt/exodium), a Tauri/SolidJS launcher for the eXoDOS collection.
 
 This fork targets Android handhelds and launches installed DOS games through a separately installed RetroArch app with the DOSBox Pure core. It is based on upstream Exodium commit `c815d5143bdbf0b8023115b1210f4b7c32e8fffc`.
 
@@ -15,6 +15,14 @@ There is no guarantee of compatibility, support, releases, fixes, documentation 
 Exodium Pocket is an MVP Android port. It keeps the upstream catalog, torrent download flow, library UI, and installed-game tracking, while adding Android resource handling and a small native bridge that asks RetroArch to launch downloaded game ZIPs.
 
 The current Android support is focused on DOS/eXoDOS games. Windows 3.x and Windows 9x desktop launch paths remain in the codebase for upstream compatibility, but the Android MVP does not launch those collections.
+
+## Limitations
+
+Exodium Pocket currently supports only the DOS/eXoDOS catalog. It does not support other eXo projects, including eXoWin3x or eXoWin9x.
+
+Importing a previous eXoDOS configuration or existing eXoDOS installation is disabled in this fork. Exodium Pocket is intended to start from its own Android data folder and download games on demand.
+
+Because games launch through RetroArch with the DOSBox Pure core rather than the original eXoDOS launcher stack, some per-game setup has moved to the user side. Users will usually have to choose which executable to try when a game ZIP opens in DOSBox Pure, may sometimes need to adjust game or core settings, and in rare cases a game simply will not work.
 
 ## External Requirements
 
