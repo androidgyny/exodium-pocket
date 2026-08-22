@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 
 use crate::db::queries;
 
-use super::DbState;
+use super::{DbState, TorrentState};
 use super::updates::{load_manifest, ContentPackInfo};
 
 // ── Managed state ────────────────────────────────────────────────────────────
@@ -709,7 +709,8 @@ async fn do_install_full(
 /// poll progress, then extract the downloaded ZIP to the install directory.
 ///
 /// Leaves the ZIP in place after extraction so the torrent keeps seeding and
-/// a future re-install can skip the download if the extracted dir is deleted.
+/// a future re-install can skip the download. Explicit pack removal deletes
+/// the ZIP and invalidates its torrent piece state.
 async fn do_install_torrent(
     jobs: &Arc<RwLock<HashMap<String, ContentPackJob>>>,
     app_handle: &AppHandle,
@@ -1060,6 +1061,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 pub async fn uninstall_content_pack(
     db_state: State<'_, DbState>,
     pack_state: State<'_, ContentPackState>,
+    torrent_state: State<'_, TorrentState>,
     collection: String,
     pack_id: String,
 ) -> Result<(), String> {
@@ -1076,31 +1078,70 @@ pub async fn uninstall_content_pack(
         }
     }
 
-    let (_data_dir, install_dir) = {
+    let (install_dir, torrent_file_path) = {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         let data_dir = queries::get_config(&conn, "data_dir")
             .map_err(|e| e.to_string())?
             .ok_or("Data directory not configured")?;
 
-        let install_dir = match load_manifest() {
-            Ok(manifest) => {
-                let packs = manifest
-                    .collections
-                    .get(&collection)
-                    .map(|c| &c.content_packs)
-                    .cloned()
-                    .unwrap_or_default();
-                resolve_pack_install_dir(&data_dir, &collection, &pack_id, &packs)
-            }
-            Err(_) => {
-                Path::new(&data_dir)
-                    .join("content")
-                    .join(&pack_id)
-                    .join(&collection)
-            }
-        };
-        (data_dir, install_dir)
+        let manifest = load_manifest()?;
+        let packs = manifest
+            .collections
+            .get(&collection)
+            .ok_or_else(|| format!("Unknown collection '{}'", collection))?
+            .content_packs
+            .clone();
+        let pack_info = packs
+            .get(&pack_id)
+            .ok_or_else(|| format!("Unknown pack '{}' in '{}'", pack_id, collection))?
+            .for_current_platform()
+            .ok_or_else(|| format!("'{}' is not available on this platform.", pack_id))?;
+        let install_dir = resolve_pack_install_dir(&data_dir, &collection, &pack_id, &packs);
+        (install_dir, pack_info.torrent_file_path)
     };
+
+    // Torrent-backed metadata archives are several gigabytes. Remove the
+    // archive as part of uninstall and clear its saved piece bits so a future
+    // install downloads it again instead of reporting a phantom 100%.
+    if let Some(torrent_path) = torrent_file_path {
+        let manager = {
+            let managers = torrent_state.0.read().await;
+            managers.get(&collection).cloned()
+        }
+        .ok_or_else(|| {
+            "Cannot safely remove the downloaded metadata ZIP while torrent downloads are unavailable. Turn off Offline mode, restart Exodium, and try again."
+                .to_string()
+        })?;
+        let file_index = manager
+            .index()
+            .find_by_path(&torrent_path)
+            .ok_or_else(|| {
+                format!(
+                    "File '{}' not found in {} torrent",
+                    torrent_path, collection
+                )
+            })?
+            .index;
+        let zip_path = manager
+            .file_output_path(file_index)
+            .ok_or("Cannot resolve downloaded metadata ZIP path")?;
+
+        // Quiesce this torrent and patch fastresume before touching the file.
+        // Other selected downloads are re-added by the manager.
+        manager
+            .invalidate_after_file_delete(&[file_index], &[file_index])
+            .await
+            .map_err(|e| format!("Failed to reset metadata download state: {}", e))?;
+
+        if zip_path.exists() {
+            let archive = zip_path.clone();
+            tokio::task::spawn_blocking(move || std::fs::remove_file(&archive))
+                .await
+                .map_err(|e| format!("Metadata ZIP removal task panicked: {}", e))?
+                .map_err(|e| format!("Failed to delete metadata ZIP: {}", e))?;
+            log::info!("Deleted content pack archive: {}", zip_path.display());
+        }
+    }
 
     // Filesystem removal can be slow for large packs - run off the command handler thread.
     if install_dir.exists() {
